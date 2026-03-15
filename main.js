@@ -106,6 +106,7 @@ function initStore() {
 
 function startProxy() {
     process.env.ALLOWED_ORIGIN = 'electron-app';
+    process.env.USER_DATA_PATH = app.getPath('userData');
     process.env.MEMORY_DIR = path.join(app.getPath('userData'), 'memory');
     try {
         require('./proxy/server.js');
@@ -137,6 +138,7 @@ function createWindow() {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: false,
+            autoplayPolicy: 'no-user-gesture-required'
         }
     });
 

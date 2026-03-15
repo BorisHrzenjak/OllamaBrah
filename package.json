@@ -17,9 +17,13 @@
     "files": [
       "main.js",
       "preload.js",
+      "whisper_server.py",
       "renderer/**/*",
       "proxy/**/*",
       "assets/**/*"
+    ],
+    "asarUnpack": [
+      "whisper_server.py"
     ]
   },
   "dependencies": {

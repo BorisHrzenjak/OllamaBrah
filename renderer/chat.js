@@ -5665,6 +5665,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
+        if (!kokoroAudioContext || kokoroAudioContext.state === 'closed') {
+            kokoroAudioContext = new AudioContext({ sampleRate: 24000 });
+        }
+        if (kokoroAudioContext.state === 'suspended') {
+            kokoroAudioContext.resume().catch(() => {});
+        }
+
         const rawText = textContentDiv.dataset.fullMessage || textContentDiv.textContent || '';
         const cleanText = rawText
             // Strip thinking tags
@@ -5789,6 +5796,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (response.status === 503) {
                     console.log('[TTS] Kokoro model is loading, retrying in 3s...');
                     setTTSButtonState(buttonElement, 'loading');
+                    cleanupKokoroAudio();
                     await new Promise(r => setTimeout(r, 3000));
                     if (!isSpeaking) return;
                     return speakWithKokoro(text, voice, buttonElement);
@@ -5797,7 +5805,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             const sampleRate = parseInt(response.headers.get('X-Sample-Rate')) || 24000;
-            kokoroAudioContext = new AudioContext({ sampleRate });
             let scheduledTime = kokoroAudioContext.currentTime;
 
             setTTSButtonState(buttonElement, 'speaking');

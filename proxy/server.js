@@ -7,6 +7,14 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+// Resolve paths that may live in app.asar.unpacked when packaged
+function unpackedPath(...segments) {
+    const base = __dirname.includes('app.asar')
+        ? __dirname.replace('app.asar', 'app.asar.unpacked')
+        : __dirname;
+    return path.join(base, ...segments);
+}
 const memory = require('./memory');
 const diffLib = require('diff');
 
@@ -193,6 +201,13 @@ async function loadKokoroModel() {
     console.log('[TTS] Loading Kokoro model (q8, ~86MB first time)...');
     try {
         const { KokoroTTS } = await import('kokoro-js');
+        // Redirect model cache to a writable directory outside app.asar
+        const { env } = await import('@huggingface/transformers');
+        const cacheBase = process.env.USER_DATA_PATH
+            ? path.join(process.env.USER_DATA_PATH, 'hf_cache')
+            : path.join(os.homedir(), '.cache', 'ollama-brah', 'hf_cache');
+        env.cacheDir = cacheBase;
+        console.log('[TTS] Using cache dir:', cacheBase);
         kokoroTTS = await KokoroTTS.from_pretrained(
             'onnx-community/Kokoro-82M-v1.0-ONNX',
             { dtype: 'q8' }
@@ -390,7 +405,7 @@ app.post('/api/stt/load', async (req, res) => {
     if (whisperStatus === 'ready') return res.json({ ok: true, status: 'ready' });
     if (whisperStatus === 'loading') return res.json({ ok: true, status: 'loading' });
 
-    const scriptPath = path.join(__dirname, '..', 'whisper_server.py');
+    const scriptPath = unpackedPath('..', 'whisper_server.py');
     if (!fs.existsSync(scriptPath)) {
         return res.status(404).json({ error: 'whisper_server.py not found' });
     }
@@ -2355,7 +2370,7 @@ serverInstance = app.listen(PORT, () => {
     console.log(`Proxying requests from /proxy/* to ${OLLAMA_API_BASE_URL}`);
 
     // Pre-warm Whisper in the background so mic is ready instantly on first use
-    const scriptPath = path.join(__dirname, '..', 'whisper_server.py');
+    const scriptPath = unpackedPath('..', 'whisper_server.py');
     if (fs.existsSync(scriptPath) && whisperStatus === 'idle') {
         whisperStatus = 'loading';
         console.log(`[STT] Pre-warming Whisper server (model: ${whisperModel})...`);
