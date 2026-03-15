@@ -2353,4 +2353,31 @@ serverInstance = app.listen(PORT, () => {
     console.log(`OllamaBro CORS Proxy server running on http://localhost:${PORT}`);
     console.log(`Allowing CORS origin: ${extensionOrigin}`);
     console.log(`Proxying requests from /proxy/* to ${OLLAMA_API_BASE_URL}`);
+
+    // Pre-warm Whisper in the background so mic is ready instantly on first use
+    const scriptPath = path.join(__dirname, '..', 'whisper_server.py');
+    if (fs.existsSync(scriptPath) && whisperStatus === 'idle') {
+        whisperStatus = 'loading';
+        console.log(`[STT] Pre-warming Whisper server (model: ${whisperModel})...`);
+        const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+        whisperProcess = spawn(pythonCmd, [
+            scriptPath, '--model', whisperModel, '--port', String(whisperPort)
+        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+        whisperProcess.stdout.on('data', d => console.log('[STT]', d.toString().trimEnd()));
+        whisperProcess.stderr.on('data', d => console.log('[STT]', d.toString().trimEnd()));
+        whisperProcess.on('error', err => {
+            console.warn('[STT] Pre-warm failed (faster-whisper not installed?):', err.message);
+            whisperStatus = 'idle';
+            whisperProcess = null;
+        });
+        whisperProcess.on('exit', code => {
+            whisperProcess = null;
+            if (whisperStatus === 'ready') whisperStatus = 'idle';
+        });
+        waitForWhisperServer(60000).then(ready => {
+            whisperStatus = ready ? 'ready' : 'idle';
+            if (ready) console.log('[STT] Whisper pre-warm complete — mic ready');
+            else console.warn('[STT] Whisper pre-warm timed out');
+        });
+    }
 });

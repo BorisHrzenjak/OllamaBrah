@@ -621,9 +621,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let mediaRecorder = null;
     let audioChunks = [];
     let whisperReady = false;
-    let headerChunk = null;       // first WebM chunk contains the container header
-    let interimTranscript = '';   // running transcript shown in the preview
-    let lastTranscribePromise = null; // track in-flight transcription
+    let rollingTranscribePromise = null;
+    let rollingText = '';
     const voicePreviewEl = document.getElementById('voicePreview');
 
     function setMicState(listening) {
@@ -669,22 +668,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function ensureWhisperReady() {
-        try {
-            const r = await fetch(`${PROXY_BASE}/api/stt/status`);
-            const s = await r.json();
-            if (s.status === 'ready') { whisperReady = true; return true; }
-            if (s.status === 'loading') return false;
-        } catch { /* proxy not up */ }
-
         micButton.title = 'Loading Whisper…';
         micButton.innerHTML = createLucideIcon('loader', 20).outerHTML;
+
+        // Kick off load (no-op if already loading or ready)
         try {
-            const r = await fetch(`${PROXY_BASE}/api/stt/load`, { method: 'POST' });
-            const s = await r.json();
-            if (s.status === 'ready' || s.ok) { whisperReady = true; return true; }
+            await fetch(`${PROXY_BASE}/api/stt/load`, { method: 'POST' });
         } catch (e) {
             console.error('[STT] Failed to start Whisper:', e);
+            setMicState(false);
+            alert('Could not start the Whisper server.\n\nMake sure you have installed:\n  pip install faster-whisper flask');
+            return false;
         }
+
+        // Poll until ready (handles both fresh start and pre-warm in progress)
+        const deadline = Date.now() + 60000;
+        while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 800));
+            try {
+                const r = await fetch(`${PROXY_BASE}/api/stt/status`);
+                const s = await r.json();
+                if (s.status === 'ready') { whisperReady = true; return true; }
+                if (s.status !== 'loading') break; // error state
+            } catch { /* keep polling */ }
+        }
+
         setMicState(false);
         alert('Could not start the Whisper server.\n\nMake sure you have installed:\n  pip install faster-whisper flask');
         return false;
@@ -700,55 +708,57 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         audioChunks = [];
-        headerChunk = null;
-        interimTranscript = '';
-        lastTranscribePromise = null;
+        rollingTranscribePromise = null;
+        rollingText = '';
 
         const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
             ? 'audio/webm;codecs=opus' : '';
         mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
 
-        mediaRecorder.ondataavailable = async (e) => {
+        mediaRecorder.ondataavailable = (e) => {
             if (e.data.size === 0) return;
             audioChunks.push(e.data);
 
-            if (!headerChunk) {
-                // First chunk is the WebM initialization segment — save it as the
-                // container header so later chunks can be decoded independently.
-                headerChunk = e.data;
-                showVoicePreview('');
-                return;
-            }
-
-            // Transcribe this ~3-second chunk prefixed with the WebM header
-            const chunkBlob = new Blob([headerChunk, e.data],
-                { type: mediaRecorder.mimeType || 'audio/webm' });
-            lastTranscribePromise = transcribeBlob(chunkBlob).then(text => {
-                if (text) {
-                    interimTranscript += (interimTranscript ? ' ' : '') + text;
-                    showVoicePreview(interimTranscript);
-                }
-            }).catch(err => console.error('[STT] Chunk transcription error:', err));
+            // Kick off a rolling transcription of all audio collected so far.
+            // Using the full accumulated blob (not just the new chunk) avoids
+            // repetition, and running it during recording means the result is
+            // ready (or nearly ready) the moment the user stops.
+            const accBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+            rollingTranscribePromise = transcribeBlob(accBlob).then(text => {
+                rollingText = text || '';
+                if (rollingText) showVoicePreview(rollingText);
+            }).catch(() => {});
         };
 
         mediaRecorder.onstop = async () => {
             stream.getTracks().forEach(t => t.stop());
-            // Wait for any in-flight chunk transcription to finish
-            if (lastTranscribePromise) await lastTranscribePromise.catch(() => {});
+
+            // Wait for any in-flight rolling transcription to finish
+            if (rollingTranscribePromise) await rollingTranscribePromise.catch(() => {});
+
+            // Use the rolling result if available — it was computed during recording
+            // so there's no extra wait. Only fall back to a fresh transcription if
+            // nothing came through (e.g. recording was shorter than the timeslice).
+            let finalText = rollingText;
+            if (!finalText) {
+                showVoicePreview('Transcribing…');
+                const fullBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+                finalText = await transcribeBlob(fullBlob).catch(() => null);
+            }
 
             hideVoicePreview();
 
-            if (interimTranscript) {
+            if (finalText) {
                 if (messageInput.value && !/\s$/.test(messageInput.value))
                     messageInput.value += ' ';
-                messageInput.value += interimTranscript;
+                messageInput.value += finalText;
                 messageInput.dispatchEvent(new Event('input'));
             }
             setMicState(false);
         };
 
-        // Fire ondataavailable every 3 seconds for rolling preview
-        mediaRecorder.start(3000);
+        // Fire ondataavailable every 2 seconds so rolling transcription starts early
+        mediaRecorder.start(2000);
         setMicState(true);
         showVoicePreview('');
     }

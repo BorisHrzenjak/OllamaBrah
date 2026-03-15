@@ -42,7 +42,12 @@ def transcribe():
             f.write(audio_bytes)
             tmp_path = f.name
         try:
-            segments, _ = model.transcribe(tmp_path, beam_size=5)
+            segments, _ = model.transcribe(
+                tmp_path,
+                beam_size=5,
+                vad_filter=True,          # skip silent regions — prevents hallucination on silence
+                condition_on_previous_text=False,  # prevents repetition loops
+            )
             text = ' '.join(seg.text.strip() for seg in segments).strip()
             return jsonify({'text': text})
         finally:
