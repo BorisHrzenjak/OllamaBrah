@@ -127,11 +127,6 @@ function createWindow() {
         minHeight: 600,
         icon: path.join(__dirname, 'assets', 'icon.png'),
         titleBarStyle: 'hidden',
-        titleBarOverlay: {
-            color: '#141414',
-            symbolColor: '#a3a3a3',
-            height: 38
-        },
         backgroundColor: '#0a0a0a',
         webPreferences: {
             preload,
