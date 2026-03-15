@@ -741,55 +741,70 @@ app.post('/api/llamacpp/chat', async (req, res) => {
     const lastUserMsg = cleanedMessages.filter(m => m.role === 'user').pop();
     if (lastUserMsg) {
         const messageContent = lastUserMsg.content || '';
-        const contextParts = [];
         const today = new Date().toISOString().split('T')[0];
-
-        // Track 1: fetch any URLs via Jina Reader
         const urls = extractUrls(messageContent);
-        for (const url of urls.slice(0, 2)) {
-            try {
-                const content = await fetchPageViaJina(url);
+
+        // Track 1: URL fetching via Jina Reader (all URLs in parallel)
+        const urlsPromise = Promise.allSettled(
+            urls.slice(0, 2).map(url =>
+                fetchPageViaJina(url).then(content => ({ url, content }))
+            )
+        );
+
+        // Track 2: Web/deep research search (starts in parallel with Track 1)
+        let searchPromise;
+        if (deepResearchRequested) {
+            searchPromise = fetchExaResearch(messageContent.slice(0, 500))
+                .catch(async (e) => {
+                    console.warn('[llama.cpp/Research] Exa failed, falling back to Tavily:', e.message);
+                    const data = await fetchTavilyResults(messageContent.slice(0, 300)).catch(() => null);
+                    return data ? { _tavilyFallback: true, results: data.results } : null;
+                });
+        } else if (webSearchRequested || heuristicNeedsSearch(messageContent)) {
+            const query = messageContent.slice(0, 300);
+            console.log(`[llama.cpp/Search] Querying Tavily for: "${query.slice(0, 80)}"`);
+            searchPromise = fetchTavilyResults(query).catch(e => {
+                console.warn('[llama.cpp/Search] Tavily failed:', e.message);
+                return null;
+            });
+        } else {
+            searchPromise = Promise.resolve(null);
+        }
+
+        // Await both tracks in parallel
+        const [jinaResults, searchData] = await Promise.all([urlsPromise, searchPromise]);
+
+        const contextParts = [];
+
+        // Process URL results
+        jinaResults.forEach(r => {
+            if (r.status === 'fulfilled') {
+                const { url, content } = r.value;
                 contextParts.push(`Retrieved page (${url}):\n${content}`);
                 console.log(`[llama.cpp/Search] Jina: got ${content.length} chars from ${url}`);
-            } catch (e) {
-                console.warn(`[llama.cpp/Search] Jina failed for ${url}:`, e.message);
+            } else {
+                console.warn(`[llama.cpp/Search] Jina failed for a URL:`, r.reason?.message);
             }
-        }
+        });
 
-        // Track 2a: Deep research (Exa.ai)
-        if (deepResearchRequested) {
-            try {
-                const data = await fetchExaResearch(messageContent.slice(0, 500));
-                const formatted = formatExaResults(data);
+        // Process search results
+        if (deepResearchRequested && searchData) {
+            if (searchData._tavilyFallback) {
+                if (searchData.results?.length > 0) {
+                    contextParts.push(`Web search results:\n${searchData.results.map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content}`).join('\n\n')}`);
+                }
+            } else {
+                const formatted = formatExaResults(searchData);
                 if (formatted) {
                     contextParts.push(`Deep Research Sources:\n\n${formatted}`);
-                    llamaCppSourcesBlock = '\n\n---\n\n**Sources**\n' + data.results.map((r, i) => `- [${i + 1}] [${r.title || r.url}](${r.url})`).join('\n');
-                    console.log(`[llama.cpp/Research] Exa: injected ${data.results.length} sources`);
+                    llamaCppSourcesBlock = '\n\n---\n\n**Sources**\n' + searchData.results.map((r, i) => `- [${i + 1}] [${r.title || r.url}](${r.url})`).join('\n');
+                    console.log(`[llama.cpp/Research] Exa: injected ${searchData.results.length} sources`);
                 }
-            } catch (e) {
-                console.warn('[llama.cpp/Research] Exa failed, falling back to Tavily search:', e.message);
-                try {
-                    const data = await fetchTavilyResults(messageContent.slice(0, 300));
-                    if (data?.results?.length > 0) {
-                        contextParts.push(`Web search results:\n${data.results.map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content}`).join('\n\n')}`);
-                    }
-                } catch (e2) { /* skip */ }
             }
-        }
-        // Track 2b: Regular Tavily search
-        else if (webSearchRequested || heuristicNeedsSearch(messageContent)) {
-            try {
-                const query = messageContent.slice(0, 300);
-                console.log(`[llama.cpp/Search] Querying Tavily for: "${query.slice(0, 80)}"`);
-                const data = await fetchTavilyResults(query);
-                if (data?.results?.length > 0) {
-                    const snippets = data.results.map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content}`).join('\n\n');
-                    contextParts.push(`Web search results:\n${snippets}`);
-                    console.log(`[llama.cpp/Search] Tavily: injected ${data.results.length} results`);
-                }
-            } catch (e) {
-                console.warn('[llama.cpp/Search] Tavily failed:', e.message);
-            }
+        } else if (searchData?.results?.length > 0) {
+            const snippets = searchData.results.map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content}`).join('\n\n');
+            contextParts.push(`Web search results:\n${snippets}`);
+            console.log(`[llama.cpp/Search] Tavily: injected ${searchData.results.length} results`);
         }
 
         if (contextParts.length > 0) {
@@ -2145,71 +2160,90 @@ app.all('/proxy/*', async (req, res) => {
                         const messageContent = lastMsg.content || '';
                         const webSearchRequested = ollamaPayload._webSearch === true;
                         const deepResearchRequested = ollamaPayload._deepResearch === true;
-                        const contextParts = [];
                         const today = new Date().toISOString().split('T')[0];
-
-                        // Track 1: fetch any URLs in the message via Jina Reader (live page content)
                         const urls = extractUrls(messageContent);
                         console.log(`[Search] URLs found in message: ${JSON.stringify(urls)}`);
-                        for (const url of urls.slice(0, 2)) {
-                            try {
+
+                        // Track 1: URL fetching via Jina Reader (all URLs in parallel)
+                        const urlsPromise = Promise.allSettled(
+                            urls.slice(0, 2).map(url => {
                                 console.log(`[Search] Fetching URL via Jina: ${url}`);
-                                const content = await fetchPageViaJina(url);
+                                return fetchPageViaJina(url).then(content => ({ url, content }));
+                            })
+                        );
+
+                        // Track 2: Web/deep research search (starts in parallel with Track 1)
+                        let searchPromise;
+                        if (deepResearchRequested) {
+                            const query = messageContent.slice(0, 500);
+                            console.log(`[Research] Starting deep research via Exa for: "${query.slice(0, 80)}"`);
+                            searchPromise = fetchExaResearch(query)
+                                .catch(async (researchErr) => {
+                                    console.warn('[Research] Exa failed, falling back to Tavily search:', researchErr.message);
+                                    const data = await fetchTavilyResults(messageContent.slice(0, 300)).catch(searchErr => {
+                                        console.warn('[Search] Fallback search also failed:', searchErr.message);
+                                        return null;
+                                    });
+                                    return data ? { _tavilyFallback: true, results: data.results } : null;
+                                });
+                        } else if (webSearchRequested || heuristicNeedsSearch(messageContent)) {
+                            const query = messageContent.slice(0, 300);
+                            console.log(`[Search] Querying Tavily for: "${query.slice(0, 80)}"`);
+                            searchPromise = fetchTavilyResults(query).catch(searchErr => {
+                                console.warn('[Search] Tavily failed, continuing without search context:', searchErr.message);
+                                return null;
+                            });
+                        } else {
+                            searchPromise = Promise.resolve(null);
+                        }
+
+                        // Track 3: Memory search (starts in parallel with Tracks 1 & 2)
+                        const memPromise = (ollamaPayload._memory === true)
+                            ? memory.searchMemories((lastMsg.content || '').slice(0, 500), 4).catch(memErr => {
+                                  console.warn('[Memory] Context injection failed:', memErr.message);
+                                  return [];
+                              })
+                            : Promise.resolve(null);
+
+                        // Await all tracks in parallel
+                        const [jinaResults, searchData, memHits] = await Promise.all([urlsPromise, searchPromise, memPromise]);
+
+                        const contextParts = [];
+
+                        // Process URL results
+                        jinaResults.forEach(r => {
+                            if (r.status === 'fulfilled') {
+                                const { url, content } = r.value;
                                 contextParts.push(`Retrieved page (${url}):\n${content}`);
                                 console.log(`[Search] Jina: got ${content.length} chars from ${url}`);
-                            } catch (jinaErr) {
-                                console.warn(`[Search] Jina failed for ${url}:`, jinaErr.message);
+                            } else {
+                                console.warn(`[Search] Jina failed for a URL:`, r.reason?.message);
                             }
-                        }
+                        });
 
-                        // Track 2a: Deep Research (Exa.ai) - takes priority
-                        if (deepResearchRequested) {
-                            try {
-                                const query = messageContent.slice(0, 500);
-                                console.log(`[Research] Starting deep research via Exa for: "${query.slice(0, 80)}"`);
-                                const data = await fetchExaResearch(query);
-                                const formatted = formatExaResults(data);
+                        // Process search results
+                        if (deepResearchRequested && searchData) {
+                            if (searchData._tavilyFallback) {
+                                if (searchData.results?.length > 0) {
+                                    const snippets = searchData.results.map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content}`).join('\n\n');
+                                    contextParts.push(`Web search results:\n${snippets}`);
+                                    console.log(`[Search] Tavily fallback: injected ${searchData.results.length} results`);
+                                }
+                            } else {
+                                const formatted = formatExaResults(searchData);
                                 if (formatted) {
                                     contextParts.push(`Deep Research Sources:\n\n${formatted}`);
-                                    exaSourcesBlock = '\n\n---\n\n**Sources**\n' + data.results.map((r, i) => `- [${i + 1}] [${r.title || r.url}](${r.url})`).join('\n');
-                                    console.log(`[Research] Exa: injected ${data.results.length} sources`);
-                                }
-                            } catch (researchErr) {
-                                console.warn('[Research] Exa failed, falling back to Tavily search:', researchErr.message);
-                                try {
-                                    const query = messageContent.slice(0, 300);
-                                    const data = await fetchTavilyResults(query);
-                                    if (data?.results?.length > 0) {
-                                        const snippets = data.results
-                                            .map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content}`)
-                                            .join('\n\n');
-                                        contextParts.push(`Web search results:\n${snippets}`);
-                                        console.log(`[Search] Tavily fallback: injected ${data.results.length} results`);
-                                    }
-                                } catch (searchErr) {
-                                    console.warn('[Search] Fallback search also failed:', searchErr.message);
+                                    exaSourcesBlock = '\n\n---\n\n**Sources**\n' + searchData.results.map((r, i) => `- [${i + 1}] [${r.title || r.url}](${r.url})`).join('\n');
+                                    console.log(`[Research] Exa: injected ${searchData.results.length} sources`);
                                 }
                             }
-                        }
-                        // Track 2b: Regular Tavily search (if not deep research)
-                        else if (webSearchRequested || heuristicNeedsSearch(messageContent)) {
-                            try {
-                                const query = messageContent.slice(0, 300);
-                                console.log(`[Search] Querying Tavily for: "${query.slice(0, 80)}"`);
-                                const data = await fetchTavilyResults(query);
-                                if (data?.results?.length > 0) {
-                                    const snippets = data.results
-                                        .map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content}`)
-                                        .join('\n\n');
-                                    contextParts.push(`Web search results:\n${snippets}`);
-                                    console.log(`[Search] Tavily: injected ${data.results.length} results`);
-                                }
-                            } catch (searchErr) {
-                                console.warn('[Search] Tavily failed, continuing without search context:', searchErr.message);
-                            }
+                        } else if (searchData?.results?.length > 0) {
+                            const snippets = searchData.results.map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content}`).join('\n\n');
+                            contextParts.push(`Web search results:\n${snippets}`);
+                            console.log(`[Search] Tavily: injected ${searchData.results.length} results`);
                         }
 
-                        // Inject all gathered context into the system message
+                        // Inject web/URL context into system message
                         if (contextParts.length > 0) {
                             const preamble = deepResearchRequested
                                 ? `You are in Deep Research mode. The following sources were retrieved live via Exa semantic search specifically for this query. Your answer MUST be grounded in these sources — do not rely on training data alone. Synthesize the information across all sources and cite them inline using [1], [2], [3], etc. after each relevant sentence or claim. Do NOT add a sources list at the end — it will be appended automatically.\n\nToday's date: ${today}.`
@@ -2222,18 +2256,15 @@ app.all('/proxy/*', async (req, res) => {
                                 ollamaPayload.messages.unshift({ role: 'system', content: contextBlock });
                             }
                         }
-                    }
-                    // --- Memory context injection ---
-                    if (ollamaPayload._memory === true && lastMsg?.role === 'user') {
-                        try {
-                            const query = (lastMsg.content || '').slice(0, 500);
-                            const hits = await memory.searchMemories(query, 4);
+
+                        // Inject memory context into system message
+                        if (memHits !== null) {
                             const parts = [];
                             parts.push('You have a persistent memory system. When the user asks you to remember something, acknowledge that it has been saved and will be available in future conversations. Do not say you lack persistent memory.');
-                            if (hits.length > 0) {
+                            if (memHits.length > 0) {
                                 parts.push('Relevant memories from previous conversations:\n' +
-                                    hits.map((h, i) => `[${i + 1}] ${h.text}`).join('\n'));
-                                console.log(`[Memory] Injected ${hits.length} memories into context`);
+                                    memHits.map((h, i) => `[${i + 1}] ${h.text}`).join('\n'));
+                                console.log(`[Memory] Injected ${memHits.length} memories into context`);
                             }
                             const memBlock = parts.join('\n\n');
                             const sysIdx = ollamaPayload.messages.findIndex(m => m.role === 'system');
@@ -2242,8 +2273,6 @@ app.all('/proxy/*', async (req, res) => {
                             } else {
                                 ollamaPayload.messages.unshift({ role: 'system', content: memBlock });
                             }
-                        } catch (memErr) {
-                            console.warn('[Memory] Context injection failed:', memErr.message);
                         }
                     }
 
