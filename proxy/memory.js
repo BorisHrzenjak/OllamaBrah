@@ -3,6 +3,7 @@
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { LocalDocumentIndex } = require('vectra/lib/LocalDocumentIndex');
 
 const MEMORY_DIR = process.env.MEMORY_DIR
     || path.join(os.homedir(), '.ollamabar', 'memory');
@@ -31,7 +32,6 @@ async function embedTexts(inputs) {
 async function getIndex() {
     if (_index) return _index;
     fs.mkdirSync(MEMORY_DIR, { recursive: true });
-    const { LocalDocumentIndex } = await import('vectra');
     const idx = new LocalDocumentIndex({
         folderPath: MEMORY_DIR,
         embeddings: {
@@ -101,6 +101,7 @@ async function searchMemories(query, k = 3) {
 
 async function listMemories() {
     try {
+        _index = null; // always read fresh from disk so external changes are visible
         const index = await getIndex();
         const docs = await index.listDocuments();
         const results = await Promise.all(docs.map(async (d) => {

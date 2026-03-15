@@ -7,30 +7,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         chrome = {
             storage: {
                 local: {
-                    get: async (keys) => {
+                    get: async (keys, callback) => {
+                        let result;
                         if (keys === null || keys === undefined) {
-                            return await window.electronAPI.store.getAll();
-                        }
-                        if (typeof keys === 'string') {
+                            result = await window.electronAPI.store.getAll();
+                        } else if (typeof keys === 'string') {
                             const val = await window.electronAPI.store.get(keys, undefined);
-                            return { [keys]: val };
-                        }
-                        if (Array.isArray(keys)) {
-                            const result = {};
+                            result = { [keys]: val };
+                        } else if (Array.isArray(keys)) {
+                            result = {};
                             for (const k of keys) {
                                 result[k] = await window.electronAPI.store.get(k, undefined);
                             }
-                            return result;
-                        }
-                        if (typeof keys === 'object') {
-                            const result = {};
+                        } else if (typeof keys === 'object') {
+                            result = {};
                             for (const [k, def] of Object.entries(keys)) {
                                 const val = await window.electronAPI.store.get(k, undefined);
                                 result[k] = val !== undefined ? val : def;
                             }
-                            return result;
+                        } else {
+                            result = {};
                         }
-                        return {};
+                        if (typeof callback === 'function') { callback(result); return undefined; }
+                        return result;
                     },
                     set: async (obj) => {
                         for (const [k, v] of Object.entries(obj)) {
@@ -617,79 +616,155 @@ document.addEventListener('DOMContentLoaded', async () => {
         return currentContentText;
     }
 
-    // Speech Recognition Setup
-    let recognition = null;
+    // Speech Recognition Setup (local Whisper via proxy)
     let isListening = false;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let whisperReady = false;
+    let headerChunk = null;       // first WebM chunk contains the container header
+    let interimTranscript = '';   // running transcript shown in the preview
+    let lastTranscribePromise = null; // track in-flight transcription
+    const voicePreviewEl = document.getElementById('voicePreview');
 
-    if ('webkitSpeechRecognition' in window) {
-        recognition = new webkitSpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-
-        recognition.onstart = () => {
-            isListening = true;
+    function setMicState(listening) {
+        isListening = listening;
+        if (!micButton) return;
+        if (listening) {
             micButton.classList.add('listening');
             micButton.innerHTML = createLucideIcon('mic-off', 20).outerHTML;
-            micButton.title = "Stop Recording";
-        };
-
-        recognition.onend = () => {
-            isListening = false;
+            micButton.title = 'Stop Recording';
+        } else {
             micButton.classList.remove('listening');
             micButton.innerHTML = createLucideIcon('mic', 20).outerHTML;
-            micButton.title = "Voice Input";
-        };
+            micButton.title = 'Voice Input';
+        }
+    }
 
-        recognition.onresult = (event) => {
-            let finalTranscript = '';
-            let interimTranscript = '';
+    function showVoicePreview(text) {
+        if (!voicePreviewEl) return;
+        voicePreviewEl.textContent = text || '🎙 Listening…';
+        voicePreviewEl.style.display = 'block';
+    }
 
-            for (let i = event.resultIndex; i < event.results.length; ++i) {
-                if (event.results[i].isFinal) {
-                    finalTranscript += event.results[i][0].transcript;
-                } else {
-                    interimTranscript += event.results[i][0].transcript;
-                }
+    function hideVoicePreview() {
+        if (!voicePreviewEl) return;
+        voicePreviewEl.style.display = 'none';
+        voicePreviewEl.textContent = '';
+    }
+
+    async function transcribeBlob(blob) {
+        const base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+        const r = await fetch(`${PROXY_BASE}/api/stt/transcribe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audio: base64, format: 'webm' })
+        });
+        const data = await r.json();
+        return data.text || '';
+    }
+
+    async function ensureWhisperReady() {
+        try {
+            const r = await fetch(`${PROXY_BASE}/api/stt/status`);
+            const s = await r.json();
+            if (s.status === 'ready') { whisperReady = true; return true; }
+            if (s.status === 'loading') return false;
+        } catch { /* proxy not up */ }
+
+        micButton.title = 'Loading Whisper…';
+        micButton.innerHTML = createLucideIcon('loader', 20).outerHTML;
+        try {
+            const r = await fetch(`${PROXY_BASE}/api/stt/load`, { method: 'POST' });
+            const s = await r.json();
+            if (s.status === 'ready' || s.ok) { whisperReady = true; return true; }
+        } catch (e) {
+            console.error('[STT] Failed to start Whisper:', e);
+        }
+        setMicState(false);
+        alert('Could not start the Whisper server.\n\nMake sure you have installed:\n  pip install faster-whisper flask');
+        return false;
+    }
+
+    async function startRecording() {
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch {
+            alert('Microphone access denied. Please allow microphone access and restart the app.');
+            return;
+        }
+
+        audioChunks = [];
+        headerChunk = null;
+        interimTranscript = '';
+        lastTranscribePromise = null;
+
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+            ? 'audio/webm;codecs=opus' : '';
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+
+        mediaRecorder.ondataavailable = async (e) => {
+            if (e.data.size === 0) return;
+            audioChunks.push(e.data);
+
+            if (!headerChunk) {
+                // First chunk is the WebM initialization segment — save it as the
+                // container header so later chunks can be decoded independently.
+                headerChunk = e.data;
+                showVoicePreview('');
+                return;
             }
 
-            // Append final transcript to input
-            if (finalTranscript) {
-                // Add space if input is not empty and doesn't end with whitespace
-                if (messageInput.value && !/\s$/.test(messageInput.value)) {
-                    messageInput.value += ' ';
+            // Transcribe this ~3-second chunk prefixed with the WebM header
+            const chunkBlob = new Blob([headerChunk, e.data],
+                { type: mediaRecorder.mimeType || 'audio/webm' });
+            lastTranscribePromise = transcribeBlob(chunkBlob).then(text => {
+                if (text) {
+                    interimTranscript += (interimTranscript ? ' ' : '') + text;
+                    showVoicePreview(interimTranscript);
                 }
-                messageInput.value += finalTranscript;
-                // Trigger input event to resize textarea if needed
+            }).catch(err => console.error('[STT] Chunk transcription error:', err));
+        };
+
+        mediaRecorder.onstop = async () => {
+            stream.getTracks().forEach(t => t.stop());
+            // Wait for any in-flight chunk transcription to finish
+            if (lastTranscribePromise) await lastTranscribePromise.catch(() => {});
+
+            hideVoicePreview();
+
+            if (interimTranscript) {
+                if (messageInput.value && !/\s$/.test(messageInput.value))
+                    messageInput.value += ' ';
+                messageInput.value += interimTranscript;
                 messageInput.dispatchEvent(new Event('input'));
             }
+            setMicState(false);
         };
 
-        recognition.onerror = (event) => {
-            console.error('Speech recognition error', event.error);
-            if (event.error === 'not-allowed') {
-                alert('Microphone access denied. Please restart the app and try again.');
-            } else if (event.error === 'network') {
-                alert('Speech recognition requires an internet connection and Google\'s speech service. If you\'re offline, voice input is unavailable.');
-            }
-            if (isListening) {
-                recognition.stop();
-            }
-        };
+        // Fire ondataavailable every 3 seconds for rolling preview
+        mediaRecorder.start(3000);
+        setMicState(true);
+        showVoicePreview('');
+    }
 
-        // Toggle recording on click
-        micButton.addEventListener('click', () => {
+    if (micButton) {
+        micButton.addEventListener('click', async () => {
             if (isListening) {
-                recognition.stop();
-            } else {
-                recognition.start();
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+                return;
             }
+            if (!whisperReady) {
+                const ready = await ensureWhisperReady();
+                if (!ready) return;
+            }
+            await startRecording();
         });
-    } else {
-        // Hide button if speech recognition is not supported
-        if (micButton) {
-            micButton.style.display = 'none';
-            console.warn('Web Speech API not supported in this browser.');
-        }
     }
 
     let currentModelName = '';
@@ -3827,7 +3902,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentConversation.lastMessageTime = Date.now();
 
                 // Auto-extract memories from agent exchange (fire-and-forget)
-                if (memoryAutoExtract && lastUserMsg && finalText) {
+                if ((memoryEnabled || memoryAutoExtract) && lastUserMsg && finalText) {
                     triggerMemoryExtraction(lastUserMsg.content, finalText);
                 }
 
@@ -4027,7 +4102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentConversation.lastMessageTime = Date.now();
 
             // Auto-extract memories from this exchange (fire-and-forget)
-            if (memoryAutoExtract && lastUserMsg) {
+            if ((memoryEnabled || memoryAutoExtract) && lastUserMsg) {
                 triggerMemoryExtraction(lastUserMsg.content, accumulatedContent);
             }
 
@@ -4378,7 +4453,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             clearSearchButton.style.display = 'none';
             updateModelDisplay(currentModelName);
         clearSelectedFiles();
-            toggleImageUploadUI(false); // vision not supported via llama.cpp yet
+            toggleFileUploadUI(false); // vision not supported via llama.cpp yet
             checkServerStatus();
 
             let modelData = await loadModelChatState(currentModelName);

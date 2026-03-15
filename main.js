@@ -106,6 +106,7 @@ function initStore() {
 
 function startProxy() {
     process.env.ALLOWED_ORIGIN = 'electron-app';
+    process.env.MEMORY_DIR = path.join(app.getPath('userData'), 'memory');
     try {
         require('./proxy/server.js');
         console.log('[main] Proxy server started');

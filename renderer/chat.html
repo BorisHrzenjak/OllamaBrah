@@ -1383,6 +1383,27 @@
             animation: pulse-recording 1.5s infinite;
         }
 
+        /* Voice preview strip */
+        #voicePreview {
+            position: absolute;
+            bottom: 100%;
+            left: var(--space-xl);
+            right: var(--space-xl);
+            margin-bottom: 4px;
+            padding: 8px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            color: var(--text-secondary);
+            font-size: var(--font-size-sm);
+            font-style: italic;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            box-shadow: 0 -2px 8px rgba(0,0,0,0.2);
+            z-index: 10;
+        }
+
         /* Web Search Button Active State */
         #webSearchButton.active {
             color: var(--accent);
@@ -4326,6 +4347,7 @@ body {
                 <button id="memoryButton" class="input-icon-button" title="Memory: OFF">
                     <i data-lucide="brain"></i>
                 </button>
+                <div id="voicePreview" style="display:none;"></div>
                 <div id="messageInputWrapper">
                     <textarea id="messageInput" placeholder="Message..." rows="1" autofocus></textarea>
                     <span id="inputTokenCount"></span>
