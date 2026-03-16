@@ -923,6 +923,19 @@ app.post('/api/llamacpp/chat', async (req, res) => {
         if (llamaCppSearchMeta) {
             res.write(JSON.stringify({ _searchEvent: llamaCppSearchMeta }) + '\n');
         }
+        // Emit context breakdown for segmented meter
+        try {
+            const _estTok = (s) => Math.ceil((s || '').length / 3.5);
+            const sysMsg = finalMessages.find(m => m.role === 'system');
+            const convMsgs = finalMessages.filter(m => m.role === 'user' || m.role === 'assistant');
+            const llamaCppBreakdown = {
+                systemPromptTokens: _estTok(sysMsg?.content || ''),
+                searchContextTokens: llamaCppSearchMeta?.contextTokens || 0,
+                conversationTokens: convMsgs.reduce((sum, m) => sum + _estTok(m.content) + 4, 0),
+                totalEstimated: finalMessages.reduce((sum, m) => sum + _estTok(m.content) + 4, 0)
+            };
+            res.write(JSON.stringify({ _contextBreakdown: llamaCppBreakdown }) + '\n');
+        } catch (_e) { /* non-critical */ }
         const modelBaseName = path.basename(llamaCurrentModel || 'unknown');
         const reader = upstream.body.getReader();
         const decoder = new TextDecoder();
@@ -2138,6 +2151,8 @@ app.all('/proxy/*', async (req, res) => {
         let exaSourcesBlock = null;
         // Search metadata for frontend search step UI
         let ollamaSearchMeta = null;
+        // Context breakdown for segmented meter
+        let ollamaContextBreakdown = null;
 
         const proxyReq = http.request(options, (proxyRes) => {
             console.log(`Proxy to Ollama: Received response status: ${proxyRes.statusCode}`);
@@ -2147,6 +2162,10 @@ app.all('/proxy/*', async (req, res) => {
             // Emit search metadata event before model response starts
             if (ollamaSearchMeta && proxyRes.statusCode === 200) {
                 res.write(JSON.stringify({ _searchEvent: ollamaSearchMeta }) + '\n');
+            }
+            // Emit context breakdown for segmented meter
+            if (ollamaContextBreakdown && proxyRes.statusCode === 200) {
+                res.write(JSON.stringify({ _contextBreakdown: ollamaContextBreakdown }) + '\n');
             }
 
             if (!exaSourcesBlock) {
@@ -2414,6 +2433,21 @@ app.all('/proxy/*', async (req, res) => {
                     delete ollamaPayload._deepResearch; // strip internal flag before forwarding
                     delete ollamaPayload._memory; // strip internal flag before forwarding
                     delete ollamaPayload._saveToMemory; // strip internal flag before forwarding
+
+                    // --- Build context breakdown for segmented meter ---
+                    try {
+                        const msgs = ollamaPayload.messages || [];
+                        const sysMsg = msgs.find(m => m.role === 'system');
+                        const sysContent = sysMsg?.content || '';
+                        const convMsgs = msgs.filter(m => m.role === 'user' || m.role === 'assistant');
+                        const _estTok = (s) => Math.ceil((s || '').length / 3.5);
+                        ollamaContextBreakdown = {
+                            systemPromptTokens: _estTok(sysContent),
+                            searchContextTokens: ollamaSearchMeta?.contextTokens || 0,
+                            conversationTokens: convMsgs.reduce((sum, m) => sum + _estTok(m.content) + 4, 0),
+                            totalEstimated: msgs.reduce((sum, m) => sum + _estTok(m.content) + 4, 0)
+                        };
+                    } catch (_e) { /* non-critical */ }
 
                     bodyToSend = JSON.stringify(ollamaPayload);
                 } catch (e) {

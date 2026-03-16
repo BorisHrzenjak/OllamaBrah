@@ -1666,11 +1666,11 @@
             margin-bottom: 4px;
         }
 
-        /* Context Indicator */
+        /* Context Indicator — Segmented Meter */
         .context-indicator {
             display: flex;
-            align-items: center;
-            gap: var(--space-sm);
+            flex-direction: column;
+            gap: 4px;
             margin-top: var(--space-md);
             padding: var(--space-sm) var(--space-md);
             background-color: var(--bg-tertiary);
@@ -1695,14 +1695,78 @@
             color: var(--error-text);
         }
 
-        #contextIndicatorIcon {
+        .context-meter-header {
             display: flex;
             align-items: center;
+            gap: var(--space-sm);
+            white-space: nowrap;
         }
 
-        #contextIndicatorIcon .lucide {
+        .context-meter-header .lucide {
             width: 14px;
             height: 14px;
+            flex-shrink: 0;
+        }
+
+        .context-meter-bar {
+            width: 100%;
+            height: 6px;
+            background-color: var(--bg-primary);
+            border-radius: 3px;
+            overflow: hidden;
+            display: flex;
+        }
+
+        .context-meter-bar .seg {
+            height: 100%;
+            transition: width 0.3s ease;
+            min-width: 0;
+        }
+
+        .seg-system { background-color: #3b82f6; }
+        .seg-search { background-color: #10b981; }
+        .seg-conversation { background-color: #8b8b8b; }
+
+        .context-indicator.warning .seg-conversation { background-color: #f59e0b; }
+        .context-indicator.critical .seg-conversation { background-color: #ef4444; }
+
+        .context-meter-label {
+            font-size: 10px;
+            opacity: 0.7;
+            display: none;
+        }
+
+        .context-indicator:hover .context-meter-label {
+            display: block;
+        }
+
+        .context-meter-actual {
+            font-size: 10px;
+            color: #10b981;
+            margin-left: 4px;
+        }
+
+        /* Pin styles */
+        .message.pinned {
+            border-left: 2px solid #3b82f6;
+        }
+
+        .action-button.pin-button.active {
+            color: #3b82f6;
+            background-color: rgba(59, 130, 246, 0.15);
+        }
+
+        .pin-badge {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            color: #3b82f6;
+            opacity: 0.6;
+        }
+
+        .pin-badge .lucide {
+            width: 12px;
+            height: 12px;
         }
 
         /* Modal Styles */
@@ -4159,12 +4223,21 @@
         }
 
         .agent-context-compressed {
+            display: flex;
+            align-items: center;
+            gap: 6px;
             font-size: var(--font-size-xs);
-            color: var(--text-muted);
-            padding: 3px 8px;
-            margin: 4px 0;
+            color: #f59e0b;
+            padding: 6px 10px;
+            margin: 6px 0;
+            background: rgba(245, 158, 11, 0.08);
             border-left: 2px solid #f59e0b;
-            opacity: 0.75;
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+            cursor: help;
+        }
+
+        .agent-context-compressed .compress-icon {
+            font-size: 14px;
         }
 
         .agent-error {
@@ -4353,8 +4426,16 @@ body {
                     New Chat
                 </button>
                 <div id="contextIndicator" class="context-indicator" title="Estimated context usage">
-                    <span id="contextIndicatorIcon"><i data-lucide="database"></i></span>
-                    <span id="contextIndicatorText">0 tokens</span>
+                    <div class="context-meter-header">
+                        <span id="contextIndicatorIcon"><i data-lucide="database"></i></span>
+                        <span id="contextIndicatorText">0 tokens</span>
+                    </div>
+                    <div id="contextMeterBar" class="context-meter-bar">
+                        <div class="seg seg-system" id="segSystem" style="width:0%"></div>
+                        <div class="seg seg-search" id="segSearch" style="width:0%"></div>
+                        <div class="seg seg-conversation" id="segConversation" style="width:0%"></div>
+                    </div>
+                    <div id="contextMeterLabel" class="context-meter-label"></div>
                 </div>
             </div>
             <div id="sidebarSearch">

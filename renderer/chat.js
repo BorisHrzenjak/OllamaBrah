@@ -548,8 +548,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (chunk.type === 'context_compressed') {
                 const note = document.createElement('div');
                 note.className = 'agent-context-compressed';
-                const kb = n => Math.round(n / 1000) + 'k';
-                note.textContent = `↯ Context compressed at step ${chunk.step} — ${kb(chunk.tokensBefore)} → ${kb(chunk.tokensAfter)} tokens`;
+                const kb = n => n >= 1000 ? Math.round(n / 1000) + 'k' : n;
+                const saved = chunk.tokensBefore - chunk.tokensAfter;
+                const savedPct = Math.round((saved / chunk.tokensBefore) * 100);
+                note.innerHTML = `
+                    <span class="compress-icon">⚡</span>
+                    <span>Context compressed at step ${chunk.step} — ${kb(chunk.tokensBefore)} → ${kb(chunk.tokensAfter)} tokens (${savedPct}% freed)</span>
+                `;
+                note.title = `${saved} tokens were summarized to free context space. Pinned messages are preserved.`;
                 botTextElement.appendChild(note);
             }
 
@@ -825,6 +831,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const WARNING_THRESHOLD = 0.75; // 75% - yellow
     const CRITICAL_THRESHOLD = 0.90; // 90% - red
 
+    // Context breakdown state (populated by proxy _contextBreakdown events)
+    let lastContextBreakdown = null;
+    // Last real prompt token count from Ollama (prompt_eval_count)
+    let lastRealPromptTokens = null;
+
     // Smart scrolling state
     let isUserScrolledUp = false;
     let scrollThreshold = 100; // pixels from bottom to consider "at bottom"
@@ -953,7 +964,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             'globe': '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
             'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
             'chevron-up': '<polyline points="18 15 12 9 6 15"/>',
-            'external-link': '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
+            'external-link': '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+            'pin': '<line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>'
         };
 
         if (icons[iconName]) {
@@ -1105,50 +1117,101 @@ document.addEventListener('DOMContentLoaded', async () => {
         return `${count} tokens`;
     }
 
-    async function updateContextIndicator(messages, systemPrompt = '', modelData = null) {
+    async function updateContextIndicator(messages, systemPrompt = '', modelData = null, realPromptTokens = null) {
         const messageTokens = getConversationTokenCount(messages);
         const systemPromptTokens = estimateTokens(systemPrompt);
-        const totalTokens = messageTokens + systemPromptTokens;
+        const totalEstimated = messageTokens + systemPromptTokens;
 
         // Get effective context limit
         const effectiveLimit = getEffectiveContextLimit(currentModelName, modelData);
         const isCloud = isCloudModel(currentModelName);
         const hasOverride = modelData && modelData.contextLimitOverride && modelData.contextLimitOverride > 0;
 
-        // Update text
-        contextIndicatorText.textContent = formatTokenCount(totalTokens);
+        // Use real token count if available, otherwise estimated
+        if (realPromptTokens != null) lastRealPromptTokens = realPromptTokens;
+        const displayTokens = lastRealPromptTokens || totalEstimated;
+        const isActual = !!lastRealPromptTokens;
+
+        // Update header text
+        let headerText = formatTokenCount(displayTokens);
+        if (isActual) headerText += ' ✓';
+        contextIndicatorText.textContent = headerText;
 
         // Calculate percentage
-        const usagePercent = ((totalTokens / effectiveLimit) * 100).toFixed(1);
+        const usagePercent = ((displayTokens / effectiveLimit) * 100).toFixed(1);
+
+        // --- Segmented bar ---
+        const segSystem = document.getElementById('segSystem');
+        const segSearch = document.getElementById('segSearch');
+        const segConversation = document.getElementById('segConversation');
+        const meterLabel = document.getElementById('contextMeterLabel');
+
+        let sysPct = 0, searchPct = 0, convPct = 0;
+        let sysTokens = systemPromptTokens, searchTokens = 0, convTokens = messageTokens;
+
+        if (lastContextBreakdown) {
+            // Use proxy-reported breakdown (includes injected context)
+            sysTokens = lastContextBreakdown.systemPromptTokens || 0;
+            searchTokens = lastContextBreakdown.searchContextTokens || 0;
+            convTokens = lastContextBreakdown.conversationTokens || 0;
+        }
+
+        const totalForBar = isActual ? lastRealPromptTokens : (sysTokens + searchTokens + convTokens);
+        if (effectiveLimit > 0) {
+            sysPct = Math.min((sysTokens / effectiveLimit) * 100, 100);
+            searchPct = Math.min((searchTokens / effectiveLimit) * 100, 100);
+            convPct = Math.min((convTokens / effectiveLimit) * 100, 100);
+            // If we have actual tokens, scale segments proportionally
+            if (isActual && (sysTokens + searchTokens + convTokens) > 0) {
+                const scale = lastRealPromptTokens / (sysTokens + searchTokens + convTokens);
+                sysPct = Math.min((sysTokens * scale / effectiveLimit) * 100, 100);
+                searchPct = Math.min((searchTokens * scale / effectiveLimit) * 100, 100);
+                convPct = Math.min((convTokens * scale / effectiveLimit) * 100, 100);
+            }
+        }
+
+        if (segSystem) segSystem.style.width = `${sysPct}%`;
+        if (segSearch) segSearch.style.width = `${searchPct}%`;
+        if (segConversation) segConversation.style.width = `${convPct}%`;
+
+        // Hover label
+        if (meterLabel) {
+            const parts = [];
+            if (sysTokens > 0) parts.push(`System: ${formatTokenCount(sysTokens)}`);
+            if (searchTokens > 0) parts.push(`Search: ${formatTokenCount(searchTokens)}`);
+            if (convTokens > 0) parts.push(`Chat: ${formatTokenCount(convTokens)}`);
+            meterLabel.textContent = parts.join(' · ');
+        }
 
         // Build enhanced tooltip
-        let tooltipText = `📊 Context Usage: ${formatTokenCount(totalTokens)} / ${formatContextLimit(effectiveLimit)} (${usagePercent}%)\n\n`;
-        tooltipText += `Messages: ${formatTokenCount(messageTokens)}\n`;
-        if (systemPromptTokens > 0) {
-            tooltipText += `System prompt: ${formatTokenCount(systemPromptTokens)}\n`;
+        let tooltipText = `📊 Context: ${formatTokenCount(displayTokens)} / ${formatContextLimit(effectiveLimit)} (${usagePercent}%)\n`;
+        if (isActual) {
+            tooltipText += `✓ Actual token count from model\n`;
+            tooltipText += `  (estimated was ${formatTokenCount(totalEstimated)})\n`;
+            const injected = lastRealPromptTokens - totalEstimated;
+            if (injected > 50) {
+                tooltipText += `  ~${formatTokenCount(injected)} from search/memory injection\n`;
+            }
         }
         tooltipText += `\n`;
-
-        if (isCloud) {
-            tooltipText += `Context window: ${formatContextLimit(effectiveLimit)} (cloud model)\n`;
-            tooltipText += `Context window varies by model. Cloud models typically support\n`;
-            tooltipText += `128K-1M tokens. Check ollama.com/library/${currentModelName} for specifics.\n\n`;
-        } else {
-            tooltipText += `Context window: ${formatContextLimit(effectiveLimit)} (local model)\n`;
-            tooltipText += `Default context window for local models is 4K tokens.\n`;
-            tooltipText += `You can increase this when running Ollama with --ctx-size flag.\n\n`;
-        }
+        if (sysTokens > 0) tooltipText += `🔵 System prompt: ${formatTokenCount(sysTokens)}\n`;
+        if (searchTokens > 0) tooltipText += `🟢 Search/web context: ${formatTokenCount(searchTokens)}\n`;
+        tooltipText += `⚪ Conversation: ${formatTokenCount(convTokens)}\n`;
+        tooltipText += `\nWindow: ${formatContextLimit(effectiveLimit)}`;
+        if (isCloud) tooltipText += ` (cloud)`;
+        else tooltipText += ` (local)`;
+        tooltipText += `\n`;
 
         if (hasOverride) {
-            tooltipText += `💡 Custom limit set. Visit Settings to change.\n`;
+            tooltipText += `💡 Custom limit set in Settings.\n`;
         } else {
-            tooltipText += `💡 Tip: Click Settings to set a custom context limit.`;
+            tooltipText += `💡 Set a custom context limit in Settings.`;
         }
 
         contextIndicator.title = tooltipText;
 
         // Update color based on usage
-        const usageRatio = totalTokens / effectiveLimit;
+        const usageRatio = displayTokens / effectiveLimit;
         contextIndicator.classList.remove('warning', 'critical');
 
         if (usageRatio >= CRITICAL_THRESHOLD) {
@@ -1804,6 +1867,51 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // --- Pin Message Helpers ---
+    function createPinButton(messageDiv, messageIndex) {
+        const pinButton = document.createElement('button');
+        pinButton.classList.add('action-button', 'pin-button');
+        pinButton.title = 'Pin message (keeps it in context)';
+        pinButton.appendChild(createLucideIcon('pin', 16));
+
+        // Check if message is already pinned
+        (async () => {
+            const md = await loadModelChatState(currentModelName);
+            const convId = md.activeConversationId;
+            const msg = md.conversations[convId]?.messages[messageIndex];
+            if (msg?.pinned) {
+                pinButton.classList.add('active');
+                pinButton.title = 'Unpin message';
+                messageDiv.classList.add('pinned');
+            }
+        })();
+
+        pinButton.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const md = await loadModelChatState(currentModelName);
+            const convId = md.activeConversationId;
+            if (!convId || !md.conversations[convId]) return;
+            const msg = md.conversations[convId].messages[messageIndex];
+            if (!msg) return;
+
+            msg.pinned = !msg.pinned;
+            pinButton.classList.toggle('active', msg.pinned);
+            messageDiv.classList.toggle('pinned', msg.pinned);
+            pinButton.title = msg.pinned ? 'Unpin message' : 'Pin message (keeps it in context)';
+            await saveModelChatState(currentModelName, md);
+        });
+
+        return pinButton;
+    }
+
+    function addPinBadge(messageDiv) {
+        const badge = document.createElement('span');
+        badge.classList.add('pin-badge');
+        badge.appendChild(createLucideIcon('pin', 12));
+        messageDiv.appendChild(badge);
+        messageDiv.style.position = 'relative';
+    }
+
     function addMessageToChatUI(sender, initialText, messageClass, modelDataForFilename, attachments = null, messageIndex = -1) {
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', messageClass);
@@ -1875,6 +1983,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         messageDiv.appendChild(textContentDiv);
 
+        // Store message index on DOM for pin/unpin
+        if (messageIndex >= 0) {
+            messageDiv.dataset.messageIndex = messageIndex;
+        }
+
         if (messageClass === 'user-message' && messageIndex >= 0) {
             const actionsDiv = document.createElement('div');
             actionsDiv.classList.add('message-actions');
@@ -1888,6 +2001,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 enterEditMode(messageDiv, textContentDiv, messageIndex);
             });
             actionsDiv.appendChild(editButton);
+
+            // Pin Button (user message)
+            const pinButton = createPinButton(messageDiv, messageIndex);
+            actionsDiv.appendChild(pinButton);
+
             messageDiv.appendChild(actionsDiv);
         }
 
@@ -1965,6 +2083,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             actionsDiv.appendChild(ttsButton);
 
+            // Pin Button (bot message)
+            if (messageIndex >= 0) {
+                const pinButton = createPinButton(messageDiv, messageIndex);
+                actionsDiv.appendChild(pinButton);
+            }
+
             // Store reference to stop button for later use
             messageDiv.stopButton = stopButton;
 
@@ -2023,10 +2147,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (metadata.promptTokens) {
+            let promptTitle = `Prompt tokens: ${metadata.promptTokens} actual tokens sent to model`;
+            if (metadata.estimatedPromptTokens) {
+                const diff = metadata.promptTokens - metadata.estimatedPromptTokens;
+                promptTitle += `\nEstimated (local): ${metadata.estimatedPromptTokens}`;
+                if (diff > 50) {
+                    promptTitle += `\n+${diff} tokens from search/memory injection`;
+                }
+            }
             items.push({
                 icon: 'message-square',
                 text: `${metadata.promptTokens}`,
-                title: `Prompt tokens: ${metadata.promptTokens} tokens in the input/prompt`
+                title: promptTitle
             });
         }
 
@@ -2078,6 +2210,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function displayConversationMessages(modelData, conversationId) {
         chatContainer.innerHTML = ''; // Clear current messages
+        // Reset context tracking for new conversation view
+        lastContextBreakdown = null;
+        lastRealPromptTokens = null;
         let messages = [];
 
         if (modelData.conversations[conversationId] && modelData.conversations[conversationId].messages) {
@@ -2121,6 +2256,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Add metadata to existing bot messages that have it stored
                 if (msg.role === 'assistant' && msg.metadata && textContentDiv && textContentDiv.messageDiv) {
                     addMetadataToMessage(textContentDiv.messageDiv, msg.metadata);
+                }
+
+                // Restore pinned state
+                if (msg.pinned && textContentDiv && textContentDiv.messageDiv) {
+                    textContentDiv.messageDiv.classList.add('pinned');
                 }
             });
         } else {
@@ -4101,6 +4241,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 continue;
                             }
 
+                            // Handle context breakdown (emitted before model response)
+                            if (jsonResponse._contextBreakdown) {
+                                lastContextBreakdown = jsonResponse._contextBreakdown;
+                                console.log('[Context] Breakdown from proxy:', lastContextBreakdown);
+                                continue;
+                            }
+
                             // Handle thinking content (Deepseek R1 style)
                             if (jsonResponse.message && typeof jsonResponse.message.thinking === 'string') {
                                 accumulatedThinking += jsonResponse.message.thinking;
@@ -4179,9 +4326,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                                         ? Math.ceil(accumulatedThinking.length / 4)
                                         : null;
 
+                                    // Capture estimated prompt tokens for comparison
+                                    const estimatedPromptTokens = getConversationTokenCount(currentConversation.messages) + estimateTokens(modelData.systemPrompt);
+
                                     messageMetadata = {
                                         tokens: jsonResponse.eval_count,
                                         promptTokens: jsonResponse.prompt_eval_count,
+                                        estimatedPromptTokens: estimatedPromptTokens,
                                         thinkingTokens: thinkingTokens,
                                         speed: speed,
                                         duration: duration
@@ -4254,8 +4405,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 triggerMemoryExtraction(lastUserMsg.content, accumulatedContent);
             }
 
-            // Update context indicator after receiving response
-            await updateContextIndicator(currentConversation.messages, modelData.systemPrompt, modelData);
+            // Update context indicator after receiving response (pass real token count if available)
+            await updateContextIndicator(currentConversation.messages, modelData.systemPrompt, modelData, messageMetadata?.promptTokens || null);
 
         } catch (error) {
             if (error.name === 'AbortError') {
