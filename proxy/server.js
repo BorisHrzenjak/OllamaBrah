@@ -136,6 +136,40 @@ function formatExaResults(data) {
     return sections.join('\n\n---\n\n');
 }
 
+// Build search metadata object for the frontend search step UI
+function buildSearchMeta({ searchType, query, searchData, jinaResults, contextParts, heuristicTriggered }) {
+    const meta = {
+        searchType, // 'web' | 'deep_research'
+        query: query.slice(0, 300),
+        results: [],
+        urlsFetched: [],
+        contextTokens: 0,
+        heuristicTriggered: !!heuristicTriggered
+    };
+
+    if (searchData?.results?.length > 0) {
+        meta.results = searchData.results.map(r => ({
+            title: r.title || r.url || '',
+            url: r.url || '',
+            snippet: (r.content || r.text || '').slice(0, 200)
+        }));
+    }
+
+    if (jinaResults) {
+        jinaResults.forEach(r => {
+            if (r.status === 'fulfilled') {
+                meta.urlsFetched.push({ url: r.value.url, chars: r.value.content.length });
+            }
+        });
+    }
+
+    // Estimate token cost of injected context (~3.5 chars per token)
+    const contextText = contextParts.join('\n\n');
+    meta.contextTokens = Math.ceil(contextText.length / 3.5);
+
+    return meta;
+}
+
 const app = express();
 const PORT = 3456;
 const OLLAMA_API_BASE_URL = 'http://localhost:11434';
@@ -753,11 +787,14 @@ app.post('/api/llamacpp/chat', async (req, res) => {
     const deepResearchRequested = req.body?._deepResearch === true;
     let finalMessages = cleanedMessages;
     let llamaCppSourcesBlock = null;
+    let llamaCppSearchMeta = null;
     const lastUserMsg = cleanedMessages.filter(m => m.role === 'user').pop();
     if (lastUserMsg) {
         const messageContent = lastUserMsg.content || '';
         const today = new Date().toISOString().split('T')[0];
         const urls = extractUrls(messageContent);
+        let searchWasAttempted = false;
+        let heuristicTriggered = false;
 
         // Track 1: URL fetching via Jina Reader (all URLs in parallel)
         const urlsPromise = Promise.allSettled(
@@ -769,6 +806,7 @@ app.post('/api/llamacpp/chat', async (req, res) => {
         // Track 2: Web/deep research search (starts in parallel with Track 1)
         let searchPromise;
         if (deepResearchRequested) {
+            searchWasAttempted = true;
             searchPromise = fetchExaResearch(messageContent.slice(0, 500))
                 .catch(async (e) => {
                     console.warn('[llama.cpp/Research] Exa failed, falling back to Tavily:', e.message);
@@ -776,6 +814,8 @@ app.post('/api/llamacpp/chat', async (req, res) => {
                     return data ? { _tavilyFallback: true, results: data.results } : null;
                 });
         } else if (webSearchRequested || heuristicNeedsSearch(messageContent)) {
+            searchWasAttempted = true;
+            heuristicTriggered = !webSearchRequested && heuristicNeedsSearch(messageContent);
             const query = messageContent.slice(0, 300);
             console.log(`[llama.cpp/Search] Querying Tavily for: "${query.slice(0, 80)}"`);
             searchPromise = fetchTavilyResults(query).catch(e => {
@@ -835,6 +875,18 @@ app.post('/api/llamacpp/chat', async (req, res) => {
                 finalMessages.unshift({ role: 'system', content: contextBlock });
             }
         }
+
+        // Build search metadata for frontend display
+        if (searchWasAttempted || urls.length > 0) {
+            llamaCppSearchMeta = buildSearchMeta({
+                searchType: deepResearchRequested ? 'deep_research' : 'web',
+                query: messageContent,
+                searchData,
+                jinaResults,
+                contextParts,
+                heuristicTriggered
+            });
+        }
     }
 
     const openaiBody = {
@@ -867,6 +919,10 @@ app.post('/api/llamacpp/chat', async (req, res) => {
         }
 
         res.setHeader('Content-Type', 'application/x-ndjson');
+        // Emit search metadata event before model response
+        if (llamaCppSearchMeta) {
+            res.write(JSON.stringify({ _searchEvent: llamaCppSearchMeta }) + '\n');
+        }
         const modelBaseName = path.basename(llamaCurrentModel || 'unknown');
         const reader = upstream.body.getReader();
         const decoder = new TextDecoder();
@@ -2080,11 +2136,18 @@ app.all('/proxy/*', async (req, res) => {
 
         // Set by deep research path to append a sources block after the model response
         let exaSourcesBlock = null;
+        // Search metadata for frontend search step UI
+        let ollamaSearchMeta = null;
 
         const proxyReq = http.request(options, (proxyRes) => {
             console.log(`Proxy to Ollama: Received response status: ${proxyRes.statusCode}`);
             console.log('Proxy to Ollama: Received response headers:', JSON.stringify(proxyRes.headers, null, 2));
             res.writeHead(proxyRes.statusCode, proxyRes.headers);
+
+            // Emit search metadata event before model response starts
+            if (ollamaSearchMeta && proxyRes.statusCode === 200) {
+                res.write(JSON.stringify({ _searchEvent: ollamaSearchMeta }) + '\n');
+            }
 
             if (!exaSourcesBlock) {
                 proxyRes.pipe(res, { end: true });
@@ -2177,6 +2240,8 @@ app.all('/proxy/*', async (req, res) => {
                         const deepResearchRequested = ollamaPayload._deepResearch === true;
                         const today = new Date().toISOString().split('T')[0];
                         const urls = extractUrls(messageContent);
+                        let searchWasAttempted = false;
+                        let heuristicTriggered = false;
                         console.log(`[Search] URLs found in message: ${JSON.stringify(urls)}`);
 
                         // Track 1: URL fetching via Jina Reader (all URLs in parallel)
@@ -2190,6 +2255,7 @@ app.all('/proxy/*', async (req, res) => {
                         // Track 2: Web/deep research search (starts in parallel with Track 1)
                         let searchPromise;
                         if (deepResearchRequested) {
+                            searchWasAttempted = true;
                             const query = messageContent.slice(0, 500);
                             console.log(`[Research] Starting deep research via Exa for: "${query.slice(0, 80)}"`);
                             searchPromise = fetchExaResearch(query)
@@ -2202,6 +2268,8 @@ app.all('/proxy/*', async (req, res) => {
                                     return data ? { _tavilyFallback: true, results: data.results } : null;
                                 });
                         } else if (webSearchRequested || heuristicNeedsSearch(messageContent)) {
+                            searchWasAttempted = true;
+                            heuristicTriggered = !webSearchRequested && heuristicNeedsSearch(messageContent);
                             const query = messageContent.slice(0, 300);
                             console.log(`[Search] Querying Tavily for: "${query.slice(0, 80)}"`);
                             searchPromise = fetchTavilyResults(query).catch(searchErr => {
@@ -2270,6 +2338,18 @@ app.all('/proxy/*', async (req, res) => {
                             } else {
                                 ollamaPayload.messages.unshift({ role: 'system', content: contextBlock });
                             }
+                        }
+
+                        // Build search metadata for frontend display
+                        if (searchWasAttempted || urls.length > 0) {
+                            ollamaSearchMeta = buildSearchMeta({
+                                searchType: deepResearchRequested ? 'deep_research' : 'web',
+                                query: messageContent,
+                                searchData,
+                                jinaResults,
+                                contextParts,
+                                heuristicTriggered
+                            });
                         }
 
                         // Inject memory context into system message

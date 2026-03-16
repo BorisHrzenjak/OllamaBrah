@@ -948,7 +948,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             'mic-off': '<line x1="2" y1="2" x2="22" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" y1="19" x2="12" y2="22"/>',
             'pencil': '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
             'refresh-cw': '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
-            'search-check': '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="m9 11 2 2 4-4"/>'
+            'search-check': '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="m9 11 2 2 4-4"/>',
+            'search': '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+            'globe': '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+            'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
+            'chevron-up': '<polyline points="18 15 12 9 6 15"/>',
+            'external-link': '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
         };
 
         if (icons[iconName]) {
@@ -959,6 +964,113 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         return svg;
+    }
+
+    // --- Search Step UI ---
+
+    function createSearchStepElement(searchType) {
+        const el = document.createElement('div');
+        el.classList.add('search-step');
+        el.innerHTML = `
+            <div class="search-step-header">
+                <span class="search-step-spinner"></span>
+                <span class="search-step-label">${searchType === 'deep_research' ? 'Researching...' : 'Searching the web...'}</span>
+            </div>
+        `;
+        return el;
+    }
+
+    function updateSearchStepWithResults(el, meta) {
+        const hasResults = meta.results && meta.results.length > 0;
+        const hasUrls = meta.urlsFetched && meta.urlsFetched.length > 0;
+        const totalSources = (meta.results?.length || 0) + (meta.urlsFetched?.length || 0);
+        const label = meta.searchType === 'deep_research' ? 'Deep research' : 'Web search';
+        const icon = meta.searchType === 'deep_research' ? 'search' : 'globe';
+
+        let headerText;
+        if (hasResults || hasUrls) {
+            headerText = `${label}: ${totalSources} source${totalSources !== 1 ? 's' : ''} found`;
+            if (meta.contextTokens > 0) {
+                headerText += ` · ~${meta.contextTokens} tokens`;
+            }
+        } else {
+            headerText = `${label}: no results found`;
+        }
+
+        // Build results list HTML
+        let resultsHtml = '';
+        const safeDomain = (url) => {
+            try { return new URL(url).hostname.replace('www.', ''); }
+            catch { return url.slice(0, 30); }
+        };
+
+        if (hasResults) {
+            resultsHtml += meta.results.map(r => {
+                const domain = r.url ? safeDomain(r.url) : '';
+                const safeUrl = (r.url || '').replace(/"/g, '&quot;');
+                const safeTitle = (r.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                return `<a class="search-result-item" href="${safeUrl}" target="_blank" rel="noopener">
+                    <span class="search-result-domain">${domain}</span>
+                    <span class="search-result-title">${safeTitle}</span>
+                </a>`;
+            }).join('');
+        }
+        if (hasUrls) {
+            resultsHtml += meta.urlsFetched.map(u => {
+                const domain = u.url ? safeDomain(u.url) : '';
+                const safeUrl = (u.url || '').replace(/"/g, '&quot;');
+                return `<a class="search-result-item" href="${safeUrl}" target="_blank" rel="noopener">
+                    <span class="search-result-domain">${domain}</span>
+                    <span class="search-result-title">${safeUrl}</span>
+                </a>`;
+            }).join('');
+        }
+
+        const hasContent = resultsHtml.length > 0;
+
+        el.innerHTML = `
+            <div class="search-step-header ${hasContent ? 'search-step-toggle' : ''}" ${hasContent ? 'role="button" tabindex="0"' : ''}>
+                <span class="search-step-icon"></span>
+                <span class="search-step-label">${headerText}</span>
+                ${hasContent ? '<span class="search-step-chevron"></span>' : ''}
+            </div>
+            ${hasContent ? `<div class="search-step-results" style="display:none">${resultsHtml}</div>` : ''}
+        `;
+
+        // Add icon SVGs
+        el.querySelector('.search-step-icon').appendChild(createLucideIcon(icon, 14));
+        if (hasContent) {
+            el.querySelector('.search-step-chevron').appendChild(createLucideIcon('chevron-down', 14));
+        }
+
+        // Toggle expand/collapse
+        const header = el.querySelector('.search-step-toggle');
+        if (header) {
+            header.addEventListener('click', () => {
+                const results = el.querySelector('.search-step-results');
+                const chevron = el.querySelector('.search-step-chevron');
+                if (results.style.display === 'none') {
+                    results.style.display = 'flex';
+                    chevron.innerHTML = '';
+                    chevron.appendChild(createLucideIcon('chevron-up', 14));
+                } else {
+                    results.style.display = 'none';
+                    chevron.innerHTML = '';
+                    chevron.appendChild(createLucideIcon('chevron-down', 14));
+                }
+            });
+        }
+
+        el.classList.add('search-step-done');
+
+        // If heuristic triggered (auto-search), add a subtle indicator
+        if (meta.heuristicTriggered) {
+            const tag = document.createElement('span');
+            tag.classList.add('search-step-auto-tag');
+            tag.textContent = 'auto';
+            tag.title = 'Search was triggered automatically based on your message';
+            el.querySelector('.search-step-header').appendChild(tag);
+        }
     }
 
     // Token estimation functions
@@ -3768,6 +3880,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         const botMessageDiv = botTextElement.parentElement;
         const stopButton = botMessageDiv.stopButton;
 
+        // Show search step indicator if web search or deep research is enabled
+        let searchStepEl = null;
+        if (webSearchEnabled || deepResearchEnabled) {
+            searchStepEl = createSearchStepElement(deepResearchEnabled ? 'deep_research' : 'web');
+            // Insert before the text content div
+            const textContentDiv = botMessageDiv.querySelector('.message-text-content');
+            if (textContentDiv) {
+                botMessageDiv.insertBefore(searchStepEl, textContentDiv);
+            } else {
+                botMessageDiv.appendChild(searchStepEl);
+            }
+        }
+
         // Create AbortController for this request
         currentAbortController = new AbortController();
 
@@ -3968,6 +4093,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                             const jsonResponse = JSON.parse(jsonStr);
                             console.log('Parsed JSON response:', jsonResponse); // Log parsed object
 
+                            // Handle search event (emitted before model response)
+                            if (jsonResponse._searchEvent) {
+                                if (searchStepEl) {
+                                    updateSearchStepWithResults(searchStepEl, jsonResponse._searchEvent);
+                                }
+                                continue;
+                            }
+
                             // Handle thinking content (Deepseek R1 style)
                             if (jsonResponse.message && typeof jsonResponse.message.thinking === 'string') {
                                 accumulatedThinking += jsonResponse.message.thinking;
@@ -3986,6 +4119,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 contentHasStarted = true;
                                 if (loadingIndicator) {
                                     loadingIndicator.style.display = 'none';
+                                }
+                                // If search step is still showing spinner (no _searchEvent arrived), remove it
+                                if (searchStepEl && !searchStepEl.classList.contains('search-step-done')) {
+                                    searchStepEl.remove();
+                                    searchStepEl = null;
                                 }
                             }
 
@@ -4154,6 +4292,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } finally {
             console.log('triggerLLMCompletion finally block completed');
+
+            // Clean up search step if it never received results
+            if (searchStepEl && !searchStepEl.classList.contains('search-step-done')) {
+                searchStepEl.remove();
+            }
 
             // Reset streaming flag
             isStreaming = false;
