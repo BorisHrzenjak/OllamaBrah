@@ -836,6 +836,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Last real prompt token count from Ollama (prompt_eval_count)
     let lastRealPromptTokens = null;
 
+    // Detected context limits cache (loaded from DB, refreshed via API)
+    let detectedContextLimitsCache = {};
+
     // Smart scrolling state
     let isUserScrolledUp = false;
     let scrollThreshold = 100; // pixels from bottom to consider "at bottom"
@@ -1247,12 +1250,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Get effective context limit for current model
     function getEffectiveContextLimit(modelName, modelData) {
-        // Check for user override
+        // Check for user override first
         if (modelData && modelData.contextLimitOverride && modelData.contextLimitOverride > 0) {
             return modelData.contextLimitOverride;
         }
 
-        // Auto-detect based on model type
+        // Check detected cache
+        const cacheKey = `${currentModelBackend || 'ollama'}:${modelName}`;
+        if (detectedContextLimitsCache[cacheKey] !== undefined) {
+            return detectedContextLimitsCache[cacheKey];
+        }
+
+        // Fallback based on model type
         if (isCloudModel(modelName)) {
             return CLOUD_CONTEXT_LIMIT; // 131072 (128K)
         }
@@ -3319,18 +3328,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (document.getElementById('mgmtModelList')) populateMgmtModelList();
 
         // Load current settings
-        loadModelChatState(currentModelName).then(modelData => {
+        loadModelChatState(currentModelName).then(async modelData => {
             // Load system prompt
             const prompt = modelData.systemPrompt || '';
             systemPromptInput.value = prompt;
             updateSystemPromptTokenCount();
 
-            // Load context limit
+            // Load context limit - show override if set, otherwise show detected value
             const contextLimit = modelData.contextLimitOverride;
             if (contextLimit && contextLimit > 0) {
                 contextLimitInput.value = contextLimit;
             } else {
-                contextLimitInput.value = '';
+                // Try to get detected value
+                const detected = await getOrFetchContextLimit(currentModelName, currentModelBackend);
+                if (detected) {
+                    contextLimitInput.value = detected;
+                } else {
+                    contextLimitInput.value = '';
+                }
             }
             updateContextLimitInfo();
 
@@ -3379,9 +3394,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function updateContextLimitInfo() {
         const isCloud = isCloudModel(currentModelName);
-        const autoLimit = isCloud ? formatContextLimit(CLOUD_CONTEXT_LIMIT) : formatContextLimit(DEFAULT_CONTEXT_LIMIT);
-        const modelType = isCloud ? 'cloud' : 'local';
-        contextLimitInfo.textContent = `Auto-detecting: ${autoLimit} (${modelType} model). Set to 0 or leave empty for auto.`;
+        const cacheKey = `${currentModelBackend || 'ollama'}:${currentModelName}`;
+        const detected = detectedContextLimitsCache[cacheKey];
+        
+        if (detected) {
+            contextLimitInfo.textContent = `Auto-detected: ${formatContextLimit(detected)} tokens. Override above or set to 0 to use detected.`;
+        } else {
+            const autoLimit = isCloud ? formatContextLimit(CLOUD_CONTEXT_LIMIT) : formatContextLimit(DEFAULT_CONTEXT_LIMIT);
+            const modelType = isCloud ? 'cloud' : 'local';
+            contextLimitInfo.textContent = `Auto-detecting: ${autoLimit} (${modelType} model). Set to 0 or leave empty for auto.`;
+        }
     }
 
     async function saveSystemPrompt() {
@@ -4688,6 +4710,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         clearSearchButton.style.display = 'none';
         updateModelDisplay(currentModelName);
 
+        // Fetch and cache context limit for the new model
+        await getOrFetchContextLimit(currentModelName, currentModelBackend);
+
         // Clear any selected images when switching models
         clearSelectedFiles();
 
@@ -4756,6 +4781,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             conversationSearchInput.value = '';
             clearSearchButton.style.display = 'none';
             updateModelDisplay(currentModelName);
+            
+            // Fetch and cache context limit for llama.cpp model
+            await getOrFetchContextLimit(currentModelName, 'llamacpp');
+            
         clearSelectedFiles();
             toggleFileUploadUI(false); // vision not supported via llama.cpp yet
             checkServerStatus();
@@ -4818,6 +4847,38 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         return availableModels;
+    }
+
+    async function loadDetectedContextLimits() {
+        try {
+            detectedContextLimitsCache = await window.electronAPI.db.getAllDetectedContextLimits() || {};
+            console.log('[OllamaBro] Loaded detected context limits cache:', detectedContextLimitsCache);
+        } catch (e) {
+            console.warn('[OllamaBro] Could not load detected context limits:', e);
+            detectedContextLimitsCache = {};
+        }
+    }
+
+    async function getOrFetchContextLimit(model, backend) {
+        const cacheKey = `${backend}:${model}`;
+        if (detectedContextLimitsCache[cacheKey] !== undefined) {
+            return detectedContextLimitsCache[cacheKey];
+        }
+
+        try {
+            const resp = await fetch(`${PROXY_BASE}/api/model/detect-context-limit?model=${encodeURIComponent(model)}&backend=${encodeURIComponent(backend)}`);
+            if (resp.ok) {
+                const data = await resp.json();
+                const limit = data.contextLimit;
+                detectedContextLimitsCache[cacheKey] = limit;
+                await window.electronAPI.db.saveDetectedContextLimit(cacheKey, limit);
+                console.log(`[OllamaBro] Detected context limit for ${model} (${backend}): ${limit}`);
+                return limit;
+            }
+        } catch (e) {
+            console.warn(`[OllamaBro] Could not detect context limit for ${model}:`, e);
+        }
+        return null;
     }
 
     function populateModelDropdown(models, currentModel) {
@@ -4932,6 +4993,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentModelName = urlModel;
         console.log('[OllamaBro] init - Initializing chat for model from URL:', currentModelName);
         updateModelDisplay(currentModelName);
+
+        // Load detected context limits from database
+        await loadDetectedContextLimits();
+        
+        // Fetch context limit for current model if not cached
+        await getOrFetchContextLimit(currentModelName, currentModelBackend);
 
         // Show image upload UI (users can upload images to any model, API will error if unsupported)
         toggleFileUploadUI(true);
@@ -6732,11 +6799,32 @@ document.addEventListener('DOMContentLoaded', async () => {
             installedKeys.add(k);
         }
 
+        // Collect legacy tab-scoped keys for cleanup (populated in loop below)
+        const legacyStorageKeysSet = new Set();
+
         for (const [key, data] of Object.entries(allStorage)) {
             if (!key.startsWith(storageKeyPrefix)) continue;
             if (!data || typeof data !== 'object' || !data.conversations) continue;
 
-            const displayName = knownKeyToName[key] || key.slice(storageKeyPrefix.length);
+            // Detect legacy tab-scoped keys: ollamaBroChat_${tabId}__${model}
+            // Tab IDs from generateId() are base-36 encoded timestamps, e.g. "mmreb2sd5wnnmt"
+            const rawSuffix = key.slice(storageKeyPrefix.length);
+            const legacyTabMatch = rawSuffix.match(/^[a-z0-9]{10,18}__(.+)$/);
+            const isLegacyTabKey = !knownKeyToName[key] && !!legacyTabMatch;
+
+            // For legacy keys: try to match the stripped suffix to a known model key.
+            // If matched, merge stats into the canonical key and skip this entry.
+            if (isLegacyTabKey) {
+                const strippedSuffix = legacyTabMatch[1]; // sanitized model name without tabId__
+                const canonicalKey = storageKeyPrefix + strippedSuffix;
+                // If the canonical key exists in storage, data is already covered — skip entirely.
+                // If not, we still skip: orphaned corrupted data shouldn't pollute the model list.
+                // The cleanup button will remove it.
+                legacyStorageKeysSet.add(key);
+                continue;
+            }
+
+            const displayName = knownKeyToName[key] || rawSuffix;
             const installed = installedKeys.has(key);
             // Use isCloudModel with the real display name now that availableModels is populated
             const cloud = isCloudModel(displayName);
@@ -6746,6 +6834,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     displayName,
                     isCloud: cloud,
                     installed,
+                    isLegacyTabKey,
                     conversations: 0,
                     messages: 0,
                     tokens: 0,
@@ -6805,6 +6894,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
+        // Seed ALL installed models so they appear in the table even with 0 usage
+        for (const m of availableModels) {
+            const k = sanitize(m.name);
+            if (!stats.modelStats[k]) {
+                stats.modelStats[k] = {
+                    displayName: m.name,
+                    isCloud: isCloudModel(m.name),
+                    installed: true,
+                    conversations: 0,
+                    messages: 0,
+                    tokens: 0,
+                    speedSamples: [],
+                };
+            }
+        }
+
         // Most active day
         let mostActiveDay = '—', mostActiveDayCount = 0;
         for (const [day, count] of Object.entries(stats.dayActivity)) {
@@ -6830,6 +6935,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         stats.localModels = availableModels.filter(m => !isCloudModel(m.name)).length;
         stats.cloudModels = availableModels.filter(m => isCloudModel(m.name)).length;
 
+        // Pass legacy keys through for cleanup button
+        stats.legacyStorageKeys = Array.from(legacyStorageKeysSet);
+
         return stats;
     }
 
@@ -6837,39 +6945,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         const content = document.getElementById('dashboardContent');
         if (!content) return;
 
-        const hasData = stats.totalConversations > 0;
+        // Legacy keys are identified during stats computation
+        const legacyStorageKeys = stats.legacyStorageKeys || [];
 
-        if (!hasData) {
-            content.innerHTML = `<div class="dashboard-empty">
-                No chat history yet. Start a conversation to see your stats here.
-            </div>`;
-            content.style.display = '';
-            document.getElementById('dashboardLoading').style.display = 'none';
-            if (typeof lucide !== 'undefined') lucide.createIcons({ el: content });
-            return;
-        }
-
-        // Sort: installed first (by messages), then archived (by messages)
-        const sortedModels = Object.values(stats.modelStats).sort((a, b) => {
-            if (a.installed !== b.installed) return a.installed ? -1 : 1;
-            return b.messages - a.messages;
-        });
+        // Split into installed (all current models) and removed (had data but no longer installed)
+        const allModels = Object.values(stats.modelStats);
+        const installedModels = allModels
+            .filter(m => m.installed)
+            .sort((a, b) => b.messages - a.messages);
+        const removedModels = allModels
+            .filter(m => !m.installed)
+            .sort((a, b) => b.messages - a.messages);
 
         const cloudSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="#3b82f6" viewBox="0 0 16 16" title="Cloud model"><path d="M4.406 3.342A5.53 5.53 0 0 1 8 2c2.69 0 4.923 2 5.166 4.579C14.758 6.804 16 8.137 16 9.773 16 11.569 14.502 13 12.687 13H3.781C1.708 13 0 11.366 0 9.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z"/></svg>`;
 
-        const modelRows = sortedModels.map((m, i) => {
+        const makeModelRows = (models, startRank = 1, dimmed = false) => models.map((m, i) => {
             const avgSpd = m.speedSamples.length
                 ? (m.speedSamples.reduce((a, b) => a + b, 0) / m.speedSamples.length).toFixed(1) + ' t/s'
                 : '—';
             const cloudBadge = m.isCloud ? cloudSvg : '';
-            const archivedBadge = !m.installed
-                ? `<span style="font-size:10px;padding:1px 5px;background:rgba(115,115,115,0.15);color:var(--text-muted);border-radius:3px;margin-left:4px;">removed</span>`
-                : '';
-            const rowStyle = !m.installed ? 'opacity:0.55;' : '';
+            const rowStyle = dimmed ? 'opacity:0.55;' : '';
             return `<tr style="${rowStyle}">
-                <td><div class="model-name-cell"><span class="model-rank">${i + 1}</span>${m.displayName}${cloudBadge}${archivedBadge}</div></td>
-                <td>${m.conversations}</td>
-                <td>${dashFmt(m.messages)}</td>
+                <td><div class="model-name-cell"><span class="model-rank">${startRank + i}</span>${m.displayName}${cloudBadge}</div></td>
+                <td>${m.conversations > 0 ? m.conversations : '—'}</td>
+                <td>${m.messages > 0 ? dashFmt(m.messages) : '—'}</td>
                 <td>${m.tokens > 0 ? dashFmt(m.tokens) : '—'}</td>
                 <td>${avgSpd}</td>
             </tr>`;
@@ -6900,7 +6999,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         </div>
                         <div class="stat-value">${dashFmt(stats.totalConversations)}</div>
                         <div class="stat-label">Conversations</div>
-                        <div class="stat-sublabel">${sortedModels.filter(m => m.installed).length} installed · ${sortedModels.filter(m => !m.installed).length} removed</div>
+                        <div class="stat-sublabel">${installedModels.length} installed · ${removedModels.length} removed</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-card-header">
@@ -6980,9 +7079,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 </div>
             </div>
 
-            ${sortedModels.length > 0 ? `
+            ${installedModels.length > 0 ? `
             <div class="dashboard-section">
-                <div class="dashboard-section-title">Model Breakdown</div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-md);">
+                    <div class="dashboard-section-title" style="margin-bottom:0;">Installed Models</div>
+                    ${legacyStorageKeys.length > 0 ? `<button id="cleanLegacyBtn" style="font-size:11px;padding:3px 10px;background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.3);border-radius:4px;cursor:pointer;" title="Remove ${legacyStorageKeys.length} orphaned legacy data entries from a previous version of the app">🧹 Clean up ${legacyStorageKeys.length} legacy entr${legacyStorageKeys.length === 1 ? 'y' : 'ies'}</button>` : ''}
+                </div>
                 <table class="dashboard-table">
                     <thead>
                         <tr>
@@ -6993,7 +7095,27 @@ document.addEventListener('DOMContentLoaded', async () => {
                             <th>Avg Speed</th>
                         </tr>
                     </thead>
-                    <tbody>${modelRows}</tbody>
+                    <tbody>${makeModelRows(installedModels)}</tbody>
+                </table>
+            </div>` : ''}
+
+            ${removedModels.length > 0 ? `
+            <div class="dashboard-section">
+                <div style="margin-bottom:var(--space-md);">
+                    <div class="dashboard-section-title" style="margin-bottom:2px;">Removed Models</div>
+                    <div style="font-size:11px;color:var(--text-muted);">Models you previously used but have since deleted</div>
+                </div>
+                <table class="dashboard-table" style="opacity:0.6;">
+                    <thead>
+                        <tr>
+                            <th>Model</th>
+                            <th>Convs</th>
+                            <th>Messages</th>
+                            <th>Tokens</th>
+                            <th>Avg Speed</th>
+                        </tr>
+                    </thead>
+                    <tbody>${makeModelRows(removedModels, installedModels.length + 1, false)}</tbody>
                 </table>
             </div>` : ''}
         `;
@@ -7001,6 +7123,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('dashboardLoading').style.display = 'none';
         content.style.display = '';
         if (typeof lucide !== 'undefined') lucide.createIcons({ el: content });
+
+        // Wire up the legacy cleanup button if present
+        const cleanBtn = document.getElementById('cleanLegacyBtn');
+        if (cleanBtn) {
+            cleanBtn.addEventListener('click', async () => {
+                if (!confirm(`Remove ${legacyStorageKeys.length} legacy data entr${legacyStorageKeys.length === 1 ? 'y' : 'ies'} from a previous version of the app?\n\nThis will permanently delete orphaned conversation history stored under corrupted model names. Your current conversations are not affected.`)) return;
+                await chrome.storage.local.remove(legacyStorageKeys);
+                cleanBtn.textContent = '✓ Cleaned up';
+                cleanBtn.disabled = true;
+                cleanBtn.style.opacity = '0.5';
+                // Re-render dashboard with fresh stats
+                const freshStats = await computeDashboardStats();
+                renderDashboard(freshStats);
+            });
+        }
     }
 
     async function openDashboardModal() {

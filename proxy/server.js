@@ -317,6 +317,43 @@ app.get('/api/tts/voices', (req, res) => {
     res.json({ voices: KOKORO_VOICES });
 });
 
+app.get('/api/model/detect-context-limit', async (req, res) => {
+    const { model, backend } = req.query;
+    if (!model) return res.status(400).json({ error: 'model required' });
+
+    try {
+        if (backend === 'llamacpp') {
+            return res.json({ contextLimit: llamaCtxSize || 32768, source: 'global' });
+        }
+
+        const body = JSON.stringify({ model });
+        const info = await new Promise((resolve, reject) => {
+            const req = http.request({
+                hostname: 'localhost', port: 11434, path: '/api/show', method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+            }, (r) => {
+                let raw = '';
+                r.on('data', d => raw += d);
+                r.on('end', () => { try { resolve(JSON.parse(raw)); } catch { reject(new Error('Bad response')); } });
+                r.on('error', reject);
+            });
+            req.setTimeout(5000, () => { req.destroy(); reject(new Error('Timeout')); });
+            req.on('error', reject);
+            req.write(body);
+            req.end();
+        });
+
+        const limit = info.model_info?.['llama.context_length'] 
+            || parseInt((info.parameters || '').match(/num_ctx\s+(\d+)/)?.[1] || '0', 10) 
+            || 32768;
+        
+        return res.json({ contextLimit: limit, source: 'detected' });
+    } catch (err) {
+        console.error('[detect-context-limit] Error:', err.message);
+        return res.json({ contextLimit: 32768, source: 'fallback' });
+    }
+});
+
 app.post('/api/tts/load', async (req, res) => {
     // Pre-load the model so first TTS use is fast
     if (kokoroStatus === 'ready') {
@@ -2483,6 +2520,7 @@ serverInstance = app.listen(PORT, () => {
     console.log(`Allowing CORS origin: ${extensionOrigin}`);
     console.log(`Proxying requests from /proxy/* to ${OLLAMA_API_BASE_URL}`);
 
+
     // Pre-warm Whisper in the background so mic is ready instantly on first use
     const scriptPath = unpackedPath('..', 'whisper_server.py');
     if (fs.existsSync(scriptPath) && whisperStatus === 'idle') {
@@ -2508,5 +2546,17 @@ serverInstance = app.listen(PORT, () => {
             if (ready) console.log('[STT] Whisper pre-warm complete — mic ready');
             else console.warn('[STT] Whisper pre-warm timed out');
         });
+    }
+});
+
+serverInstance.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        // Port already in use — likely a previous app instance is still running.
+        // This is not fatal: the existing proxy is already serving requests,
+        // so we just log and continue. The renderer connects to localhost:3456
+        // regardless of which process owns it.
+        console.warn(`[Proxy] Port ${PORT} already in use — reusing existing proxy instance.`);
+    } else {
+        console.error('[Proxy] Server error:', err);
     }
 });

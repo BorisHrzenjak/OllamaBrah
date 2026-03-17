@@ -64,6 +64,12 @@ function initDatabase() {
             PRIMARY KEY (tab_id, model),
             FOREIGN KEY (tab_id) REFERENCES tabs(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS model_metadata (
+            model TEXT PRIMARY KEY,
+            context_limit_detected INTEGER,
+            last_updated INTEGER
+        );
     `);
 
     // Seed one default tab if empty
@@ -271,6 +277,27 @@ function registerIpcHandlers() {
         db.prepare(`INSERT OR REPLACE INTO model_state (tab_id, model, system_prompt, context_limit, params_json)
                     VALUES (?, ?, ?, ?, ?)`)
           .run(tabId, model, s.system_prompt || '', s.context_limit || null, s.params_json || null);
+    });
+
+    // Model metadata (detected context limits)
+    ipcMain.handle('db:getDetectedContextLimit', (_e, model) => {
+        const row = db.prepare('SELECT context_limit_detected FROM model_metadata WHERE model = ?').get(model);
+        return row ? row.context_limit_detected : null;
+    });
+
+    ipcMain.handle('db:saveDetectedContextLimit', (_e, model, limit) => {
+        db.prepare(`INSERT OR REPLACE INTO model_metadata (model, context_limit_detected, last_updated)
+                    VALUES (?, ?, ?)`)
+          .run(model, limit, Date.now());
+    });
+
+    ipcMain.handle('db:getAllDetectedContextLimits', () => {
+        const rows = db.prepare('SELECT model, context_limit_detected FROM model_metadata').all();
+        const result = {};
+        for (const row of rows) {
+            result[row.model] = row.context_limit_detected;
+        }
+        return result;
     });
 
     // Dashboard stats
