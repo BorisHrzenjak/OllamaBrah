@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/Boris/Documents/Code/ollama_brah -maxdepth 2 -name tailwind.config.* -o -name tsconfig.json)"
+    ]
+  }
+}

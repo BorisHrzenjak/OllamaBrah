@@ -3,7 +3,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isElectron = typeof window.electronAPI !== 'undefined';
     let chrome;
     if (isElectron) {
-        window.electronAPI.getAppVersion().then(v => { window._appVersion = v; });
+        window._appVersion = await window.electronAPI.getAppVersion();
         chrome = {
             storage: {
                 local: {
