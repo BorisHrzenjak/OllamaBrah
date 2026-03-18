@@ -5811,55 +5811,57 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // Alt+H — show shortcuts panel
-        if (e.key.toLowerCase() === 'h' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
+        // Ctrl+H — show shortcuts panel (fires even when a modal is open so user can always find help)
+        if (e.key.toLowerCase() === 'h' && e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
             shortcutsModal && shortcutsModal.classList.contains('active') ? closeShortcutsModal() : openShortcutsModal();
             return;
         }
 
-        // Don't fire Ctrl shortcuts when a modal is open or user is in system prompt textarea
+        // Don't fire shortcuts when a modal is open or user is in system prompt textarea
         if (anyModalOpen || document.activeElement === systemPromptInput) return;
 
-        // Alt+N — new chat (Ctrl+N is reserved by Chrome for new window)
-        if (e.key.toLowerCase() === 'n' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
-            e.preventDefault();
-            startNewConversation(currentModelName);
-        }
-
-        // Alt+V — toggle voice input
+        // ── Alt shortcuts (keys that conflict with critical Ctrl bindings) ────────
+        // Alt+V  — voice input  (Ctrl+V = paste)
         if (e.key.toLowerCase() === 'v' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
             if (micButton && micButton.style.display !== 'none') micButton.click();
         }
-
-        // Alt+I — add file (open file picker)
-        if (e.key.toLowerCase() === 'i' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
-            e.preventDefault();
-            if (fileButton && fileButton.style.display !== 'none') fileInput && fileInput.click();
-        }
-
-        // Alt+W — toggle web search
+        // Alt+W  — web search  (Ctrl+W = close window)
         if (e.key.toLowerCase() === 'w' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
             webSearchButton.click();
         }
-
-        // Alt+R — toggle deep research
+        // Alt+R  — deep research  (Ctrl+R = read aloud, already taken)
         if (e.key.toLowerCase() === 'r' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
             deepResearchButton.click();
         }
-
-        // Alt+A — toggle agent mode
+        // Alt+A  — agent mode  (Ctrl+A = select all)
         if (e.key.toLowerCase() === 'a' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
             agentModeButton.click();
         }
 
-        if (e.ctrlKey && !e.shiftKey && !e.metaKey) {
+        // ── Ctrl shortcuts ────────────────────────────────────────────────────────
+        if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
             switch (e.key.toLowerCase()) {
-                case 'd': {
+                case 'n': {                                         // Ctrl+N — new chat
+                    e.preventDefault();
+                    startNewConversation(currentModelName);
+                    break;
+                }
+                case 'i': {                                         // Ctrl+I — add file
+                    e.preventDefault();
+                    if (fileButton && fileButton.style.display !== 'none') fileInput && fileInput.click();
+                    break;
+                }
+                case 'm': {                                         // Ctrl+M — toggle memory
+                    e.preventDefault();
+                    if (memoryButton) memoryButton.click();
+                    break;
+                }
+                case 'd': {                                         // Ctrl+D — delete conversation
                     e.preventDefault();
                     (async () => {
                         const modelData = await loadModelChatState(currentModelName);
@@ -5869,7 +5871,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     })();
                     break;
                 }
-                case 'r': {
+                case 'r': {                                         // Ctrl+R — read last response aloud
                     e.preventDefault();
                     const botMessages = chatContainer.querySelectorAll('.bot-message');
                     const lastBot = botMessages[botMessages.length - 1];
