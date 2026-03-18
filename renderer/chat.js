@@ -70,6 +70,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const chatContainer = document.getElementById('chatContainer');
     const messageInput = document.getElementById('messageInput');
     const sendButton = document.getElementById('sendButton');
+    const stopButton = document.getElementById('stopButton');
     const loadingIndicator = document.getElementById('loadingIndicator');
 
     // Ensure loading indicator is hidden on initialization
@@ -2064,21 +2065,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             actionsDiv.appendChild(downloadMdButton);
 
-            // Stop Button (only show during streaming)
-            const stopButton = document.createElement('button');
-            stopButton.classList.add('action-button', 'stop-button');
-            stopButton.title = 'Stop generation';
-            stopButton.style.display = 'none'; // Hidden by default
-            stopButton.appendChild(createLucideIcon('square', 16));
-
-            stopButton.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (currentAbortController) {
-                    currentAbortController.abort();
-                    stopButton.style.display = 'none';
-                }
-            });
-            actionsDiv.appendChild(stopButton);
 
             // TTS Button
             const ttsButton = document.createElement('button');
@@ -2098,8 +2084,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 actionsDiv.appendChild(pinButton);
             }
 
-            // Store reference to stop button for later use
-            messageDiv.stopButton = stopButton;
 
             messageDiv.appendChild(actionsDiv);
 
@@ -4040,7 +4024,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const botTextElement = addMessageToChatUI(currentModelName, '', 'bot-message', modelData);
         const botMessageDiv = botTextElement.parentElement;
-        const stopButton = botMessageDiv.stopButton;
 
         // Show search step indicator if web search or deep research is enabled
         let searchStepEl = null;
@@ -4064,10 +4047,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Collapse previous thinking boxes to keep chat clean
         collapsePreviousThinkingBoxes();
 
-        // Show stop button during streaming and add streaming class
-        if (stopButton) {
-            stopButton.style.display = 'flex';
-        }
+        // Swap send → stop button during streaming
+        sendButton.style.display = 'none';
+        if (stopButton) { stopButton.style.display = 'flex'; }
         if (botMessageDiv) {
             botMessageDiv.classList.add('streaming');
         }
@@ -4190,7 +4172,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const agentReader = agentResponse.body.getReader();
                 const finalText = await handleAgentStream(botTextElement, botMessageDiv, agentReader);
 
-                if (stopButton) stopButton.style.display = 'none';
+                if (stopButton) { stopButton.style.display = 'none'; }
+                sendButton.style.display = 'flex';
                 if (botMessageDiv) botMessageDiv.classList.remove('streaming');
 
                 const messageToSave = { role: 'assistant', content: finalText || '*(Agent response — see steps above)*' };
@@ -4323,10 +4306,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (jsonResponse.done) {
                                 console.log('Stream finished by Ollama (jsonResponse.done is true)');
                                 done = true;
-                                // Hide stop button and remove streaming class when streaming is complete
-                                if (stopButton) {
-                                    stopButton.style.display = 'none';
-                                }
+                                // Swap stop → send when streaming completes
+                                if (stopButton) { stopButton.style.display = 'none'; }
+                                sendButton.style.display = 'flex';
                                 if (botMessageDiv) {
                                     botMessageDiv.classList.remove('streaming');
                                 }
@@ -4474,10 +4456,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Reset streaming flag
             isStreaming = false;
 
-            // Hide stop button and clear abort controller
-            if (stopButton) {
-                stopButton.style.display = 'none';
-            }
+            // Swap stop → send and clear abort controller
+            if (stopButton) { stopButton.style.display = 'none'; }
+            sendButton.style.display = 'flex';
             currentAbortController = null;
             if (botTextElement) botTextElement.dataset.fullMessage = '';
 
@@ -5127,6 +5108,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Event Listeners
     sendButton.addEventListener('click', () => { pushToHistory(messageInput.value); sendMessageToOllama(messageInput.value); });
+    if (stopButton) {
+        stopButton.addEventListener('click', () => {
+            if (currentAbortController) currentAbortController.abort();
+        });
+    }
     messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter' && !e.shiftKey && !slashCommandPopup.classList.contains('visible')) { e.preventDefault(); pushToHistory(messageInput.value); sendMessageToOllama(messageInput.value); } });
 
     // Auto-resize the main message input to fit its content
