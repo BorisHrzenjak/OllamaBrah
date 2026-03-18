@@ -1183,22 +1183,46 @@
 
         /* Input Area */
         #inputArea {
-            padding: 10px var(--space-xl);
+            padding: 8px 12px 12px;
             background-color: var(--bg-secondary);
             border-top: 1px solid var(--border);
-            border-radius: 0;
+            position: relative;
+        }
+
+        #inputCard {
+            display: flex;
+            flex-direction: column;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            transition: border-color var(--transition);
+        }
+
+        #inputCard:focus-within {
+            border-color: var(--accent);
+        }
+
+        #inputToolbar {
             display: flex;
             align-items: center;
-            gap: 6px;
-            position: relative;
+            justify-content: space-between;
+            padding: 5px 8px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        #inputToolsLeft {
+            display: flex;
+            align-items: center;
+            gap: 2px;
         }
 
         /* Slash Command Popup */
         #slashCommandPopup {
             position: absolute;
             bottom: 100%;
-            left: var(--space-xl);
-            right: var(--space-xl);
+            left: 12px;
+            right: 12px;
             background: var(--bg-secondary);
             border: 1px solid var(--border);
             border-radius: var(--radius-md);
@@ -1276,7 +1300,6 @@
         }
 
         #messageInputWrapper {
-            flex: 1;
             position: relative;
             display: flex;
         }
@@ -1298,24 +1321,19 @@
 
         #messageInput {
             flex: 1;
-            padding: 9px var(--space-md);
-            background-color: var(--bg-secondary);
-            border: 1px solid var(--border-subtle);
-            border-radius: 8px;
+            padding: 10px 14px;
+            background-color: transparent;
+            border: none;
+            border-radius: 0;
             color: var(--text-primary);
             font-family: inherit;
             font-size: var(--font-size-md);
             line-height: 1.5;
             resize: none;
-            min-height: 40px;
-            max-height: 200px;
-            overflow-y: auto;
+            min-height: 44px;
+            max-height: 240px;
+            overflow-y: hidden;
             outline: none;
-            transition: border-color var(--transition);
-        }
-
-        #messageInput:focus {
-            border-color: var(--accent);
         }
 
         #messageInput::placeholder {
@@ -1323,13 +1341,13 @@
         }
 
         #sendButton {
-            padding: 0 var(--space-lg);
-            height: 40px;
+            padding: 0 var(--space-md);
+            height: 30px;
             flex-shrink: 0;
             background-color: var(--accent);
             color: white;
             border: none;
-            border-radius: 10px;
+            border-radius: 8px;
             font-size: var(--font-size-sm);
             font-weight: 500;
             cursor: pointer;
@@ -4516,30 +4534,36 @@ body {
             <div id="inputArea">
                 <div id="slashCommandPopup"></div>
                 <input type="file" id="fileInput" accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.html,.css,.sql,.sh,.yml,.yaml,.xml,.log,.csv" multiple style="display: none;">
-                <button id="fileButton" class="input-icon-button" title="Add file (image or document)" style="display: none;">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M12 12v6"/><path d="m15 15-3-3-3 3"/></svg>
-                </button>
-                <button id="micButton" class="input-icon-button" title="Voice Input">
-                    <i data-lucide="mic"></i>
-                </button>
-                <button id="webSearchButton" class="input-icon-button" title="Web Search: OFF">
-                    <i data-lucide="globe"></i>
-                </button>
-                <button id="deepResearchButton" class="input-icon-button" title="Deep Research: OFF">
-                    <i data-lucide="search-check"></i>
-                </button>
-                <button id="agentModeButton" class="input-icon-button" title="Agent Mode: OFF">
-                    <i data-lucide="bot"></i>
-                </button>
-                <button id="memoryButton" class="input-icon-button" title="Memory: OFF">
-                    <i data-lucide="brain"></i>
-                </button>
-                <div id="voicePreview" style="display:none;"></div>
-                <div id="messageInputWrapper">
-                    <textarea id="messageInput" placeholder="Message..." rows="1" autofocus></textarea>
-                    <span id="inputTokenCount"></span>
+                <div id="inputCard">
+                    <div id="messageInputWrapper">
+                        <textarea id="messageInput" placeholder="Message..." rows="1" autofocus></textarea>
+                        <span id="inputTokenCount"></span>
+                    </div>
+                    <div id="inputToolbar">
+                        <div id="inputToolsLeft">
+                            <button id="fileButton" class="input-icon-button" title="Add file (image or document)" style="display: none;">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M12 12v6"/><path d="m15 15-3-3-3 3"/></svg>
+                            </button>
+                            <button id="micButton" class="input-icon-button" title="Voice Input">
+                                <i data-lucide="mic"></i>
+                            </button>
+                            <button id="webSearchButton" class="input-icon-button" title="Web Search: OFF">
+                                <i data-lucide="globe"></i>
+                            </button>
+                            <button id="deepResearchButton" class="input-icon-button" title="Deep Research: OFF">
+                                <i data-lucide="search-check"></i>
+                            </button>
+                            <button id="agentModeButton" class="input-icon-button" title="Agent Mode: OFF">
+                                <i data-lucide="bot"></i>
+                            </button>
+                            <button id="memoryButton" class="input-icon-button" title="Memory: OFF">
+                                <i data-lucide="brain"></i>
+                            </button>
+                            <div id="voicePreview" style="display:none;"></div>
+                        </div>
+                        <button id="sendButton">Send</button>
+                    </div>
                 </div>
-                <button id="sendButton">Send</button>
             </div>
         </div>
     </div>

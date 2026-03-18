@@ -5131,8 +5131,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Auto-resize the main message input to fit its content
     function autoResizeInput() {
+        const MAX_HEIGHT = 240; // ~10 rows
+        messageInput.style.overflow = 'hidden'; // hide scrollbar during measurement to get accurate scrollHeight
         messageInput.style.height = 'auto';
-        messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
+        const newHeight = Math.min(messageInput.scrollHeight, MAX_HEIGHT);
+        messageInput.style.height = newHeight + 'px';
+        messageInput.style.overflow = newHeight >= MAX_HEIGHT ? 'auto' : 'hidden';
         updateInputTokenCount();
     }
 
