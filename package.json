@@ -12,7 +12,7 @@
     "productName": "Ollama Brah",
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.ico"
     },
     "files": [
       "main.js",
