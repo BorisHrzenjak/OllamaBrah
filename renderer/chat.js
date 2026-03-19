@@ -3903,7 +3903,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             list.appendChild(empty);
             return;
         }
-        for (const skill of loadedSkills) {
+
+        // User-added first (alpha), then built-ins (alpha)
+        const sorted = [
+            ...loadedSkills.filter(s => !s.builtin).sort((a, b) => a.name.localeCompare(b.name)),
+            ...loadedSkills.filter(s => s.builtin).sort((a, b) => a.name.localeCompare(b.name)),
+        ];
+
+        for (const skill of sorted) {
             const item = document.createElement('div');
             item.className = 'preset-item';
 
@@ -3919,7 +3926,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (skill.builtin) {
                 const badge = document.createElement('span');
                 badge.textContent = 'built-in';
-                badge.style.cssText = 'font-size:9px;font-weight:600;letter-spacing:0.04em;background:var(--bg-quaternary);color:var(--text-muted);padding:1px 5px;border-radius:3px;text-transform:uppercase;border:1px solid var(--border-color);';
+                badge.style.cssText = 'font-size:10px;font-weight:600;letter-spacing:0.03em;background:var(--accent-subtle);color:var(--accent);padding:2px 6px;border-radius:3px;text-transform:uppercase;border:1px solid rgba(59,130,246,0.3);';
                 nameEl.appendChild(badge);
             }
 
@@ -3935,8 +3942,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (!skill.builtin) {
                 const deleteBtn = document.createElement('button');
-                deleteBtn.className = 'preset-delete-button';
+                deleteBtn.className = 'preset-edit-button';
                 deleteBtn.title = 'Delete skill';
+                deleteBtn.style.color = 'var(--error-text, #f87171)';
                 deleteBtn.appendChild(createLucideIcon('trash-2', 13));
                 deleteBtn.addEventListener('click', async () => {
                     if (!confirm(`Delete skill "${skill.name}"? This cannot be undone.`)) return;
@@ -3955,6 +3963,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             item.appendChild(actions);
             list.appendChild(item);
         }
+        list.scrollTop = 0;
         if (typeof lucide !== 'undefined') lucide.createIcons();
     }
 
