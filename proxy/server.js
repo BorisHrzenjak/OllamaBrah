@@ -1,4 +1,9 @@
-require('dotenv').config();
+// Load .env from project root (dev mode) — __dirname resolves correctly when running via `npm start`
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+// Also load from userData (production/packaged app) — main.js sets USER_DATA_PATH before requiring this file
+if (process.env.USER_DATA_PATH) {
+    require('dotenv').config({ path: require('path').join(process.env.USER_DATA_PATH, '.env') });
+}
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -110,8 +115,20 @@ function extractUrls(text) {
     return [...new Set(text.match(urlRegex) || [])];
 }
 
-// Jina Reader: fetches live page content as markdown, free, no API key needed
+// Jina Reader: fetches live page content as markdown, free, no API key needed.
+// Returns the page text on success, or a { _fetchError, _status } object on failure — never throws.
 async function fetchPageViaJina(url, maxChars = 4000) {
+    const JINA_ERROR_HINTS = {
+        400: 'Bad request — the URL may be malformed.',
+        401: 'Jina requires authentication for this URL.',
+        403: 'Access forbidden — the site is blocking Jina.',
+        404: 'Page not found (404).',
+        410: 'Page is gone (410) — content was removed.',
+        429: 'Rate-limited by Jina — too many requests. Try again shortly.',
+        451: 'Page unavailable for legal/regional reasons (HTTP 451). This site blocks automated access. Try a different source.',
+        500: 'The target site returned a server error (500).',
+        503: 'The target site is temporarily unavailable (503).',
+    };
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000); // 10s max
     try {
@@ -119,9 +136,17 @@ async function fetchPageViaJina(url, maxChars = 4000) {
             headers: { 'Accept': 'text/plain', 'X-No-Cache': 'true' },
             signal: controller.signal
         });
-        if (!resp.ok) throw new Error(`Jina HTTP ${resp.status}`);
+        if (!resp.ok) {
+            const hint = JINA_ERROR_HINTS[resp.status] || `Jina returned HTTP ${resp.status}.`;
+            return { _fetchError: `Could not fetch ${url} — ${hint}`, _status: resp.status };
+        }
         const text = await resp.text();
         return text.slice(0, maxChars);
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            return { _fetchError: `Timed out fetching ${url} — the site took too long to respond.`, _status: 0 };
+        }
+        return { _fetchError: `Network error fetching ${url}: ${err.message}`, _status: 0 };
     } finally {
         clearTimeout(timeout);
     }
@@ -147,8 +172,10 @@ async function fetchBinaryUrl(url, maxRedirects = 5) {
 async function fetchTavilyResults(query) {
     const apiKey = process.env.TAVILY_API_KEY;
     if (!apiKey || apiKey === 'your_tavily_api_key_here') {
-        console.warn('[Search] TAVILY_API_KEY not set in .env — skipping search');
-        return null;
+        const userDataPath = process.env.USER_DATA_PATH;
+        const envLocation = userDataPath ? `${userDataPath}\\.env` : 'the .env file in the app folder';
+        console.warn('[Search] TAVILY_API_KEY not set — skipping search. Add it to:', envLocation);
+        return { _configError: `Web search is unavailable: no Tavily API key is configured. To enable web search, add TAVILY_API_KEY=<your_key> to ${envLocation}. You can get a free key at https://tavily.com. In the meantime, you can still fetch specific pages directly using the fetchPage tool if you have a URL.` };
     }
     const resp = await fetch('https://api.tavily.com/search', {
         method: 'POST',
@@ -944,8 +971,12 @@ app.post('/api/llamacpp/chat', async (req, res) => {
         jinaResults.forEach(r => {
             if (r.status === 'fulfilled') {
                 const { url, content } = r.value;
-                contextParts.push(`Retrieved page (${url}):\n${content}`);
-                console.log(`[llama.cpp/Search] Jina: got ${content.length} chars from ${url}`);
+                if (content && content._fetchError) {
+                    console.warn(`[llama.cpp/Search] Jina skipped ${url}: ${content._fetchError}`);
+                } else if (typeof content === 'string' && content.length > 0) {
+                    contextParts.push(`Retrieved page (${url}):\n${content}`);
+                    console.log(`[llama.cpp/Search] Jina: got ${content.length} chars from ${url}`);
+                }
             } else {
                 console.warn(`[llama.cpp/Search] Jina failed for a URL:`, r.reason?.message);
             }
@@ -1192,7 +1223,7 @@ const AGENT_TOOLS = [
         type: 'function',
         function: {
             name: 'webSearch',
-            description: 'Search the web for current information, news, or facts.',
+            description: 'Search the web for current information. MUST be called for any question involving: recent news, current events, today\'s date, live prices, sports scores, weather, product releases, anything that may have changed since your training data. Never answer time-sensitive questions from memory alone — always call webSearch first.',
             parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search query' } }, required: ['query'] }
         }
     },
@@ -1200,7 +1231,7 @@ const AGENT_TOOLS = [
         type: 'function',
         function: {
             name: 'fetchPage',
-            description: 'Fetch and read the content of a web page by URL.',
+            description: 'Fetch and read the full content of a web page by URL. Use after webSearch to read full article text, or when the user provides a specific URL to read.',
             parameters: { type: 'object', properties: { url: { type: 'string', description: 'Full URL to fetch' } }, required: ['url'] }
         }
     },
@@ -1445,12 +1476,18 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                         error: true
                     };
                 }
+                console.log(`[Agent/webSearch] Query: "${(args.query || '').slice(0, 100)}"`);
                 const result = await fetchTavilyResults(args.query || '');
-                const text = result ? JSON.stringify(result).slice(0, 3000) : 'No results';
-                return { result: text };
+                if (!result) return { result: 'No results', error: true };
+                if (result._configError) return { result: result._configError, error: true };
+                console.log(`[Agent/webSearch] Got ${result.results?.length || 0} result(s)`);
+                return { result: JSON.stringify(result).slice(0, 3000) };
             }
             case 'fetchPage': {
+                console.log(`[Agent/fetchPage] Fetching: ${(args.url || '').slice(0, 100)}`);
                 const text = await fetchPageViaJina(args.url || '', 8000);
+                if (text && text._fetchError) { console.warn(`[Agent/fetchPage] ${text._fetchError}`); return { result: text._fetchError, error: true }; }
+                console.log(`[Agent/fetchPage] Got ${typeof text === 'string' ? text.length : 0} chars`);
                 return { result: text || 'No content' };
             }
             case 'getDateTime': {
@@ -1640,6 +1677,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     } catch (e) { return { result: 'Error reading PDF: ' + e.message, error: true }; }
                 } else {
                     const text = await fetchPageViaJina(url, 8000);
+                    if (text && text._fetchError) return { result: text._fetchError, error: true };
                     return { result: text || 'No content' };
                 }
             }
@@ -1958,6 +1996,24 @@ app.post('/api/agent/config', (req, res) => {
     res.json({ ok: true });
 });
 
+// --- API Keys Endpoints ---
+
+// GET /api/keys — return whether each key is configured (never returns raw key value)
+app.get('/api/keys', (req, res) => {
+    res.json({
+        tavilyConfigured: !!(process.env.TAVILY_API_KEY && process.env.TAVILY_API_KEY !== 'your_tavily_api_key_here'),
+        exaConfigured:    !!(process.env.EXA_API_KEY    && process.env.EXA_API_KEY    !== 'your_exa_api_key_here'),
+    });
+});
+
+// POST /api/keys — update API keys in process.env at runtime (no restart needed)
+app.post('/api/keys', (req, res) => {
+    const { tavilyApiKey, exaApiKey } = req.body || {};
+    if (tavilyApiKey !== undefined) process.env.TAVILY_API_KEY = String(tavilyApiKey).trim();
+    if (exaApiKey    !== undefined) process.env.EXA_API_KEY    = String(exaApiKey).trim();
+    res.json({ ok: true });
+});
+
 // --- Memory Endpoints ---
 
 // GET /api/memory/status — check if nomic-embed-text is available
@@ -2098,7 +2154,12 @@ app.post('/api/agent/chat', async (req, res) => {
             'The tools are real. Use them.\n' +
             `SYSTEM INFORMATION: OS=${_platform}, home directory="${os.homedir()}", path separator="${_pathSep}". ` +
             _pathGuidance + '\n' +
-            'TOOL GUIDANCE: To count or find files by type use findFiles (e.g. pattern=".jpg,.png" for images). ' +
+            'WEB SEARCH GUIDANCE: For ANY question about recent events, current news, AI/tech releases, live prices, ' +
+            'sports scores, weather, or ANYTHING that changes over time — you MUST call webSearch FIRST before answering. ' +
+            'Do NOT answer time-sensitive questions from memory — your training data has a cutoff date and will be wrong. ' +
+            'After webSearch returns results, call fetchPage on the most relevant URLs to read the full content. ' +
+            'Only then synthesize your final answer.\n' +
+            'FILE TOOL GUIDANCE: To count or find files by type use findFiles (e.g. pattern=".jpg,.png" for images). ' +
             'Do NOT count lines from listDirectory output manually — call findFiles instead. ' +
             'Use runCode only when you need to process data that no other tool can return directly.';
         const sysIdx = messages.findIndex(m => m.role === 'system');
@@ -2121,6 +2182,33 @@ app.post('/api/agent/chat', async (req, res) => {
         if (_skillHint) {
             const sysMsg = messages.find(m => m.role === 'system');
             if (sysMsg) sysMsg.content += '\n\n' + _skillHint;
+        }
+
+        // Heuristic pre-search: if the last user message looks time-sensitive, run Tavily
+        // immediately and inject the results into context — mirrors the regular chat path.
+        // This guarantees real data reaches the model even if it doesn't call webSearch itself.
+        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+        if (lastUserMsg && heuristicNeedsSearch(lastUserMsg.content || '')) {
+            const query = (lastUserMsg.content || '').slice(0, 300);
+            console.log(`[Agent/Search] Heuristic triggered — pre-fetching results for: "${query.slice(0, 80)}"`);
+            try {
+                const searchData = await fetchTavilyResults(query);
+                const sysMsg = messages.find(m => m.role === 'system');
+                if (sysMsg) {
+                    if (searchData && !searchData._configError && searchData.results?.length > 0) {
+                        const snippet = searchData.results
+                            .map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content || ''}`)
+                            .join('\n\n')
+                            .slice(0, 3000);
+                        sysMsg.content += `\n\n[Live web search results — ${new Date().toDateString()}]:\n${snippet}`;
+                        console.log(`[Agent/Search] Injected ${searchData.results.length} result(s) into context`);
+                    } else {
+                        sysMsg.content += '\n\n[IMPORTANT: This question involves real-time information. Call webSearch before answering.]';
+                    }
+                }
+            } catch (e) {
+                console.warn('[Agent/Search] Pre-search failed:', e.message);
+            }
         }
     }
 
@@ -2711,8 +2799,12 @@ app.all('/proxy/*', async (req, res) => {
                         jinaResults.forEach(r => {
                             if (r.status === 'fulfilled') {
                                 const { url, content } = r.value;
-                                contextParts.push(`Retrieved page (${url}):\n${content}`);
-                                console.log(`[Search] Jina: got ${content.length} chars from ${url}`);
+                                if (content && content._fetchError) {
+                                    console.warn(`[Search] Jina skipped ${url}: ${content._fetchError}`);
+                                } else if (typeof content === 'string' && content.length > 0) {
+                                    contextParts.push(`Retrieved page (${url}):\n${content}`);
+                                    console.log(`[Search] Jina: got ${content.length} chars from ${url}`);
+                                }
                             } else {
                                 console.warn(`[Search] Jina failed for a URL:`, r.reason?.message);
                             }

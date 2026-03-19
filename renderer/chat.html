@@ -5224,6 +5224,50 @@ body {
                     </div>
                 </div>
 
+                <div class="settings-section collapsible-section">
+                    <button class="settings-section-toggle" id="apiKeysSectionToggle">
+                        🔑 API Keys
+                        <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
+                    </button>
+                    <div id="apiKeysSectionBody" class="settings-section-body">
+                        <p class="modal-description">API keys for web search and deep research. Keys are stored locally on your device and only sent to their respective services.</p>
+
+                        <div class="llamacpp-field">
+                            <label class="llamacpp-field-label">
+                                Tavily API Key &mdash; Web Search
+                                <span id="tavilyKeyLink" style="color:var(--accent);font-size:var(--font-size-xs);cursor:pointer;margin-left:6px;">Get free key ↗</span>
+                            </label>
+                            <div style="display:flex;gap:var(--space-sm);">
+                                <input type="password" id="tavilyApiKeyInput" class="llamacpp-input" placeholder="tvly-..." style="flex:1;font-family:monospace;">
+                                <button id="tavilyKeyToggle" class="modal-button secondary" style="padding:0 10px;" title="Show/hide">
+                                    <i data-lucide="eye"></i>
+                                </button>
+                            </div>
+                            <span id="tavilyKeyStatus" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:4px;display:block;"></span>
+                        </div>
+
+                        <div class="llamacpp-field" style="margin-top:var(--space-md);">
+                            <label class="llamacpp-field-label">
+                                Exa API Key &mdash; Deep Research
+                                <span id="exaKeyLink" style="color:var(--accent);font-size:var(--font-size-xs);cursor:pointer;margin-left:6px;">Get free key ↗</span>
+                            </label>
+                            <div style="display:flex;gap:var(--space-sm);">
+                                <input type="password" id="exaApiKeyInput" class="llamacpp-input" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="flex:1;font-family:monospace;">
+                                <button id="exaKeyToggle" class="modal-button secondary" style="padding:0 10px;" title="Show/hide">
+                                    <i data-lucide="eye"></i>
+                                </button>
+                            </div>
+                            <span id="exaKeyStatus" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:4px;display:block;"></span>
+                        </div>
+
+                        <div style="display:flex;align-items:center;gap:var(--space-md);margin-top:var(--space-md);">
+                            <button id="saveApiKeysButton" class="modal-button primary">Save</button>
+                            <button id="clearApiKeysButton" class="modal-button secondary">Clear All</button>
+                            <span id="apiKeysStatus" style="font-size:var(--font-size-xs);color:var(--text-muted);"></span>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="modal-footer settings-footer">
                     <button id="openShortcutsFromSettings" class="modal-button secondary"
                         title="View keyboard shortcuts (Alt+H)">

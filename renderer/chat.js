@@ -5961,6 +5961,90 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     initMemorySettings();
 
+    // ===== API Keys Settings =====
+
+    function updateApiKeyBadges(tavilyOk, exaOk) {
+        const tavilyEl = document.getElementById('tavilyKeyStatus');
+        const exaEl    = document.getElementById('exaKeyStatus');
+        if (tavilyEl) {
+            tavilyEl.textContent = tavilyOk ? '✓ Configured — web search enabled' : 'Not set — web search unavailable';
+            tavilyEl.style.color = tavilyOk ? 'var(--success, #4caf50)' : 'var(--text-muted)';
+        }
+        if (exaEl) {
+            exaEl.textContent = exaOk ? '✓ Configured — deep research enabled' : 'Not set — deep research unavailable';
+            exaEl.style.color = exaOk ? 'var(--success, #4caf50)' : 'var(--text-muted)';
+        }
+    }
+
+    async function loadApiKeys() {
+        const tavilyKey = await window.electronAPI.store.get('tavilyApiKey', '');
+        const exaKey    = await window.electronAPI.store.get('exaApiKey', '');
+        const tavilyInput = document.getElementById('tavilyApiKeyInput');
+        const exaInput    = document.getElementById('exaApiKeyInput');
+        if (tavilyInput) tavilyInput.value = tavilyKey || '';
+        if (exaInput)    exaInput.value    = exaKey    || '';
+        updateApiKeyBadges(!!tavilyKey, !!exaKey);
+    }
+
+    async function saveApiKeys() {
+        const tavilyKey = (document.getElementById('tavilyApiKeyInput')?.value || '').trim();
+        const exaKey    = (document.getElementById('exaApiKeyInput')?.value    || '').trim();
+        const statusEl  = document.getElementById('apiKeysStatus');
+        try {
+            await window.electronAPI.store.set('tavilyApiKey', tavilyKey);
+            await window.electronAPI.store.set('exaApiKey',    exaKey);
+            await fetch(`${PROXY_BASE}/api/keys`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tavilyApiKey: tavilyKey, exaApiKey: exaKey })
+            });
+            updateApiKeyBadges(!!tavilyKey, !!exaKey);
+            if (statusEl) { statusEl.textContent = 'Saved'; setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 2000); }
+        } catch {
+            if (statusEl) statusEl.textContent = 'Error saving';
+        }
+    }
+
+    function initApiKeysSection() {
+        const toggle = document.getElementById('apiKeysSectionToggle');
+        if (toggle) {
+            toggle.addEventListener('click', () => {
+                toggleSection('apiKeysSectionToggle', 'apiKeysSectionBody');
+                const body = document.getElementById('apiKeysSectionBody');
+                if (body && body.classList.contains('expanded')) loadApiKeys();
+            });
+        }
+
+        // Show/hide toggles for each key field
+        [['tavilyKeyToggle', 'tavilyApiKeyInput'], ['exaKeyToggle', 'exaApiKeyInput']].forEach(([btnId, inputId]) => {
+            const btn = document.getElementById(btnId);
+            const inp = document.getElementById(inputId);
+            if (btn && inp) {
+                btn.addEventListener('click', () => {
+                    const show = inp.type === 'password';
+                    inp.type = show ? 'text' : 'password';
+                    btn.innerHTML = show ? '<i data-lucide="eye-off"></i>' : '<i data-lucide="eye"></i>';
+                    lucide.createIcons({ nodes: [btn] });
+                });
+            }
+        });
+
+        // External links (open in system browser)
+        document.getElementById('tavilyKeyLink')?.addEventListener('click', () => window.open('https://tavily.com'));
+        document.getElementById('exaKeyLink')?.addEventListener('click',    () => window.open('https://exa.ai'));
+
+        document.getElementById('saveApiKeysButton')?.addEventListener('click', saveApiKeys);
+        document.getElementById('clearApiKeysButton')?.addEventListener('click', async () => {
+            const tavilyInput = document.getElementById('tavilyApiKeyInput');
+            const exaInput    = document.getElementById('exaApiKeyInput');
+            if (tavilyInput) tavilyInput.value = '';
+            if (exaInput)    exaInput.value    = '';
+            await saveApiKeys();
+        });
+    }
+
+    initApiKeysSection();
+
     // Slash command popup: close when input loses focus (unless clicking popup itself)
     messageInput.addEventListener('blur', () => {
         setTimeout(hideSlashPopup, 150);

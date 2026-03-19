@@ -116,6 +116,12 @@ function startProxy() {
     process.env.USER_DATA_PATH = app.getPath('userData');
     process.env.MEMORY_DIR = path.join(app.getPath('userData'), 'memory');
     process.env.SKILLS_DIR = path.join(app.getPath('userData'), 'skills');
+
+    // Load API keys saved via the settings UI into process.env so the proxy can use them
+    const tavilyKey = store.get('tavilyApiKey', '');
+    const exaKey    = store.get('exaApiKey', '');
+    if (tavilyKey) process.env.TAVILY_API_KEY = tavilyKey;
+    if (exaKey)    process.env.EXA_API_KEY    = exaKey;
     try {
         require('./proxy/server.js');
         console.log('[main] Proxy server started');

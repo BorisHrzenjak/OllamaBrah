@@ -6,14 +6,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.0.5
+## What's New — v1.0.6
 
-- Redesigned chat input as a unified card (textarea + toolbar in one container)
-- Send button replaced with icon; stop button appears in-place during streaming
-- Auto-expanding textarea (up to ~10 rows) with scroll at max height
-- Keyboard shortcuts overhauled for desktop — more `Ctrl`-based bindings
-- Added `Alt+M` shortcut for memory toggle
-- Fixed app version not displaying correctly on startup
+- **API Keys settings panel** — enter Tavily (web search) and Exa (deep research) keys directly in Settings → 🔑 API Keys; no `.env` file required
+- Keys are stored locally in the app's data folder and applied immediately — no restart or rebuild needed
 
 ---
 
@@ -43,8 +39,8 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Context meter showing token breakdown (system prompt / search / conversation)
 
 ### Input Modes
-- **Web search** — augment responses with live search results
-- **Deep research** — multi-step research pipeline before answering
+- **Web search** — augment responses with live Tavily search results
+- **Deep research** — multi-step Exa research pipeline before answering
 - **Agent mode** — autonomous tool-use loop with step-by-step visualization; configure max steps, tool permissions, allowed directories, and blocked paths
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
 
