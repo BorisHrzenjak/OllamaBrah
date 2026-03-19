@@ -3728,8 +3728,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function getSlashQuery() {
         const val = messageInput.value;
-        const m = val.match(/^\/(\S*)$/);
-        return m ? m[1] : null;
+        const skill = val.match(/^\/(\S*)$/);
+        if (skill) return { query: skill[1], type: 'skill' };
+        const tmpl = val.match(/^!(\S*)$/);
+        if (tmpl) return { query: tmpl[1], type: 'template' };
+        return null;
     }
 
     function showSlashPopup(filtered) {
@@ -3745,7 +3748,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const trigger = document.createElement('span');
             trigger.className = 'slash-cmd-trigger';
-            trigger.textContent = `/${cmd.trigger}`;
+            trigger.textContent = cmd._isSkill ? `/${cmd.trigger}` : `!${cmd.trigger}`;
 
             const info = document.createElement('div');
             info.className = 'slash-cmd-info';
@@ -3822,15 +3825,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function handleSlashInput() {
-        const query = getSlashQuery();
-        if (query === null) { hideSlashPopup(); return; }
-        const filteredCmds = slashCommands.filter(cmd =>
-            cmd.trigger.toLowerCase().startsWith(query.toLowerCase())
-        );
-        const filteredSkills = loadedSkills
-            .filter(s => s.name.toLowerCase().startsWith(query.toLowerCase()))
-            .map(s => ({ id: `skill_${s.name}`, trigger: s.name, name: s.name, body: s.description, _isSkill: true }));
-        showSlashPopup([...filteredCmds, ...filteredSkills]);
+        const result = getSlashQuery();
+        if (result === null) { hideSlashPopup(); return; }
+        if (result.type === 'skill') {
+            const filteredSkills = loadedSkills
+                .filter(s => s.name.toLowerCase().startsWith(result.query.toLowerCase()))
+                .map(s => ({ id: `skill_${s.name}`, trigger: s.name, name: s.name, body: s.description, _isSkill: true }));
+            showSlashPopup(filteredSkills);
+        } else {
+            const filteredCmds = slashCommands.filter(cmd =>
+                cmd.trigger.toLowerCase().startsWith(result.query.toLowerCase())
+            );
+            showSlashPopup(filteredCmds);
+        }
     }
 
     // ── Slash Commands Settings ──────────────────────────────────────────────
@@ -3995,6 +4002,56 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             });
         }
+
+        const installInput = document.getElementById('skillInstallInput');
+        const installBtn = document.getElementById('installSkillButton');
+        const installLog = document.getElementById('skillInstallLog');
+
+        function setInstallLog(text, color) {
+            if (!installLog) return;
+            installLog.style.display = 'block';
+            installLog.style.color = color || 'var(--text-secondary)';
+            installLog.textContent = text;
+        }
+
+        async function runSkillInstall() {
+            const raw = installInput ? installInput.value.trim() : '';
+            if (!raw) return;
+
+            installBtn.disabled = true;
+            installInput.disabled = true;
+            setInstallLog('Installing…', 'var(--text-muted)');
+
+            try {
+                const resp = await fetch(`${PROXY_BASE}/api/skills/import-url`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: raw })
+                });
+                const data = await resp.json();
+                if (data.error) {
+                    setInstallLog('Error: ' + data.error, 'var(--error-color, #f87171)');
+                    return;
+                }
+                setInstallLog(`Installed "${data.name}" successfully.`, 'var(--accent)');
+                await fetchSkills();
+                renderSkillsList();
+                installInput.value = '';
+            } catch (e) {
+                setInstallLog('Install error: ' + e.message, 'var(--error-color, #f87171)');
+                console.error('[Skills] install failed:', e);
+            } finally {
+                installBtn.disabled = false;
+                installInput.disabled = false;
+            }
+        }
+
+        if (installBtn) installBtn.addEventListener('click', runSkillInstall);
+        if (installInput) {
+            installInput.addEventListener('keydown', e => {
+                if (e.key === 'Enter') runSkillInstall();
+            });
+        }
     }
 
     function renderSlashCommandsList() {
@@ -4024,7 +4081,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const nameEl = document.createElement('div');
         nameEl.className = 'preset-item-name';
-        nameEl.innerHTML = `<code style="font-size:11px;color:var(--accent);">/${cmd.trigger}</code> — ${cmd.name}`;
+        nameEl.innerHTML = `<code style="font-size:11px;color:var(--accent);">!${cmd.trigger}</code> — ${cmd.name}`;
 
         const preview = document.createElement('div');
         preview.className = 'preset-item-preview';

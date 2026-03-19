@@ -4790,7 +4790,7 @@ body {
                         <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
                     </button>
                     <div id="slashCmdSectionBody" class="settings-section-body">
-                        <p class="modal-description">Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">/</code> in the message box to quickly insert a template. Select a template then add your content.</p>
+                        <p class="modal-description">Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">!trigger</code> in the message box to quickly insert a template.</p>
                         <div id="slashCommandsList" class="persona-presets-list"></div>
                         <div id="newSlashCmdForm" class="new-preset-form" style="display: none;">
                             <input type="text" id="newSlashCmdTrigger" class="preset-name-input"
@@ -4819,10 +4819,20 @@ body {
                     <div id="skillsSectionBody" class="settings-section-body">
                         <p class="modal-description">Skills give the agent specialized instructions. Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">/skill-name</code> in the message box to activate a skill. Requires <strong>Agent Mode</strong>.</p>
                         <div id="skillsList" class="persona-presets-list"></div>
+                        <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px;">
+                            <input type="text" id="skillInstallInput"
+                                placeholder="npx skills add https://github.com/... --skill name"
+                                style="width:100%;box-sizing:border-box;font-size:var(--font-size-sm);background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:6px 10px;color:var(--text-primary);outline:none;font-family:monospace;">
+                            <button id="installSkillButton" class="add-preset-button">
+                                <i data-lucide="download"></i>
+                                Install from URL
+                            </button>
+                        </div>
+                        <div id="skillInstallLog" style="display:none;margin-top:6px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:8px;font-size:11px;font-family:monospace;max-height:120px;overflow-y:auto;white-space:pre-wrap;"></div>
                         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
                             <button id="importSkillButton" class="add-preset-button">
                                 <i data-lucide="folder-open"></i>
-                                Import Skill
+                                Import Folder
                             </button>
                             <button id="reloadSkillsButton" class="add-preset-button" style="background:transparent;border:1px solid var(--border-color);">
                                 <i data-lucide="refresh-cw"></i>

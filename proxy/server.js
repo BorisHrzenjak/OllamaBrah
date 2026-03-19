@@ -2294,6 +2294,140 @@ app.post('/api/skills/import', (req, res) => {
     }
 });
 
+async function githubGet(url) {
+    const resp = await fetch(url, {
+        headers: { 'User-Agent': 'OllamaBrah/1.0', 'Accept': 'application/vnd.github.v3+json' }
+    });
+    return resp;
+}
+
+async function downloadGitHubDir(owner, repo, branch, dirPath, destDir) {
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${dirPath}?ref=${branch}`;
+    const resp = await githubGet(apiUrl);
+    if (!resp.ok) {
+        // On 404 for a specific sub-path, list the repo root to give a helpful error
+        if (resp.status === 404 && dirPath) {
+            let hint = '';
+            try {
+                const rootResp = await githubGet(`https://api.github.com/repos/${owner}/${repo}/contents/?ref=${branch}`);
+                if (rootResp.ok) {
+                    const rootItems = await rootResp.json();
+                    if (Array.isArray(rootItems)) {
+                        const dirs = rootItems.filter(i => i.type === 'dir').map(i => i.name);
+                        if (dirs.length) hint = ` Available top-level folders: ${dirs.join(', ')}`;
+                    }
+                }
+            } catch {}
+            throw new Error(`Path "${dirPath}" not found in ${owner}/${repo} (branch: ${branch}).${hint}`);
+        }
+        const body = await resp.text().catch(() => '');
+        throw new Error(`GitHub API ${resp.status}: ${body.slice(0, 200) || resp.statusText}`);
+    }
+    const items = await resp.json();
+    if (!Array.isArray(items)) throw new Error('Expected a directory at that URL, got a single file or unexpected response');
+    fs.mkdirSync(destDir, { recursive: true });
+    for (const item of items) {
+        const itemDest = path.join(destDir, item.name);
+        if (item.type === 'file') {
+            const fileResp = await fetch(item.download_url);
+            if (!fileResp.ok) throw new Error(`Failed to download ${item.name}: HTTP ${fileResp.status}`);
+            const content = await fileResp.arrayBuffer();
+            fs.writeFileSync(itemDest, Buffer.from(content));
+        } else if (item.type === 'dir') {
+            await downloadGitHubDir(owner, repo, branch, item.path, itemDest);
+        }
+    }
+}
+
+// Parse any of:
+//   https://github.com/owner/repo/tree/branch/path   (GitHub URL)
+//   npx skills add <url-or-id> --skill name -g -y    (full npx command — paste-friendly)
+//   owner/repo@skill                                  (short package id)
+//   owner/repo/skill                                  (slash form)
+//   owner/repo                                        (whole repo)
+function parseSkillSource(input) {
+    let s = input.trim();
+
+    // Extract --skill <value> FIRST before any other stripping, e.g. "--skill brains"
+    let namedSkill = null;
+    const skillFlagMatch = s.match(/--skill\s+(\S+)/i);
+    if (skillFlagMatch) {
+        namedSkill = skillFlagMatch[1];
+        s = s.replace(/\s*--skill\s+\S+/i, '');
+    }
+
+    // Strip "npx skills add" prefix
+    s = s.replace(/^npx\s+skills\s+add\s+/i, '');
+
+    // Strip remaining boolean flags: -g -y --global --yes (no value after them)
+    s = s.replace(/\s+--?[\w-]+/g, '').trim();
+
+    // GitHub URL — note [^/\s] to reject spaces in owner/repo
+    const ghUrl = s.match(/^https?:\/\/github\.com\/([^/\s]+)\/([^/\s]+)(?:\/tree\/([^/\s]+)(?:\/([^\s]+?))?)?(?:\/?)$/);
+    if (ghUrl) {
+        const [, owner, repo, branch = 'main', urlSkillPath = ''] = ghUrl;
+        return { owner, repo, branch, skillPath: namedSkill || urlSkillPath };
+    }
+
+    // owner/repo@skill
+    const atForm = s.match(/^([^/\s@]+)\/([^@/\s]+)@([^\s]+)$/);
+    if (atForm) return { owner: atForm[1], repo: atForm[2], branch: 'main', skillPath: namedSkill || atForm[3] };
+
+    // owner/repo/skill
+    const slashForm = s.match(/^([^/\s]+)\/([^/\s]+)\/([^\s]+)$/);
+    if (slashForm) return { owner: slashForm[1], repo: slashForm[2], branch: 'main', skillPath: namedSkill || slashForm[3] };
+
+    // owner/repo
+    const repoForm = s.match(/^([^/\s]+)\/([^/\s]+)$/);
+    if (repoForm) return { owner: repoForm[1], repo: repoForm[2], branch: 'main', skillPath: namedSkill || '' };
+
+    return null;
+}
+
+app.post('/api/skills/import-url', async (req, res) => {
+    const { url } = req.body || {};
+    if (!url) return res.status(400).json({ error: 'URL or package identifier required' });
+
+    const parsed = parseSkillSource(url);
+    if (!parsed) {
+        return res.status(400).json({
+            error: 'Could not parse input. Accepted formats:\n' +
+                   '  • https://github.com/owner/repo/tree/main/skill-name\n' +
+                   '  • owner/repo@skill-name\n' +
+                   '  • npx skills add owner/repo@skill-name -g -y'
+        });
+    }
+
+    let { owner, repo, branch, skillPath } = parsed;
+    const skillName = skillPath ? path.basename(skillPath) : repo;
+    const skillsDir = process.env.SKILLS_DIR;
+    if (!skillsDir) return res.status(500).json({ error: 'SKILLS_DIR not configured' });
+
+    // If branch was not explicitly in the URL, resolve the repo's actual default branch
+    // (avoids main vs master mismatch)
+    if (branch === 'main') {
+        try {
+            const repoResp = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+                headers: { 'User-Agent': 'OllamaBrah/1.0', 'Accept': 'application/vnd.github.v3+json' }
+            });
+            if (repoResp.ok) {
+                const repoData = await repoResp.json();
+                if (repoData.default_branch) branch = repoData.default_branch;
+            }
+        } catch {}
+    }
+
+    const dest = path.join(skillsDir, skillName);
+    try {
+        await downloadGitHubDir(owner, repo, branch, skillPath, dest);
+        reloadSkills();
+        res.json({ ok: true, name: skillName });
+    } catch (err) {
+        console.error('[Skills] import-url failed:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.delete('/api/skills/:name', (req, res) => {
     const { name } = req.params;
     const skillsDir = process.env.SKILLS_DIR;
@@ -2306,6 +2440,67 @@ app.delete('/api/skills/:name', (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+app.get('/api/skills/dir', (req, res) => {
+    res.json({ dir: process.env.SKILLS_DIR || null });
+});
+
+// Run `npx skills add ...` as a child process with SKILLS_DIR set.
+// Streams stdout/stderr lines as NDJSON so the UI can show live output.
+app.post('/api/skills/run-cli', (req, res) => {
+    const { command } = req.body || {};
+    if (!command || typeof command !== 'string') {
+        return res.status(400).json({ error: 'command required' });
+    }
+
+    const skillsDir = process.env.SKILLS_DIR;
+    if (!skillsDir) return res.status(500).json({ error: 'SKILLS_DIR not configured' });
+
+    // Only allow npx skills add commands
+    const trimmed = command.trim();
+    if (!/^npx\s+skills\s+add\b/i.test(trimmed)) {
+        return res.status(400).json({ error: 'Only "npx skills add ..." commands are allowed here.' });
+    }
+
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    const childEnv = {
+        ...process.env,
+        SKILLS_DIR: skillsDir,
+        CLAUDE_SKILLS_DIR: skillsDir,   // some CLI variants use this name
+        SKILL_OUTPUT_DIR: skillsDir,
+    };
+
+    const proc = spawn(trimmed, {
+        shell: true,
+        cwd: skillsDir,
+        env: childEnv,
+        timeout: 120000,
+    });
+
+    const write = (type, text) => {
+        if (!res.writableEnded) res.write(JSON.stringify({ type, text }) + '\n');
+    };
+
+    proc.stdout.on('data', d => write('stdout', d.toString()));
+    proc.stderr.on('data', d => write('stderr', d.toString()));
+
+    proc.on('close', (code) => {
+        reloadSkills();
+        write('exit', `Process exited with code ${code}`);
+        write('skills', JSON.stringify(loadedSkills.map(s => ({ name: s.name, description: s.description, builtin: s.builtin }))));
+        if (!res.writableEnded) res.end();
+    });
+
+    proc.on('error', (err) => {
+        write('error', err.message);
+        if (!res.writableEnded) res.end();
+    });
+
+    res.on('close', () => { if (!proc.killed) proc.kill(); });
 });
 
 // --- Ollama Proxy ---
@@ -2681,6 +2876,25 @@ app.all('/proxy/*', async (req, res) => {
 // Initialize skills on startup
 copyBuiltinSkills();
 reloadSkills();
+
+// Watch SKILLS_DIR for changes so skills installed via CLI are auto-detected
+(function watchSkillsDir() {
+    const skillsDir = process.env.SKILLS_DIR;
+    if (!skillsDir) return;
+    try {
+        let debounce;
+        fs.watch(skillsDir, { recursive: false }, () => {
+            clearTimeout(debounce);
+            debounce = setTimeout(() => {
+                console.log('[Skills] Directory change detected — reloading...');
+                reloadSkills();
+            }, 600);
+        });
+        console.log('[Skills] Watching', skillsDir, 'for changes');
+    } catch (err) {
+        console.warn('[Skills] Could not watch skills directory:', err.message);
+    }
+})();
 
 serverInstance = app.listen(PORT, () => {
     console.log(`OllamaBro CORS Proxy server running on http://localhost:${PORT}`);
