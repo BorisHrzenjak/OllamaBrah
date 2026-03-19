@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, session, dialog } = require('electron');
 const path = require('path');
 const Database = require('better-sqlite3');
 const Store = require('electron-store');
@@ -104,6 +104,7 @@ function initStore() {
             llamaCppConfig: {},
             modelCapabilities: {},
             personaPresets: [],
+            installedSkills: ['deep-researcher', 'file-organizer', 'terminal-helper', 'web-extractor'],
         }
     });
 }
@@ -114,6 +115,7 @@ function startProxy() {
     process.env.ALLOWED_ORIGIN = 'electron-app';
     process.env.USER_DATA_PATH = app.getPath('userData');
     process.env.MEMORY_DIR = path.join(app.getPath('userData'), 'memory');
+    process.env.SKILLS_DIR = path.join(app.getPath('userData'), 'skills');
     try {
         require('./proxy/server.js');
         console.log('[main] Proxy server started');
@@ -321,6 +323,12 @@ function registerIpcHandlers() {
     ipcMain.handle('window:minimize', () => win.minimize());
     ipcMain.handle('window:maximize', () => win.isMaximized() ? win.unmaximize() : win.maximize());
     ipcMain.handle('window:close', () => win.close());
+
+    // Skills
+    ipcMain.handle('skills:pickFolder', async () => {
+        const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+        return result.canceled ? null : result.filePaths[0];
+    });
 }
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────

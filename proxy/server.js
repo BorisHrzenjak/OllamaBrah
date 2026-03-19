@@ -18,6 +18,78 @@ function unpackedPath(...segments) {
 const memory = require('./memory');
 const diffLib = require('diff');
 
+// ── Skills ────────────────────────────────────────────────────────────────────
+
+const BUILTIN_SKILLS_DIR = path.join(__dirname, '..', 'resources', 'skills');
+let loadedSkills = []; // [{ name, description, builtin, dir }]
+
+function parseSkillFrontmatter(md) {
+    const parts = md.split(/^---\s*$/m);
+    if (parts.length < 3) return {};
+    const meta = {};
+    for (const line of parts[1].split('\n')) {
+        const m = line.match(/^(\w+):\s*(.+)$/);
+        if (m) meta[m[1]] = m[2].trim();
+    }
+    return meta;
+}
+
+function loadSkillsMetadata() {
+    const skillsDir = process.env.SKILLS_DIR;
+    if (!skillsDir || !fs.existsSync(skillsDir)) return [];
+    const result = [];
+    try {
+        const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+        for (const e of entries) {
+            if (!e.isDirectory()) continue;
+            const mdPath = path.join(skillsDir, e.name, 'SKILL.md');
+            if (!fs.existsSync(mdPath)) continue;
+            try {
+                const md = fs.readFileSync(mdPath, 'utf8');
+                const meta = parseSkillFrontmatter(md);
+                if (meta.name) {
+                    result.push({
+                        name: meta.name,
+                        description: meta.description || '',
+                        builtin: meta.builtin === 'true',
+                        dir: path.join(skillsDir, e.name),
+                    });
+                }
+            } catch {}
+        }
+    } catch {}
+    return result;
+}
+
+function reloadSkills() {
+    loadedSkills = loadSkillsMetadata();
+    console.log(`[Skills] Loaded ${loadedSkills.length} skill(s):`, loadedSkills.map(s => s.name).join(', ') || '(none)');
+}
+
+function copyBuiltinSkills() {
+    const skillsDir = process.env.SKILLS_DIR;
+    if (!skillsDir) return;
+    fs.mkdirSync(skillsDir, { recursive: true });
+    if (!fs.existsSync(BUILTIN_SKILLS_DIR)) return;
+    try {
+        const builtins = fs.readdirSync(BUILTIN_SKILLS_DIR, { withFileTypes: true });
+        for (const e of builtins) {
+            if (!e.isDirectory()) continue;
+            const dest = path.join(skillsDir, e.name);
+            if (!fs.existsSync(dest)) {
+                try {
+                    fs.cpSync(path.join(BUILTIN_SKILLS_DIR, e.name), dest, { recursive: true });
+                    console.log(`[Skills] Copied built-in skill: ${e.name}`);
+                } catch (err) {
+                    console.warn(`[Skills] Failed to copy ${e.name}:`, err.message);
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('[Skills] copyBuiltinSkills failed:', err.message);
+    }
+}
+
 // --- Web Search (Tavily + Jina Reader) ---
 
 const SEARCH_TRIGGERS = [
@@ -1095,6 +1167,7 @@ let agentToolPermissions = {
     readUrl: 'auto',
     diffFiles: 'auto',
     appendFile: 'confirm',
+    loadSkill: 'auto',
 };
 
 // Pending permission requests: id → { resolve, reject }
@@ -1280,6 +1353,20 @@ const AGENT_TOOLS = [
             }
         }
     },
+    {
+        type: 'function',
+        function: {
+            name: 'loadSkill',
+            description: 'Load full instructions for a named skill before using it. Call this at the start of a skill-assisted task.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'Name of the skill to load (e.g. "deep-researcher")' }
+                },
+                required: ['name']
+            }
+        }
+    },
 ];
 
 // Returns tools filtered to those not disabled
@@ -1348,6 +1435,16 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
     try {
         switch (name) {
             case 'webSearch': {
+                const tavilyKey = process.env.TAVILY_API_KEY;
+                if (!tavilyKey || tavilyKey === 'your_tavily_api_key_here') {
+                    return {
+                        result: 'Web search is unavailable: no Tavily API key is configured. ' +
+                            'To enable web search, add TAVILY_API_KEY=<your_key> to the .env file in the app folder. ' +
+                            'You can get a free key at https://tavily.com. ' +
+                            'In the meantime, you can still fetch specific pages directly using the fetchPage tool if you have a URL.',
+                        error: true
+                    };
+                }
                 const result = await fetchTavilyResults(args.query || '');
                 const text = result ? JSON.stringify(result).slice(0, 3000) : 'No results';
                 return { result: text };
@@ -1566,6 +1663,14 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     fs.appendFileSync(args.path, args.content || '', 'utf8');
                     return { result: 'Appended to: ' + args.path };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'loadSkill': {
+                const skill = loadedSkills.find(s => s.name === args.name);
+                if (!skill) return { result: `Skill "${args.name}" not found. Available: ${loadedSkills.map(s => s.name).join(', ') || 'none'}`, error: true };
+                try {
+                    const md = fs.readFileSync(path.join(skill.dir, 'SKILL.md'), 'utf8');
+                    return { result: md.replace(/^---[\s\S]*?---\n/, '') };
+                } catch (e) { return { result: 'Error reading skill: ' + e.message, error: true }; }
             }
             default:
                 return { result: `Unknown tool: ${name}`, error: true };
@@ -1963,7 +2068,7 @@ app.post('/api/memory/extract', async (req, res) => {
 
 // POST /api/agent/chat — main agent loop endpoint
 app.post('/api/agent/chat', async (req, res) => {
-    const { messages: initialMessages, model, backend = 'ollama', maxSteps, continueFrom } = req.body || {};
+    const { messages: initialMessages, model, backend = 'ollama', maxSteps, continueFrom, _skillHint } = req.body || {};
     const steps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || agentMaxSteps));
     const tools = getEnabledTools();
     // Session-scoped permission grants — cleared when this request ends (not global)
@@ -2001,6 +2106,21 @@ app.post('/api/agent/chat', async (req, res) => {
             messages[sysIdx] = { ...messages[sysIdx], content: messages[sysIdx].content + '\n\n' + AGENT_DIRECTIVE };
         } else {
             messages.unshift({ role: 'system', content: AGENT_DIRECTIVE });
+        }
+
+        // Append loaded skill list to system message
+        if (loadedSkills.length > 0) {
+            const skillLines = loadedSkills.map(s => `- ${s.name}: ${s.description}`).join('\n');
+            const sysMsg = messages.find(m => m.role === 'system');
+            if (sysMsg) {
+                sysMsg.content += `\n\nAvailable Skills:\n${skillLines}\nUse the loadSkill tool to load a skill's full instructions before using it.`;
+            }
+        }
+
+        // Inject skill hint if the user activated a skill via slash popup
+        if (_skillHint) {
+            const sysMsg = messages.find(m => m.role === 'system');
+            if (sysMsg) sysMsg.content += '\n\n' + _skillHint;
         }
     }
 
@@ -2143,6 +2263,49 @@ app.post('/api/agent/chat', async (req, res) => {
 
     res.write(JSON.stringify({ type: 'done' }) + '\n');
     res.end();
+});
+
+// --- Skills API ---
+
+app.get('/api/skills/list', (req, res) => {
+    res.json(loadedSkills.map(s => ({ name: s.name, description: s.description, builtin: s.builtin })));
+});
+
+app.post('/api/skills/reload', (req, res) => {
+    reloadSkills();
+    res.json({ ok: true, count: loadedSkills.length });
+});
+
+app.post('/api/skills/import', (req, res) => {
+    const { sourcePath } = req.body || {};
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+        return res.status(400).json({ error: 'Invalid or missing source path' });
+    }
+    const skillsDir = process.env.SKILLS_DIR;
+    if (!skillsDir) return res.status(500).json({ error: 'SKILLS_DIR not configured' });
+    const skillName = path.basename(sourcePath);
+    const dest = path.join(skillsDir, skillName);
+    try {
+        fs.cpSync(sourcePath, dest, { recursive: true });
+        reloadSkills();
+        res.json({ ok: true, name: skillName });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/skills/:name', (req, res) => {
+    const { name } = req.params;
+    const skillsDir = process.env.SKILLS_DIR;
+    if (!skillsDir) return res.status(500).json({ error: 'SKILLS_DIR not configured' });
+    const skillDir = path.join(skillsDir, name);
+    try {
+        fs.rmSync(skillDir, { recursive: true, force: true });
+        reloadSkills();
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // --- Ollama Proxy ---
@@ -2514,6 +2677,10 @@ app.all('/proxy/*', async (req, res) => {
         if (!res.headersSent) res.status(500).send('Internal proxy error.');
     }
 });
+
+// Initialize skills on startup
+copyBuiltinSkills();
+reloadSkills();
 
 serverInstance = app.listen(PORT, () => {
     console.log(`OllamaBro CORS Proxy server running on http://localhost:${PORT}`);

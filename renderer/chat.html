@@ -4812,6 +4812,27 @@ body {
                 </div>
 
                 <div class="settings-section collapsible-section">
+                    <button class="settings-section-toggle" id="skillsSectionToggle">
+                        Skills
+                        <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
+                    </button>
+                    <div id="skillsSectionBody" class="settings-section-body">
+                        <p class="modal-description">Skills give the agent specialized instructions. Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">/skill-name</code> in the message box to activate a skill. Requires <strong>Agent Mode</strong>.</p>
+                        <div id="skillsList" class="persona-presets-list"></div>
+                        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+                            <button id="importSkillButton" class="add-preset-button">
+                                <i data-lucide="folder-open"></i>
+                                Import Skill
+                            </button>
+                            <button id="reloadSkillsButton" class="add-preset-button" style="background:transparent;border:1px solid var(--border-color);">
+                                <i data-lucide="refresh-cw"></i>
+                                Reload
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-section collapsible-section">
                     <button class="settings-section-toggle" id="systemPromptSectionToggle">
                         System Prompt
                         <span class="section-chevron"><i data-lucide="chevron-right"></i></span>

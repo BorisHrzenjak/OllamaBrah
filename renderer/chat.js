@@ -160,6 +160,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let slashPopupFiltered = [];
     let slashPopupSelectedIndex = -1;
     const slashCommandPopup = document.getElementById('slashCommandPopup');
+    let loadedSkills = []; // [{ name, description, builtin }] from proxy
+    let pendingSkillName = null; // set when user activates a skill from the slash popup
 
     // Deep research state
     const deepResearchButton = document.getElementById('deepResearchButton');
@@ -3717,6 +3719,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    async function fetchSkills() {
+        try {
+            const resp = await fetch(`${PROXY_BASE}/api/skills/list`);
+            if (resp.ok) loadedSkills = await resp.json();
+        } catch {}
+    }
+
     function getSlashQuery() {
         const val = messageInput.value;
         const m = val.match(/^\/(\S*)$/);
@@ -3741,15 +3750,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             const info = document.createElement('div');
             info.className = 'slash-cmd-info';
 
+            const nameRow = document.createElement('div');
+            nameRow.style.display = 'flex';
+            nameRow.style.alignItems = 'center';
+            nameRow.style.gap = '6px';
+
             const name = document.createElement('div');
             name.className = 'slash-cmd-name';
             name.textContent = cmd.name;
+            nameRow.appendChild(name);
+
+            if (cmd._isSkill) {
+                const badge = document.createElement('span');
+                badge.textContent = 'skill';
+                badge.style.cssText = 'font-size:9px;font-weight:600;letter-spacing:0.04em;background:var(--accent);color:var(--bg-primary);padding:1px 5px;border-radius:3px;text-transform:uppercase;';
+                nameRow.appendChild(badge);
+            }
 
             const preview = document.createElement('div');
             preview.className = 'slash-cmd-preview';
             preview.textContent = cmd.body.replace(/\n/g, ' ');
 
-            info.appendChild(name);
+            info.appendChild(nameRow);
             info.appendChild(preview);
             item.appendChild(trigger);
             item.appendChild(info);
@@ -3784,6 +3806,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function applySlashCommand(cmd) {
+        if (cmd._isSkill) {
+            messageInput.value = `[skill:${cmd.name}] `;
+            messageInput.focus();
+            messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+            messageInput.dispatchEvent(new Event('input'));
+            hideSlashPopup();
+            return;
+        }
         messageInput.value = cmd.body;
         messageInput.focus();
         messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
@@ -3794,10 +3824,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     function handleSlashInput() {
         const query = getSlashQuery();
         if (query === null) { hideSlashPopup(); return; }
-        const filtered = slashCommands.filter(cmd =>
+        const filteredCmds = slashCommands.filter(cmd =>
             cmd.trigger.toLowerCase().startsWith(query.toLowerCase())
         );
-        showSlashPopup(filtered);
+        const filteredSkills = loadedSkills
+            .filter(s => s.name.toLowerCase().startsWith(query.toLowerCase()))
+            .map(s => ({ id: `skill_${s.name}`, trigger: s.name, name: s.name, body: s.description, _isSkill: true }));
+        showSlashPopup([...filteredCmds, ...filteredSkills]);
     }
 
     // ── Slash Commands Settings ──────────────────────────────────────────────
@@ -3848,6 +3881,120 @@ document.addEventListener('DOMContentLoaded', async () => {
             bodyInput.value = '';
             renderSlashCommandsList();
         });
+    }
+
+    // ── Skills Settings ──────────────────────────────────────────────────────
+
+    function renderSkillsList() {
+        const list = document.getElementById('skillsList');
+        if (!list) return;
+        list.innerHTML = '';
+        if (loadedSkills.length === 0) {
+            const empty = document.createElement('p');
+            empty.style.cssText = 'font-size:var(--font-size-xs);color:var(--text-muted);padding:var(--space-sm) 0;';
+            empty.textContent = 'No skills loaded. Import a skill folder or reload.';
+            list.appendChild(empty);
+            return;
+        }
+        for (const skill of loadedSkills) {
+            const item = document.createElement('div');
+            item.className = 'preset-item';
+
+            const info = document.createElement('div');
+            info.className = 'preset-info';
+
+            const nameEl = document.createElement('div');
+            nameEl.className = 'preset-item-name';
+            nameEl.style.display = 'flex';
+            nameEl.style.alignItems = 'center';
+            nameEl.style.gap = '6px';
+            nameEl.innerHTML = `<code style="font-size:11px;color:var(--accent);">/${skill.name}</code>`;
+            if (skill.builtin) {
+                const badge = document.createElement('span');
+                badge.textContent = 'built-in';
+                badge.style.cssText = 'font-size:9px;font-weight:600;letter-spacing:0.04em;background:var(--bg-quaternary);color:var(--text-muted);padding:1px 5px;border-radius:3px;text-transform:uppercase;border:1px solid var(--border-color);';
+                nameEl.appendChild(badge);
+            }
+
+            const desc = document.createElement('div');
+            desc.className = 'preset-item-preview';
+            desc.textContent = skill.description;
+
+            info.appendChild(nameEl);
+            info.appendChild(desc);
+
+            const actions = document.createElement('div');
+            actions.className = 'preset-item-actions';
+
+            if (!skill.builtin) {
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'preset-delete-button';
+                deleteBtn.title = 'Delete skill';
+                deleteBtn.appendChild(createLucideIcon('trash-2', 13));
+                deleteBtn.addEventListener('click', async () => {
+                    if (!confirm(`Delete skill "${skill.name}"? This cannot be undone.`)) return;
+                    try {
+                        await fetch(`${PROXY_BASE}/api/skills/${encodeURIComponent(skill.name)}`, { method: 'DELETE' });
+                        await fetchSkills();
+                        renderSkillsList();
+                    } catch (e) {
+                        console.error('[Skills] Delete failed:', e);
+                    }
+                });
+                actions.appendChild(deleteBtn);
+            }
+
+            item.appendChild(info);
+            item.appendChild(actions);
+            list.appendChild(item);
+        }
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+
+    function initSkillsSettings() {
+        const sectionToggle = document.getElementById('skillsSectionToggle');
+        if (!sectionToggle) return;
+
+        sectionToggle.addEventListener('click', () => {
+            toggleSection('skillsSectionToggle', 'skillsSectionBody');
+            const body = document.getElementById('skillsSectionBody');
+            if (body && body.classList.contains('expanded')) renderSkillsList();
+        });
+
+        const importBtn = document.getElementById('importSkillButton');
+        if (importBtn) {
+            importBtn.addEventListener('click', async () => {
+                if (!window.electronAPI?.skills?.pickFolder) return;
+                const sourcePath = await window.electronAPI.skills.pickFolder();
+                if (!sourcePath) return;
+                try {
+                    const resp = await fetch(`${PROXY_BASE}/api/skills/import`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sourcePath })
+                    });
+                    const data = await resp.json();
+                    if (data.error) { alert('Import failed: ' + data.error); return; }
+                    await fetchSkills();
+                    renderSkillsList();
+                } catch (e) {
+                    console.error('[Skills] Import failed:', e);
+                }
+            });
+        }
+
+        const reloadBtn = document.getElementById('reloadSkillsButton');
+        if (reloadBtn) {
+            reloadBtn.addEventListener('click', async () => {
+                try {
+                    await fetch(`${PROXY_BASE}/api/skills/reload`, { method: 'POST' });
+                    await fetchSkills();
+                    renderSkillsList();
+                } catch (e) {
+                    console.error('[Skills] Reload failed:', e);
+                }
+            });
+        }
     }
 
     function renderSlashCommandsList() {
@@ -4160,6 +4307,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     backend: currentModelBackend,
                     maxSteps: configuredMaxSteps
                 };
+                if (pendingSkillName) {
+                    agentBody._skillHint = `Use the ${pendingSkillName} skill — call loadSkill("${pendingSkillName}") first to get the full instructions, then proceed.`;
+                    pendingSkillName = null;
+                }
                 const agentResponse = await fetch(`${PROXY_BASE}/api/agent/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -4484,6 +4635,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function sendMessageToOllama(prompt) {
         if (!prompt || prompt.trim() === '') return;
+
+        // Extract skill tag if present (e.g. "[skill:deep-researcher] my question")
+        const skillMatch = prompt.match(/^\[skill:([^\]]+)\]\s*/);
+        if (skillMatch) {
+            pendingSkillName = skillMatch[1];
+            prompt = prompt.slice(skillMatch[0].length);
+            if (!prompt.trim()) { pendingSkillName = null; return; }
+            if (!agentModeEnabled) {
+                const md = await loadModelChatState(currentModelName);
+                addMessageToChatUI('System',
+                    `The "${pendingSkillName}" skill requires Agent Mode. Enable it with the ⚡ button in the toolbar, then resend your message.`,
+                    'error-message', md);
+                pendingSkillName = null;
+                return;
+            }
+        }
 
         // Clear draft for current conversation when sending
         let modelData = await loadModelChatState(currentModelName);
@@ -5017,8 +5184,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             lucide.createIcons();
         }
 
-        // Load slash commands
+        // Load slash commands and skills
         slashCommands = await loadSlashCommands();
+        await fetchSkills();
 
         // Setup scroll detection
         chatContainer.addEventListener('scroll', handleScroll, { passive: true });
@@ -5732,8 +5900,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         setTimeout(hideSlashPopup, 150);
     });
 
-    // Init slash commands settings section
+    // Init slash commands and skills settings sections
     initSlashCommandsSettings();
+    initSkillsSettings();
 
     // Persona preset event listeners
     const personaSectionToggle = document.getElementById('personaSectionToggle');
