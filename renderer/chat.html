@@ -4609,11 +4609,11 @@ body {
             <div class="modal-body">
                 <!-- Appearance -->
                 <div class="settings-section collapsible-section">
-                    <button class="settings-section-toggle expanded" id="appearanceSectionToggle">
+                    <button class="settings-section-toggle" id="appearanceSectionToggle">
                         Appearance
                         <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
                     </button>
-                    <div id="appearanceSectionBody" class="settings-section-body expanded">
+                    <div id="appearanceSectionBody" class="settings-section-body">
                         <div class="theme-group-label" style="margin-top: var(--space-md);">Dark</div>
                         <div class="theme-grid" style="margin-bottom: var(--space-md);">
                             <button class="theme-swatch" data-theme-id="default-dark">
@@ -4790,7 +4790,7 @@ body {
                         <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
                     </button>
                     <div id="slashCmdSectionBody" class="settings-section-body">
-                        <p class="modal-description">Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">/</code> in the message box to quickly insert a template. Select a template then add your content.</p>
+                        <p class="modal-description">Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">!trigger</code> in the message box to quickly insert a template.</p>
                         <div id="slashCommandsList" class="persona-presets-list"></div>
                         <div id="newSlashCmdForm" class="new-preset-form" style="display: none;">
                             <input type="text" id="newSlashCmdTrigger" class="preset-name-input"
@@ -4808,6 +4808,37 @@ body {
                             <i data-lucide="plus"></i>
                             New Template
                         </button>
+                    </div>
+                </div>
+
+                <div class="settings-section collapsible-section">
+                    <button class="settings-section-toggle" id="skillsSectionToggle">
+                        Skills
+                        <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
+                    </button>
+                    <div id="skillsSectionBody" class="settings-section-body">
+                        <p class="modal-description">Skills give the agent specialized instructions. Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">/skill-name</code> in the message box to activate a skill. Requires <strong>Agent Mode</strong>.</p>
+                        <div id="skillsList" class="persona-presets-list"></div>
+                        <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px;">
+                            <input type="text" id="skillInstallInput"
+                                placeholder="npx skills add https://github.com/... --skill name"
+                                style="width:100%;box-sizing:border-box;font-size:var(--font-size-sm);background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:6px 10px;color:var(--text-primary);outline:none;font-family:monospace;">
+                            <button id="installSkillButton" class="add-preset-button">
+                                <i data-lucide="download"></i>
+                                Install from URL
+                            </button>
+                        </div>
+                        <div id="skillInstallLog" style="display:none;margin-top:6px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:8px;font-size:11px;font-family:monospace;max-height:120px;overflow-y:auto;white-space:pre-wrap;"></div>
+                        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+                            <button id="importSkillButton" class="add-preset-button">
+                                <i data-lucide="folder-open"></i>
+                                Import Folder
+                            </button>
+                            <button id="reloadSkillsButton" class="add-preset-button" style="background:transparent;border:1px solid var(--border-color);">
+                                <i data-lucide="refresh-cw"></i>
+                                Reload
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -5189,6 +5220,50 @@ body {
                         <div id="kokoroModelStatus" class="kokoro-model-status" style="display: none;">
                             <span id="kokoroStatusIcon" class="kokoro-status-icon"></span>
                             <span id="kokoroStatusLabel">Checking model...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-section collapsible-section">
+                    <button class="settings-section-toggle" id="apiKeysSectionToggle">
+                        🔑 API Keys
+                        <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
+                    </button>
+                    <div id="apiKeysSectionBody" class="settings-section-body">
+                        <p class="modal-description">API keys for web search and deep research. Keys are stored locally on your device and only sent to their respective services.</p>
+
+                        <div class="llamacpp-field">
+                            <label class="llamacpp-field-label">
+                                Tavily API Key &mdash; Web Search
+                                <span id="tavilyKeyLink" style="color:var(--accent);font-size:var(--font-size-xs);cursor:pointer;margin-left:6px;">Get free key ↗</span>
+                            </label>
+                            <div style="display:flex;gap:var(--space-sm);">
+                                <input type="password" id="tavilyApiKeyInput" class="llamacpp-input" placeholder="tvly-..." style="flex:1;font-family:monospace;">
+                                <button id="tavilyKeyToggle" class="modal-button secondary" style="padding:0 10px;" title="Show/hide">
+                                    <i data-lucide="eye"></i>
+                                </button>
+                            </div>
+                            <span id="tavilyKeyStatus" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:4px;display:block;"></span>
+                        </div>
+
+                        <div class="llamacpp-field" style="margin-top:var(--space-md);">
+                            <label class="llamacpp-field-label">
+                                Exa API Key &mdash; Deep Research
+                                <span id="exaKeyLink" style="color:var(--accent);font-size:var(--font-size-xs);cursor:pointer;margin-left:6px;">Get free key ↗</span>
+                            </label>
+                            <div style="display:flex;gap:var(--space-sm);">
+                                <input type="password" id="exaApiKeyInput" class="llamacpp-input" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="flex:1;font-family:monospace;">
+                                <button id="exaKeyToggle" class="modal-button secondary" style="padding:0 10px;" title="Show/hide">
+                                    <i data-lucide="eye"></i>
+                                </button>
+                            </div>
+                            <span id="exaKeyStatus" style="font-size:var(--font-size-xs);color:var(--text-muted);margin-top:4px;display:block;"></span>
+                        </div>
+
+                        <div style="display:flex;align-items:center;gap:var(--space-md);margin-top:var(--space-md);">
+                            <button id="saveApiKeysButton" class="modal-button primary">Save</button>
+                            <button id="clearApiKeysButton" class="modal-button secondary">Clear All</button>
+                            <span id="apiKeysStatus" style="font-size:var(--font-size-xs);color:var(--text-muted);"></span>
                         </div>
                     </div>
                 </div>

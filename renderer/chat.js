@@ -160,6 +160,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let slashPopupFiltered = [];
     let slashPopupSelectedIndex = -1;
     const slashCommandPopup = document.getElementById('slashCommandPopup');
+    let loadedSkills = []; // [{ name, description, builtin }] from proxy
+    let pendingSkillName = null; // set when user activates a skill from the slash popup
 
     // Deep research state
     const deepResearchButton = document.getElementById('deepResearchButton');
@@ -3717,10 +3719,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    async function fetchSkills() {
+        try {
+            const resp = await fetch(`${PROXY_BASE}/api/skills/list`);
+            if (resp.ok) loadedSkills = await resp.json();
+        } catch {}
+    }
+
     function getSlashQuery() {
         const val = messageInput.value;
-        const m = val.match(/^\/(\S*)$/);
-        return m ? m[1] : null;
+        const skill = val.match(/^\/(\S*)$/);
+        if (skill) return { query: skill[1], type: 'skill' };
+        const tmpl = val.match(/^!(\S*)$/);
+        if (tmpl) return { query: tmpl[1], type: 'template' };
+        return null;
     }
 
     function showSlashPopup(filtered) {
@@ -3736,20 +3748,33 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const trigger = document.createElement('span');
             trigger.className = 'slash-cmd-trigger';
-            trigger.textContent = `/${cmd.trigger}`;
+            trigger.textContent = cmd._isSkill ? `/${cmd.trigger}` : `!${cmd.trigger}`;
 
             const info = document.createElement('div');
             info.className = 'slash-cmd-info';
 
+            const nameRow = document.createElement('div');
+            nameRow.style.display = 'flex';
+            nameRow.style.alignItems = 'center';
+            nameRow.style.gap = '6px';
+
             const name = document.createElement('div');
             name.className = 'slash-cmd-name';
             name.textContent = cmd.name;
+            nameRow.appendChild(name);
+
+            if (cmd._isSkill) {
+                const badge = document.createElement('span');
+                badge.textContent = 'skill';
+                badge.style.cssText = 'font-size:9px;font-weight:600;letter-spacing:0.04em;background:var(--accent);color:var(--bg-primary);padding:1px 5px;border-radius:3px;text-transform:uppercase;';
+                nameRow.appendChild(badge);
+            }
 
             const preview = document.createElement('div');
             preview.className = 'slash-cmd-preview';
             preview.textContent = cmd.body.replace(/\n/g, ' ');
 
-            info.appendChild(name);
+            info.appendChild(nameRow);
             info.appendChild(preview);
             item.appendChild(trigger);
             item.appendChild(info);
@@ -3784,6 +3809,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function applySlashCommand(cmd) {
+        if (cmd._isSkill) {
+            messageInput.value = `[skill:${cmd.name}] `;
+            messageInput.focus();
+            messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+            messageInput.dispatchEvent(new Event('input'));
+            hideSlashPopup();
+            return;
+        }
         messageInput.value = cmd.body;
         messageInput.focus();
         messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
@@ -3792,12 +3825,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function handleSlashInput() {
-        const query = getSlashQuery();
-        if (query === null) { hideSlashPopup(); return; }
-        const filtered = slashCommands.filter(cmd =>
-            cmd.trigger.toLowerCase().startsWith(query.toLowerCase())
-        );
-        showSlashPopup(filtered);
+        const result = getSlashQuery();
+        if (result === null) { hideSlashPopup(); return; }
+        if (result.type === 'skill') {
+            const filteredSkills = loadedSkills
+                .filter(s => s.name.toLowerCase().startsWith(result.query.toLowerCase()))
+                .map(s => ({ id: `skill_${s.name}`, trigger: s.name, name: s.name, body: s.description, _isSkill: true }));
+            showSlashPopup(filteredSkills);
+        } else {
+            const filteredCmds = slashCommands.filter(cmd =>
+                cmd.trigger.toLowerCase().startsWith(result.query.toLowerCase())
+            );
+            showSlashPopup(filteredCmds);
+        }
     }
 
     // ── Slash Commands Settings ──────────────────────────────────────────────
@@ -3850,6 +3890,179 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    // ── Skills Settings ──────────────────────────────────────────────────────
+
+    function renderSkillsList() {
+        const list = document.getElementById('skillsList');
+        if (!list) return;
+        list.innerHTML = '';
+        if (loadedSkills.length === 0) {
+            const empty = document.createElement('p');
+            empty.style.cssText = 'font-size:var(--font-size-xs);color:var(--text-muted);padding:var(--space-sm) 0;';
+            empty.textContent = 'No skills loaded. Import a skill folder or reload.';
+            list.appendChild(empty);
+            return;
+        }
+
+        // User-added first (alpha), then built-ins (alpha)
+        const sorted = [
+            ...loadedSkills.filter(s => !s.builtin).sort((a, b) => a.name.localeCompare(b.name)),
+            ...loadedSkills.filter(s => s.builtin).sort((a, b) => a.name.localeCompare(b.name)),
+        ];
+
+        for (const skill of sorted) {
+            const item = document.createElement('div');
+            item.className = 'preset-item';
+
+            const info = document.createElement('div');
+            info.className = 'preset-info';
+
+            const nameEl = document.createElement('div');
+            nameEl.className = 'preset-item-name';
+            nameEl.style.display = 'flex';
+            nameEl.style.alignItems = 'center';
+            nameEl.style.gap = '6px';
+            nameEl.innerHTML = `<code style="font-size:11px;color:var(--accent);">/${skill.name}</code>`;
+            if (skill.builtin) {
+                const badge = document.createElement('span');
+                badge.textContent = 'built-in';
+                badge.style.cssText = 'font-size:10px;font-weight:600;letter-spacing:0.03em;background:var(--accent-subtle);color:var(--accent);padding:2px 6px;border-radius:3px;text-transform:uppercase;border:1px solid rgba(59,130,246,0.3);';
+                nameEl.appendChild(badge);
+            }
+
+            const desc = document.createElement('div');
+            desc.className = 'preset-item-preview';
+            desc.textContent = skill.description;
+
+            info.appendChild(nameEl);
+            info.appendChild(desc);
+
+            const actions = document.createElement('div');
+            actions.className = 'preset-item-actions';
+
+            if (!skill.builtin) {
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'preset-edit-button';
+                deleteBtn.title = 'Delete skill';
+                deleteBtn.style.color = 'var(--error-text, #f87171)';
+                deleteBtn.appendChild(createLucideIcon('trash-2', 13));
+                deleteBtn.addEventListener('click', async () => {
+                    if (!confirm(`Delete skill "${skill.name}"? This cannot be undone.`)) return;
+                    try {
+                        await fetch(`${PROXY_BASE}/api/skills/${encodeURIComponent(skill.name)}`, { method: 'DELETE' });
+                        await fetchSkills();
+                        renderSkillsList();
+                    } catch (e) {
+                        console.error('[Skills] Delete failed:', e);
+                    }
+                });
+                actions.appendChild(deleteBtn);
+            }
+
+            item.appendChild(info);
+            item.appendChild(actions);
+            list.appendChild(item);
+        }
+        list.scrollTop = 0;
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+
+    function initSkillsSettings() {
+        const sectionToggle = document.getElementById('skillsSectionToggle');
+        if (!sectionToggle) return;
+
+        sectionToggle.addEventListener('click', () => {
+            toggleSection('skillsSectionToggle', 'skillsSectionBody');
+            const body = document.getElementById('skillsSectionBody');
+            if (body && body.classList.contains('expanded')) renderSkillsList();
+        });
+
+        const importBtn = document.getElementById('importSkillButton');
+        if (importBtn) {
+            importBtn.addEventListener('click', async () => {
+                if (!window.electronAPI?.skills?.pickFolder) return;
+                const sourcePath = await window.electronAPI.skills.pickFolder();
+                if (!sourcePath) return;
+                try {
+                    const resp = await fetch(`${PROXY_BASE}/api/skills/import`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sourcePath })
+                    });
+                    const data = await resp.json();
+                    if (data.error) { alert('Import failed: ' + data.error); return; }
+                    await fetchSkills();
+                    renderSkillsList();
+                } catch (e) {
+                    console.error('[Skills] Import failed:', e);
+                }
+            });
+        }
+
+        const reloadBtn = document.getElementById('reloadSkillsButton');
+        if (reloadBtn) {
+            reloadBtn.addEventListener('click', async () => {
+                try {
+                    await fetch(`${PROXY_BASE}/api/skills/reload`, { method: 'POST' });
+                    await fetchSkills();
+                    renderSkillsList();
+                } catch (e) {
+                    console.error('[Skills] Reload failed:', e);
+                }
+            });
+        }
+
+        const installInput = document.getElementById('skillInstallInput');
+        const installBtn = document.getElementById('installSkillButton');
+        const installLog = document.getElementById('skillInstallLog');
+
+        function setInstallLog(text, color) {
+            if (!installLog) return;
+            installLog.style.display = 'block';
+            installLog.style.color = color || 'var(--text-secondary)';
+            installLog.textContent = text;
+        }
+
+        async function runSkillInstall() {
+            const raw = installInput ? installInput.value.trim() : '';
+            if (!raw) return;
+
+            installBtn.disabled = true;
+            installInput.disabled = true;
+            setInstallLog('Installing…', 'var(--text-muted)');
+
+            try {
+                const resp = await fetch(`${PROXY_BASE}/api/skills/import-url`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: raw })
+                });
+                const data = await resp.json();
+                if (data.error) {
+                    setInstallLog('Error: ' + data.error, 'var(--error-color, #f87171)');
+                    return;
+                }
+                setInstallLog(`Installed "${data.name}" successfully.`, 'var(--accent)');
+                await fetchSkills();
+                renderSkillsList();
+                installInput.value = '';
+            } catch (e) {
+                setInstallLog('Install error: ' + e.message, 'var(--error-color, #f87171)');
+                console.error('[Skills] install failed:', e);
+            } finally {
+                installBtn.disabled = false;
+                installInput.disabled = false;
+            }
+        }
+
+        if (installBtn) installBtn.addEventListener('click', runSkillInstall);
+        if (installInput) {
+            installInput.addEventListener('keydown', e => {
+                if (e.key === 'Enter') runSkillInstall();
+            });
+        }
+    }
+
     function renderSlashCommandsList() {
         const list = document.getElementById('slashCommandsList');
         if (!list) return;
@@ -3877,7 +4090,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const nameEl = document.createElement('div');
         nameEl.className = 'preset-item-name';
-        nameEl.innerHTML = `<code style="font-size:11px;color:var(--accent);">/${cmd.trigger}</code> — ${cmd.name}`;
+        nameEl.innerHTML = `<code style="font-size:11px;color:var(--accent);">!${cmd.trigger}</code> — ${cmd.name}`;
 
         const preview = document.createElement('div');
         preview.className = 'preset-item-preview';
@@ -4160,6 +4373,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     backend: currentModelBackend,
                     maxSteps: configuredMaxSteps
                 };
+                if (pendingSkillName) {
+                    agentBody._skillHint = `Use the ${pendingSkillName} skill — call loadSkill("${pendingSkillName}") first to get the full instructions, then proceed.`;
+                    pendingSkillName = null;
+                }
                 const agentResponse = await fetch(`${PROXY_BASE}/api/agent/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -4484,6 +4701,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function sendMessageToOllama(prompt) {
         if (!prompt || prompt.trim() === '') return;
+
+        // Extract skill tag if present (e.g. "[skill:deep-researcher] my question")
+        const skillMatch = prompt.match(/^\[skill:([^\]]+)\]\s*/);
+        if (skillMatch) {
+            pendingSkillName = skillMatch[1];
+            prompt = prompt.slice(skillMatch[0].length);
+            if (!prompt.trim()) { pendingSkillName = null; return; }
+            if (!agentModeEnabled) {
+                const md = await loadModelChatState(currentModelName);
+                addMessageToChatUI('System',
+                    `The "${pendingSkillName}" skill requires Agent Mode. Enable it with the ⚡ button in the toolbar, then resend your message.`,
+                    'error-message', md);
+                pendingSkillName = null;
+                return;
+            }
+        }
 
         // Clear draft for current conversation when sending
         let modelData = await loadModelChatState(currentModelName);
@@ -5017,8 +5250,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             lucide.createIcons();
         }
 
-        // Load slash commands
+        // Load slash commands and skills
         slashCommands = await loadSlashCommands();
+        await fetchSkills();
 
         // Setup scroll detection
         chatContainer.addEventListener('scroll', handleScroll, { passive: true });
@@ -5727,13 +5961,98 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     initMemorySettings();
 
+    // ===== API Keys Settings =====
+
+    function updateApiKeyBadges(tavilyOk, exaOk) {
+        const tavilyEl = document.getElementById('tavilyKeyStatus');
+        const exaEl    = document.getElementById('exaKeyStatus');
+        if (tavilyEl) {
+            tavilyEl.textContent = tavilyOk ? '✓ Configured — web search enabled' : 'Not set — web search unavailable';
+            tavilyEl.style.color = tavilyOk ? 'var(--success, #4caf50)' : 'var(--text-muted)';
+        }
+        if (exaEl) {
+            exaEl.textContent = exaOk ? '✓ Configured — deep research enabled' : 'Not set — deep research unavailable';
+            exaEl.style.color = exaOk ? 'var(--success, #4caf50)' : 'var(--text-muted)';
+        }
+    }
+
+    async function loadApiKeys() {
+        const tavilyKey = await window.electronAPI.store.get('tavilyApiKey', '');
+        const exaKey    = await window.electronAPI.store.get('exaApiKey', '');
+        const tavilyInput = document.getElementById('tavilyApiKeyInput');
+        const exaInput    = document.getElementById('exaApiKeyInput');
+        if (tavilyInput) tavilyInput.value = tavilyKey || '';
+        if (exaInput)    exaInput.value    = exaKey    || '';
+        updateApiKeyBadges(!!tavilyKey, !!exaKey);
+    }
+
+    async function saveApiKeys() {
+        const tavilyKey = (document.getElementById('tavilyApiKeyInput')?.value || '').trim();
+        const exaKey    = (document.getElementById('exaApiKeyInput')?.value    || '').trim();
+        const statusEl  = document.getElementById('apiKeysStatus');
+        try {
+            await window.electronAPI.store.set('tavilyApiKey', tavilyKey);
+            await window.electronAPI.store.set('exaApiKey',    exaKey);
+            await fetch(`${PROXY_BASE}/api/keys`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tavilyApiKey: tavilyKey, exaApiKey: exaKey })
+            });
+            updateApiKeyBadges(!!tavilyKey, !!exaKey);
+            if (statusEl) { statusEl.textContent = 'Saved'; setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 2000); }
+        } catch {
+            if (statusEl) statusEl.textContent = 'Error saving';
+        }
+    }
+
+    function initApiKeysSection() {
+        const toggle = document.getElementById('apiKeysSectionToggle');
+        if (toggle) {
+            toggle.addEventListener('click', () => {
+                toggleSection('apiKeysSectionToggle', 'apiKeysSectionBody');
+                const body = document.getElementById('apiKeysSectionBody');
+                if (body && body.classList.contains('expanded')) loadApiKeys();
+            });
+        }
+
+        // Show/hide toggles for each key field
+        [['tavilyKeyToggle', 'tavilyApiKeyInput'], ['exaKeyToggle', 'exaApiKeyInput']].forEach(([btnId, inputId]) => {
+            const btn = document.getElementById(btnId);
+            const inp = document.getElementById(inputId);
+            if (btn && inp) {
+                btn.addEventListener('click', () => {
+                    const show = inp.type === 'password';
+                    inp.type = show ? 'text' : 'password';
+                    btn.innerHTML = show ? '<i data-lucide="eye-off"></i>' : '<i data-lucide="eye"></i>';
+                    lucide.createIcons({ nodes: [btn] });
+                });
+            }
+        });
+
+        // External links (open in system browser)
+        document.getElementById('tavilyKeyLink')?.addEventListener('click', () => window.open('https://tavily.com'));
+        document.getElementById('exaKeyLink')?.addEventListener('click',    () => window.open('https://exa.ai'));
+
+        document.getElementById('saveApiKeysButton')?.addEventListener('click', saveApiKeys);
+        document.getElementById('clearApiKeysButton')?.addEventListener('click', async () => {
+            const tavilyInput = document.getElementById('tavilyApiKeyInput');
+            const exaInput    = document.getElementById('exaApiKeyInput');
+            if (tavilyInput) tavilyInput.value = '';
+            if (exaInput)    exaInput.value    = '';
+            await saveApiKeys();
+        });
+    }
+
+    initApiKeysSection();
+
     // Slash command popup: close when input loses focus (unless clicking popup itself)
     messageInput.addEventListener('blur', () => {
         setTimeout(hideSlashPopup, 150);
     });
 
-    // Init slash commands settings section
+    // Init slash commands and skills settings sections
     initSlashCommandsSettings();
+    initSkillsSettings();
 
     // Persona preset event listeners
     const personaSectionToggle = document.getElementById('personaSectionToggle');

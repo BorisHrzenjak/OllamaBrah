@@ -41,6 +41,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         close:    () => ipcRenderer.invoke('window:close'),
     },
 
+    skills: {
+        pickFolder: () => ipcRenderer.invoke('skills:pickFolder'),
+    },
+
     on:  (ch, cb) => ipcRenderer.on(ch, (_e, ...a) => cb(...a)),
     off: (ch, cb) => ipcRenderer.removeListener(ch, cb),
 });
