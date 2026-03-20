@@ -1,0 +1,686 @@
+// proxy/tools.js — agent tool definitions, executeTool, requestPermission, isPathAllowed, agent config state
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
+const memory = require('./memory');
+const diffLib = require('diff');
+const { fetchPageViaJina, fetchBinaryUrl, fetchTavilyResults, heuristicTimeRange } = require('./search');
+const skillsModule = require('./skills');
+
+// --- Agent config (updated via POST /api/agent/config) ---
+let agentMaxSteps = parseInt(process.env.AGENT_MAX_STEPS || '15', 10);
+
+// When AGENT_ALLOWED_DIRS is unset, default to the user's home directory as a safe boundary.
+// File tools will only operate inside these directories unless explicitly expanded via env/config.
+const _envAllowedDirs = (process.env.AGENT_ALLOWED_DIRS || '').split(',').map(s => s.trim()).filter(Boolean);
+let agentAllowedDirs = _envAllowedDirs.length > 0 ? _envAllowedDirs : [os.homedir()];
+
+// Paths that are always blocked regardless of config; cannot be removed via the API.
+const ALWAYS_BLOCKED_PATHS = [
+    'C:\\Windows\\System32',
+    'C:\\Windows\\SysWOW64',
+    path.join(os.homedir(), '.ssh'),
+    path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Credentials'),
+];
+let agentBlockedPaths = Array.from(new Set([
+    ...ALWAYS_BLOCKED_PATHS,
+    ...(process.env.AGENT_BLOCKED_PATHS || '').split(',').map(s => s.trim()).filter(Boolean),
+]));
+
+// Per-tool permission levels: 'auto' | 'confirm' | 'disabled'
+let agentToolPermissions = {
+    webSearch: 'auto',
+    fetchPage: 'auto',
+    getDateTime: 'auto',
+    math: 'auto',
+    saveMemory: 'auto',
+    readFile: 'auto',
+    writeFile: 'confirm',
+    listDirectory: 'auto',
+    findFiles: 'auto',
+    deleteFile: 'confirm',
+    runCode: 'confirm',
+    runShell: 'confirm',
+    clipboardRead: 'confirm',
+    clipboardWrite: 'confirm',
+    readUrl: 'auto',
+    diffFiles: 'auto',
+    appendFile: 'confirm',
+    loadSkill: 'auto',
+};
+
+// Pending permission requests: id → { resolve, reject }
+const pendingPermissions = new Map();
+
+function generatePermissionId() {
+    return Math.random().toString(36).slice(2, 10);
+}
+
+function isPathAllowed(targetPath) {
+    let resolved;
+    try { resolved = fs.realpathSync(targetPath); } catch {
+        try { resolved = path.resolve(targetPath); } catch { return false; }
+    }
+    const lower = resolved.toLowerCase();
+    function matchesBoundary(base) {
+        const b = path.resolve(base).toLowerCase();
+        return lower === b || lower.startsWith(b + path.sep) || lower.startsWith(b + '/');
+    }
+    if (agentBlockedPaths.some(b => matchesBoundary(b))) return false;
+    if (agentAllowedDirs.length === 0) return true;
+    return agentAllowedDirs.some(a => matchesBoundary(a));
+}
+
+// Tier 1 tool definitions (for the model's tools array)
+const AGENT_TOOLS = [
+    {
+        type: 'function',
+        function: {
+            name: 'webSearch',
+            description: 'Search the web for current information. MUST be called for any question involving: recent news, current events, today\'s date, live prices, sports scores, weather, product releases, anything that may have changed since your training data. Never answer time-sensitive questions from memory alone — always call webSearch first.',
+            parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search query' } }, required: ['query'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'fetchPage',
+            description: 'Fetch and read the full content of a web page by URL. Use after webSearch to read full article text, or when the user provides a specific URL to read.',
+            parameters: { type: 'object', properties: { url: { type: 'string', description: 'Full URL to fetch' } }, required: ['url'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'getDateTime',
+            description: 'Get the current date and time.',
+            parameters: { type: 'object', properties: {} }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'math',
+            description: 'Evaluate a mathematical expression and return the result.',
+            parameters: { type: 'object', properties: { expression: { type: 'string', description: 'Math expression to evaluate, e.g. "2 + 2" or "Math.sqrt(144)"' } }, required: ['expression'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'readFile',
+            description: 'Read the contents of a file from disk.',
+            parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the file' } }, required: ['path'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'writeFile',
+            description: 'Write or overwrite a file on disk.',
+            parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the file' }, content: { type: 'string', description: 'Content to write' } }, required: ['path', 'content'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'listDirectory',
+            description: 'List files and folders in a directory. Returns names, counts, and a breakdown by file extension. Use for browsing a single directory.',
+            parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the directory' } }, required: ['path'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'findFiles',
+            description: 'Search for files matching a pattern, optionally recursively. Returns the total count and full paths. Use this whenever the user asks to count, find, or filter files by type (e.g. "how many images", "find all PDFs").',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Directory to search in (absolute Windows path)' },
+                    pattern: { type: 'string', description: 'Comma-separated file extensions to match, e.g. ".jpg,.png,.gif" or "*" for all files' },
+                    recursive: { type: 'boolean', description: 'Search subdirectories recursively (default: false)' }
+                },
+                required: ['path', 'pattern']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'deleteFile',
+            description: 'Delete a file from disk. This is irreversible.',
+            parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the file to delete' } }, required: ['path'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'runCode',
+            description: 'Execute a code snippet. Supports "js" (Node.js vm sandbox) and "python" (subprocess).',
+            parameters: { type: 'object', properties: { lang: { type: 'string', description: '"js" or "python"' }, code: { type: 'string', description: 'Code to execute' } }, required: ['lang', 'code'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'runShell',
+            description: 'Run a shell command on the local machine. Use with caution.',
+            parameters: { type: 'object', properties: { cmd: { type: 'string', description: 'Shell command to execute' } }, required: ['cmd'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'saveMemory',
+            description: 'Save an important fact, preference, or piece of information to persistent memory so it can be recalled in future conversations. Use this when the user asks you to remember something, or when you learn something worth preserving.',
+            parameters: { type: 'object', properties: { text: { type: 'string', description: 'The information to remember. Write it clearly in third person, e.g. "User prefers dark mode" or "User\'s project uses Python 3.11".' } }, required: ['text'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'clipboardRead',
+            description: 'Read the current text contents of the system clipboard.',
+            parameters: { type: 'object', properties: {} }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'clipboardWrite',
+            description: 'Write text to the system clipboard, replacing its current contents.',
+            parameters: { type: 'object', properties: { text: { type: 'string', description: 'Text to place on the clipboard' } }, required: ['text'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'readUrl',
+            description: 'Fetch and read a URL, with full PDF support. For .pdf URLs or local PDF file paths, extracts the text content using pdf-parse. For regular web pages, uses the Jina reader for clean markdown output.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    url: { type: 'string', description: 'Full http/https URL or absolute local file path to a PDF' },
+                    type: { type: 'string', description: 'Force parsing mode: "pdf" to treat as PDF, omit for auto-detection' }
+                },
+                required: ['url']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'diffFiles',
+            description: 'Compare two files and return a unified diff showing exactly what changed. Use this when you need to explain, review, or apply differences between two file versions.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    pathA: { type: 'string', description: 'Absolute path to the original (before) file' },
+                    pathB: { type: 'string', description: 'Absolute path to the new (after) file' }
+                },
+                required: ['pathA', 'pathB']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'appendFile',
+            description: 'Append text to the end of a file without overwriting its existing content. Safer than writeFile for logs, notes, or journals. Creates the file if it does not exist.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Absolute path to the file' },
+                    content: { type: 'string', description: 'Text to append' }
+                },
+                required: ['path', 'content']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'loadSkill',
+            description: 'Load full instructions for a named skill before using it. Call this at the start of a skill-assisted task.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'Name of the skill to load (e.g. "deep-researcher")' }
+                },
+                required: ['name']
+            }
+        }
+    },
+];
+
+// Returns tools filtered to those not disabled
+function getEnabledTools() {
+    return AGENT_TOOLS.filter(t => agentToolPermissions[t.function.name] !== 'disabled');
+}
+
+// Ask user permission via streaming — returns true if approved
+// sessionPermissions: Map scoped to the current agent run (not global)
+async function requestPermission(res, tool, args, risk, sessionPermissions) {
+    const perm = agentToolPermissions[tool];
+    if (perm === 'auto') return true;
+    if (perm === 'disabled') return false;
+
+    // Check session-level grants before prompting the user
+    if (sessionPermissions.has(tool)) return true;
+    if (args && args.path) {
+        const dir = path.dirname(args.path);
+        if (sessionPermissions.has(`${tool}:${dir}`)) return true;
+    }
+
+    // perm === 'confirm' — stream a permission card and wait
+    const id = generatePermissionId();
+    res.write(JSON.stringify({ type: 'permission_request', id, tool, args, risk }) + '\n');
+
+    return new Promise((resolve) => {
+        let keepaliveInterval;
+
+        const cleanup = (approved) => {
+            clearTimeout(timeout);
+            clearInterval(keepaliveInterval);
+            res.removeListener('close', onClose);
+            pendingPermissions.delete(id);
+            resolve(approved);
+        };
+
+        // Keepalive pings prevent the HTTP connection from timing out during long waits
+        keepaliveInterval = setInterval(() => {
+            if (!res.writableEnded) res.write(JSON.stringify({ type: 'keepalive' }) + '\n');
+        }, 25000);
+
+        const timeout = setTimeout(() => cleanup(false), 300000); // auto-deny after 5 min
+
+        const onClose = () => cleanup(false); // client disconnected
+        res.once('close', onClose);
+
+        pendingPermissions.set(id, {
+            resolve: (approved, scope) => {
+                if (approved) {
+                    if (scope === 'session') {
+                        sessionPermissions.set(tool, true);
+                    } else if (scope === 'path' && args && args.path) {
+                        const dir = path.dirname(args.path);
+                        sessionPermissions.set(`${tool}:${dir}`, true);
+                    }
+                }
+                cleanup(approved);
+            },
+            reject: () => cleanup(false)
+        });
+    });
+}
+
+// Execute a single tool call, streaming progress/result
+async function executeTool(res, name, args, sessionPermissions, model, backend) {
+    try {
+        switch (name) {
+            case 'webSearch': {
+                const tavilyKey = process.env.TAVILY_API_KEY;
+                if (!tavilyKey || tavilyKey === 'your_tavily_api_key_here') {
+                    return {
+                        result: 'Web search is unavailable: no Tavily API key is configured. ' +
+                            'To enable web search, add TAVILY_API_KEY=<your_key> to the .env file in the app folder. ' +
+                            'You can get a free key at https://tavily.com. ' +
+                            'In the meantime, you can still fetch specific pages directly using the fetchPage tool if you have a URL.',
+                        error: true
+                    };
+                }
+                console.log(`[Agent/webSearch] Query: "${(args.query || '').slice(0, 100)}"`);
+                const query = args.query || '';
+                const result = await fetchTavilyResults(query, { time_range: heuristicTimeRange(query) });
+                if (!result) return { result: 'No results', error: true };
+                if (result._configError) return { result: result._configError, error: true };
+                console.log(`[Agent/webSearch] Got ${result.results?.length || 0} result(s)`);
+                return { result: JSON.stringify(result).slice(0, 3000) };
+            }
+            case 'fetchPage': {
+                console.log(`[Agent/fetchPage] Fetching: ${(args.url || '').slice(0, 100)}`);
+                const text = await fetchPageViaJina(args.url || '', 8000);
+                if (text && text._fetchError) { console.warn(`[Agent/fetchPage] ${text._fetchError}`); return { result: text._fetchError, error: true }; }
+                console.log(`[Agent/fetchPage] Got ${typeof text === 'string' ? text.length : 0} chars`);
+                return { result: text || 'No content' };
+            }
+            case 'getDateTime': {
+                return { result: new Date().toLocaleString() };
+            }
+            case 'math': {
+                // Validate expression against a strict whitelist of safe math characters.
+                // This prevents arbitrary code execution via the Function() constructor.
+                // For a fully sandboxed evaluator, consider replacing with mathjs or expr-eval.
+                const expr = String(args.expression || '');
+                const SAFE_MATH_RE = /^[\d\s\+\-\*\/\%\(\)\.\^eMathsqrtabclogfloorilPIroundmaxin,]*$/;
+                if (!SAFE_MATH_RE.test(expr)) {
+                    return { result: 'Error: expression contains disallowed characters', error: true };
+                }
+                try {
+                    // eslint-disable-next-line no-new-func
+                    const val = Function('"use strict"; return (' + expr + ')')();
+                    return { result: String(val) };
+                } catch (e) {
+                    return { result: 'Error: ' + e.message, error: true };
+                }
+            }
+            case 'readFile': {
+                const approved = await requestPermission(res, 'readFile', args, 'medium', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                try {
+                    const content = fs.readFileSync(args.path, 'utf8');
+                    return { result: content.slice(0, 8000) };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'writeFile': {
+                const approved = await requestPermission(res, 'writeFile', args, 'high', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                try {
+                    fs.mkdirSync(path.dirname(args.path), { recursive: true });
+                    fs.writeFileSync(args.path, args.content || '', 'utf8');
+                    return { result: 'File written successfully' };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'listDirectory': {
+                const approved = await requestPermission(res, 'listDirectory', args, 'low', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                try {
+                    const entries = fs.readdirSync(args.path, { withFileTypes: true });
+                    const dirs = entries.filter(e => e.isDirectory());
+                    const files = entries.filter(e => !e.isDirectory());
+                    // Count by extension
+                    const extCounts = {};
+                    for (const f of files) {
+                        const ext = path.extname(f.name).toLowerCase() || '(no ext)';
+                        extCounts[ext] = (extCounts[ext] || 0) + 1;
+                    }
+                    const extSummary = Object.entries(extCounts)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([ext, n]) => `${ext}: ${n}`)
+                        .join(', ');
+                    const lines = [
+                        `Directory: ${args.path}`,
+                        `Total: ${entries.length} items (${files.length} files, ${dirs.length} dirs)`,
+                        extSummary ? `File types: ${extSummary}` : '',
+                        '',
+                        ...dirs.map(e => '[DIR] ' + e.name),
+                        ...files.map(e => e.name),
+                    ].filter(l => l !== undefined);
+                    return { result: lines.join('\n') };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'findFiles': {
+                const approved = await requestPermission(res, 'findFiles', args, 'low', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                try {
+                    const exts = args.pattern === '*'
+                        ? []
+                        : String(args.pattern).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+                    const recursive = !!args.recursive;
+                    const found = [];
+                    function walk(dir, depth) {
+                        if (depth > (recursive ? 20 : 0)) return;
+                        let entries;
+                        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+                        for (const e of entries) {
+                            const full = path.join(dir, e.name);
+                            if (e.isDirectory() && recursive) { walk(full, depth + 1); }
+                            else if (e.isFile()) {
+                                const ext = path.extname(e.name).toLowerCase();
+                                if (exts.length === 0 || exts.includes(ext)) found.push(full);
+                            }
+                        }
+                    }
+                    walk(args.path, 0);
+                    const preview = found.slice(0, 50).join('\n');
+                    const more = found.length > 50 ? `\n... and ${found.length - 50} more` : '';
+                    return { result: `Found ${found.length} file(s) matching "${args.pattern}" in ${args.path}${recursive ? ' (recursive)' : ''}:\n${preview}${more}` };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'deleteFile': {
+                const approved = await requestPermission(res, 'deleteFile', args, 'high', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                try {
+                    fs.unlinkSync(args.path);
+                    return { result: 'File deleted: ' + args.path };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'runCode': {
+                const approved = await requestPermission(res, 'runCode', { lang: args.lang, code: args.code }, 'high', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                res.write(JSON.stringify({ type: 'tool_running', name: 'runCode', preview: `${args.lang}:\n${args.code}` }) + '\n');
+                return await runCodeTool(args.lang, args.code);
+            }
+            case 'runShell': {
+                // runShell respects agentToolPermissions (default: 'disabled').
+                // When enabled, permission level 'confirm' is strongly recommended.
+                const approved = await requestPermission(res, 'runShell', { cmd: args.cmd }, 'critical', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                res.write(JSON.stringify({ type: 'tool_running', name: 'runShell', preview: args.cmd }) + '\n');
+                return await runShellTool(args.cmd);
+            }
+            case 'saveMemory': {
+                const text = String(args.text || '').trim();
+                if (!text) return { result: 'Nothing to save — text was empty.', error: true };
+                try {
+                    const id = await memory.addMemory(text, { source: 'agent' });
+                    console.log(`[Memory] Agent saved: "${text.slice(0, 80)}" (id: ${id})`);
+                    return { result: `Saved to memory: "${text}"` };
+                } catch (err) {
+                    return { result: `Memory save failed: ${err.message}`, error: true };
+                }
+            }
+            case 'clipboardRead': {
+                const approved = await requestPermission(res, 'clipboardRead', args, 'medium', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                return new Promise((resolve) => {
+                    const proc = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard'], { timeout: 10000 });
+                    let out = '', err = '';
+                    proc.stdout.on('data', d => { out += d; });
+                    proc.stderr.on('data', d => { err += d; });
+                    proc.on('close', (code) => {
+                        if (code !== 0) resolve({ result: 'Error reading clipboard: ' + err.trim(), error: true });
+                        else resolve({ result: out.trim() || '(clipboard is empty)' });
+                    });
+                    proc.on('error', e => resolve({ result: 'Error: ' + e.message, error: true }));
+                });
+            }
+            case 'clipboardWrite': {
+                const text = String(args.text || '');
+                const preview = text.slice(0, 80) + (text.length > 80 ? '…' : '');
+                const approved = await requestPermission(res, 'clipboardWrite', { text: preview }, 'medium', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                return new Promise((resolve) => {
+                    const proc = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', '$input | Set-Clipboard'], { timeout: 10000 });
+                    let err = '';
+                    proc.stderr.on('data', d => { err += d; });
+                    proc.on('close', (code) => {
+                        if (code !== 0) resolve({ result: 'Error writing clipboard: ' + err.trim(), error: true });
+                        else resolve({ result: 'Clipboard updated.' });
+                    });
+                    proc.on('error', e => resolve({ result: 'Error: ' + e.message, error: true }));
+                    proc.stdin.write(text);
+                    proc.stdin.end();
+                });
+            }
+            case 'readUrl': {
+                const url = args.url || '';
+                const isHttpUrl = /^https?:\/\//i.test(url);
+                const isPdf = /\.pdf(\?.*)?$/i.test(url) || args.type === 'pdf';
+                if (isPdf) {
+                    let pdfParse;
+                    try { pdfParse = require('pdf-parse'); } catch {
+                        return { result: 'pdf-parse is not installed. Run: npm install pdf-parse in proxy_server/', error: true };
+                    }
+                    try {
+                        let buffer;
+                        if (isHttpUrl) {
+                            buffer = await fetchBinaryUrl(url);
+                        } else {
+                            if (!isPathAllowed(url)) return { result: 'Path not allowed', error: true };
+                            buffer = fs.readFileSync(url);
+                        }
+                        const data = await pdfParse(buffer, { max: 20 });
+                        const meta = data.numpages ? `Pages: ${data.numpages}\n\n` : '';
+                        return { result: (meta + data.text).slice(0, 8000) || '(no text extracted)' };
+                    } catch (e) { return { result: 'Error reading PDF: ' + e.message, error: true }; }
+                } else {
+                    const text = await fetchPageViaJina(url, 8000);
+                    if (text && text._fetchError) return { result: text._fetchError, error: true };
+                    return { result: text || 'No content' };
+                }
+            }
+            case 'diffFiles': {
+                const approved = await requestPermission(res, 'diffFiles', args, 'low', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                if (!isPathAllowed(args.pathA) || !isPathAllowed(args.pathB)) return { result: 'Path not allowed', error: true };
+                try {
+                    const a = fs.readFileSync(args.pathA, 'utf8');
+                    const b = fs.readFileSync(args.pathB, 'utf8');
+                    const patch = diffLib.createTwoFilesPatch(args.pathA, args.pathB, a, b);
+                    return { result: patch.slice(0, 8000) };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'appendFile': {
+                const approved = await requestPermission(res, 'appendFile', args, 'medium', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                try {
+                    fs.mkdirSync(path.dirname(args.path), { recursive: true });
+                    fs.appendFileSync(args.path, args.content || '', 'utf8');
+                    return { result: 'Appended to: ' + args.path };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'loadSkill': {
+                const loadedSkills = skillsModule.loadedSkills;
+                const skill = loadedSkills.find(s => s.name === args.name);
+                if (!skill) return { result: `Skill "${args.name}" not found. Available: ${loadedSkills.map(s => s.name).join(', ') || 'none'}`, error: true };
+                try {
+                    const md = fs.readFileSync(path.join(skill.dir, 'SKILL.md'), 'utf8');
+                    return { result: md.replace(/^---[\s\S]*?---\n/, '') };
+                } catch (e) { return { result: 'Error reading skill: ' + e.message, error: true }; }
+            }
+            default:
+                return { result: `Unknown tool: ${name}`, error: true };
+        }
+    } catch (err) {
+        return { result: 'Unexpected error: ' + err.message, error: true };
+    }
+}
+
+// WARNING: runCodeTool uses Node's built-in `vm` module for JS sandboxing.
+// Node's vm module is NOT a secure sandbox — determined attackers can escape it.
+// Only enable the runCode tool (via agentToolPermissions) in trusted, controlled
+// environments. For production use, replace vm-based execution with a hardened
+// alternative such as a separate restricted child process, a containerised worker,
+// or an external isolated service (e.g., a Docker-based code runner).
+async function runCodeTool(lang, code) {
+    if (lang === 'js') {
+        try {
+            const vm = require('vm');
+            const logs = [];
+            // Note: vm.createContext / vm.runInContext is not a secure sandbox.
+            // See warning above before enabling this tool in production.
+            const sandbox = { console: { log: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push('[err] ' + a.join(' ')) }, Math, JSON, parseFloat, parseInt, isNaN, isFinite };
+            vm.createContext(sandbox);
+            vm.runInContext(code, sandbox, { timeout: 10000 });
+            return { result: logs.join('\n') || '(no output)' };
+        } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+    } else if (lang === 'python') {
+        return new Promise((resolve) => {
+            let out = '', err = '';
+            const proc = spawn('python', ['-c', code], { timeout: 30000 });
+            proc.stdout.on('data', d => { out += d; });
+            proc.stderr.on('data', d => { err += d; });
+            proc.on('close', () => resolve({ result: (out + err).slice(0, 4000) || '(no output)' }));
+            proc.on('error', e => resolve({ result: 'Error: ' + e.message, error: true }));
+        });
+    }
+    return { result: 'Unsupported language: ' + lang, error: true };
+}
+
+async function runShellTool(cmd) {
+    return new Promise((resolve) => {
+        let out = '', err = '';
+        const proc = spawn(cmd, { shell: true, timeout: 30000 });
+        proc.stdout.on('data', d => { out += d; });
+        proc.stderr.on('data', d => { err += d; });
+        proc.on('close', () => resolve({ result: (out + err).slice(0, 4000) || '(no output)' }));
+        proc.on('error', e => resolve({ result: 'Error: ' + e.message, error: true }));
+    });
+}
+
+// POST /api/agent/permission — resolve a pending permission request
+// scope: 'once' (default) | 'session' (blanket for this tool) | 'path' (same directory)
+function handleAgentPermission(req, res) {
+    const { id, approved, scope = 'once' } = req.body || {};
+    const pending = pendingPermissions.get(id);
+    if (!pending) return res.status(404).json({ error: 'No pending permission with that id' });
+    pending.resolve(!!approved, scope);
+    res.json({ ok: true });
+}
+
+// GET /api/agent/config — return current agent config
+function handleAgentConfigGet(req, res) {
+    res.json({ maxSteps: agentMaxSteps, allowedDirs: agentAllowedDirs, blockedPaths: agentBlockedPaths, toolPermissions: agentToolPermissions });
+}
+
+// POST /api/agent/config — update agent config
+function handleAgentConfigPost(req, res) {
+    const { maxSteps, allowedDirs, blockedPaths, toolPermissions } = req.body || {};
+    if (maxSteps !== undefined) agentMaxSteps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || 15));
+    if (Array.isArray(allowedDirs)) {
+        const validated = allowedDirs.map(s => String(s).trim()).filter(Boolean);
+        agentAllowedDirs = validated.length > 0 ? validated : [os.homedir()];
+    }
+    if (Array.isArray(blockedPaths)) {
+        // Always merge with ALWAYS_BLOCKED_PATHS — they cannot be removed via API
+        const incoming = blockedPaths.map(s => String(s).trim()).filter(Boolean);
+        agentBlockedPaths = Array.from(new Set([...ALWAYS_BLOCKED_PATHS, ...incoming]));
+    }
+    if (toolPermissions && typeof toolPermissions === 'object') {
+        for (const [k, v] of Object.entries(toolPermissions)) {
+            if (agentToolPermissions.hasOwnProperty(k) && ['auto', 'confirm', 'disabled'].includes(v)) {
+                agentToolPermissions[k] = v;
+            }
+        }
+    }
+    res.json({ ok: true });
+}
+
+// Getter for agentMaxSteps (primitive — not live-exported)
+function getAgentMaxSteps() { return agentMaxSteps; }
+// Getter for agentAllowedDirs (array — live reference, but getter provided for consistency)
+function getAgentAllowedDirs() { return agentAllowedDirs; }
+// Getter for agentBlockedPaths
+function getAgentBlockedPaths() { return agentBlockedPaths; }
+
+module.exports = {
+    agentAllowedDirs,
+    ALWAYS_BLOCKED_PATHS,
+    agentBlockedPaths,
+    agentToolPermissions,
+    pendingPermissions,
+    generatePermissionId,
+    isPathAllowed,
+    AGENT_TOOLS,
+    getEnabledTools,
+    requestPermission,
+    executeTool,
+    runCodeTool,
+    runShellTool,
+    handleAgentPermission,
+    handleAgentConfigGet,
+    handleAgentConfigPost,
+    getAgentMaxSteps,
+    getAgentAllowedDirs,
+    getAgentBlockedPaths,
+};

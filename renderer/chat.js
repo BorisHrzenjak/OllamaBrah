@@ -841,6 +841,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Detected context limits cache (loaded from DB, refreshed via API)
     let detectedContextLimitsCache = {};
+    // Keys refreshed at least once this session — prevents re-fetching stale 32768 DB entries
+    // more than once per session, even for models that genuinely have a 32768 context window
+    const contextLimitRefreshedThisSession = new Set();
 
     // Smart scrolling state
     let isUserScrolledUp = false;
@@ -5074,19 +5077,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function getOrFetchContextLimit(model, backend) {
+        // Cloud models: Ollama stores a conservative local value, not the real cloud context
+        if (isCloudModel(model)) return CLOUD_CONTEXT_LIMIT;
+
         const cacheKey = `${backend}:${model}`;
-        if (detectedContextLimitsCache[cacheKey] !== undefined) {
-            return detectedContextLimitsCache[cacheKey];
+        const cached = detectedContextLimitsCache[cacheKey];
+        // Skip cache only if the value is the fallback default AND we haven't refreshed it
+        // this session yet — avoids re-fetching on every settings open for models that
+        // genuinely have a 32768 context window
+        if (cached !== undefined && (cached !== 32768 || contextLimitRefreshedThisSession.has(cacheKey))) {
+            return cached;
         }
 
+        contextLimitRefreshedThisSession.add(cacheKey);
         try {
             const resp = await fetch(`${PROXY_BASE}/api/model/detect-context-limit?model=${encodeURIComponent(model)}&backend=${encodeURIComponent(backend)}`);
             if (resp.ok) {
                 const data = await resp.json();
                 const limit = data.contextLimit;
+                // Always update memory cache so subsequent calls this session are instant
                 detectedContextLimitsCache[cacheKey] = limit;
-                await window.electronAPI.db.saveDetectedContextLimit(cacheKey, limit);
-                console.log(`[OllamaBro] Detected context limit for ${model} (${backend}): ${limit}`);
+                // Only persist genuine detections — fallback 32768 should be re-checked next launch
+                if (data.source !== 'fallback') {
+                    await window.electronAPI.db.saveDetectedContextLimit(cacheKey, limit);
+                }
+                console.log(`[OllamaBro] Detected context limit for ${model} (${backend}): ${limit} (${data.source})`);
                 return limit;
             }
         } catch (e) {
