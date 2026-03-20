@@ -356,10 +356,6 @@ async function loadKokoroModel() {
 
 const corsOptions = {
     origin: function (origin, callback) {
-        if (process.env.ALLOWED_ORIGIN === 'electron-app') {
-            callback(null, true);
-            return;
-        }
         if (!origin || origin === extensionOrigin) {
             callback(null, true);
         } else {
@@ -2988,7 +2984,7 @@ reloadSkills();
     }
 })();
 
-serverInstance = app.listen(PORT, () => {
+serverInstance = app.listen(PORT, '127.0.0.1', () => {
     console.log(`OllamaBro CORS Proxy server running on http://localhost:${PORT}`);
     console.log(`Allowing CORS origin: ${extensionOrigin}`);
     console.log(`Proxying requests from /proxy/* to ${OLLAMA_API_BASE_URL}`);
