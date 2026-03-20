@@ -1206,11 +1206,17 @@ function generatePermissionId() {
 
 function isPathAllowed(targetPath) {
     let resolved;
-    try { resolved = path.resolve(targetPath); } catch { return false; }
-    const blocked = agentBlockedPaths;
-    if (blocked.some(b => resolved.toLowerCase().startsWith(b.toLowerCase()))) return false;
+    try { resolved = fs.realpathSync(targetPath); } catch {
+        try { resolved = path.resolve(targetPath); } catch { return false; }
+    }
+    const lower = resolved.toLowerCase();
+    function matchesBoundary(base) {
+        const b = path.resolve(base).toLowerCase();
+        return lower === b || lower.startsWith(b + path.sep) || lower.startsWith(b + '/');
+    }
+    if (agentBlockedPaths.some(b => matchesBoundary(b))) return false;
     if (agentAllowedDirs.length === 0) return true;
-    return agentAllowedDirs.some(a => resolved.toLowerCase().startsWith(path.resolve(a).toLowerCase()));
+    return agentAllowedDirs.some(a => matchesBoundary(a));
 }
 
 // Tier 1 tool definitions (for the model's tools array)
