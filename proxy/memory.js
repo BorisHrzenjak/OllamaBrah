@@ -111,6 +111,31 @@ const CANONICAL_PHRASE_ALIASES = [
     [/\buses\s+([^,.!\n]+)\s+as\s+([^,.!\n]+)/gi, 'uses $1 for $2'],
 ];
 
+const JUNK_MEMORY_PATTERNS = [
+    /\bollamabrah\b/i,
+    /\b(?:this|the) app\b/i,
+    /\b(?:tavily|exa|whisper|kokoro|agent mode|semantic memory|web search|deep research|themes?)\b/i,
+    /\b(?:prompt template|template|eli5|explain like i'?m? 5|rewrite|summarize|brainstorm|outline|youtube content)\b/i,
+    /\b(?:supports|has|includes|offers|provides)\b.*\b(?:integration|themes?|stt|tts|memory|tool-use|autonomous)\b/i,
+    /\b(?:roadmap|implementation plan|release plan|task list|backlog|feature idea|feature request|improvement plan|project brief)\b/i,
+    /\b(?:build|create|add|implement|ship|launch)\b.*\b(?:feature|workflow|integration|support|page|dashboard|agent|tool)\b/i,
+    /^assistant recommended\b/i,
+    /^assistant suggested\b/i,
+    /^assistant said\b/i,
+    /^user said\b/i,
+    /^user asked\b/i,
+    /^user wants jokes\b/i,
+    /^test$/i,
+    /^user said test$/i,
+    /\bmcp-style\b/i,
+    /\btool-use\/function calling\b/i,
+    /\bfunction calling model\b/i,
+    /\blocal agentic tasks\b/i,
+    /\byoutube channel\b/i,
+    /\bprogrammatically animated videos\b/i,
+    /\bremotion\b/i,
+];
+
 function normalizeMemoryText(text) {
     return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
@@ -178,6 +203,13 @@ function hybridRankScore(query, candidateText, semanticScore) {
         lexicalScore,
         score: lexicalScore + semanticComponent,
     };
+}
+
+function isJunkMemoryText(text) {
+    const value = String(text || '').trim();
+    if (!value) return true;
+    if (value.length < 8) return true;
+    return JUNK_MEMORY_PATTERNS.some(pattern => pattern.test(value));
 }
 
 async function addMemory(text, metadata = {}) {
@@ -364,6 +396,26 @@ async function dedupeExistingMemories() {
     return { updated, removed, merged };
 }
 
+async function cleanupJunkMemories() {
+    const index = await getIndex();
+    const docs = await index.listDocuments();
+    const removed = [];
+
+    for (const doc of docs) {
+        const meta = await doc.loadMetadata().catch(() => ({}));
+        const text = meta?.text || '';
+        if (isJunkMemoryText(text)) {
+            await index.deleteDocument(doc.uri);
+            removed.push({ id: doc.uri, text });
+        }
+    }
+
+    return {
+        removedCount: removed.length,
+        removed,
+    };
+}
+
 async function getStatus() {
     try {
         const resp = await fetch(`${getOllamaBaseUrl()}/api/tags`);
@@ -384,4 +436,4 @@ async function getStatus() {
     }
 }
 
-module.exports = { addMemory, updateMemory, searchMemories, listMemories, deleteMemory, clearMemories, dedupeExistingMemories, getStatus };
+module.exports = { addMemory, updateMemory, searchMemories, listMemories, deleteMemory, clearMemories, dedupeExistingMemories, cleanupJunkMemories, isJunkMemoryText, getStatus };

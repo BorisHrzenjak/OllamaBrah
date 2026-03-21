@@ -102,6 +102,35 @@ function extractSimpleMemoryFacts(userMessage) {
     return [...new Set(facts)];
 }
 
+function isLikelyMemoryNoise(fact, userMessage) {
+    const factNorm = normalizeFactText(fact);
+    const userNorm = normalizeFactText(userMessage);
+    if (!factNorm) return true;
+
+    if (/\bollamabrah\b|\bthe app\b|\bthis app\b/.test(factNorm)) {
+        return true;
+    }
+
+    if (/\b(tavily|exa|whisper|kokoro|agent mode|semantic memory|web search|deep research|themes?)\b/.test(factNorm)) {
+        return true;
+    }
+
+    if (/\b(template|prompt template|eli5|explain like i m 5|rewrite|summarize|brainstorm|outline)\b/.test(factNorm)) {
+        const explicitPreference = /\b(i prefer|i like|my preference is|i want)\b/.test(userNorm);
+        if (!explicitPreference) return true;
+    }
+
+    if (/\b(roadmap|implementation plan|release plan|task list|backlog|feature idea|feature request|improvement plan|project brief)\b/.test(factNorm)) {
+        return true;
+    }
+
+    if (/\b(build|create|add|implement|ship|launch)\b.*\b(feature|workflow|integration|support|page|dashboard|agent|tool)\b/.test(factNorm)) {
+        return true;
+    }
+
+    return false;
+}
+
 // Kokoro TTS state
 let kokoroTTS = null;
 let kokoroStatus = 'not_loaded'; // 'not_loaded' | 'loading' | 'ready' | 'error'
@@ -610,6 +639,11 @@ app.post('/api/memory/dedupe', async (req, res) => {
     catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.post('/api/memory/cleanup-junk', async (req, res) => {
+    try { res.json(await memory.cleanupJunkMemories()); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // DELETE /api/memory/all — clear every memory
 app.delete('/api/memory/all', async (req, res) => {
     try { await memory.clearMemories(); res.json({ ok: true }); }
@@ -639,6 +673,7 @@ app.post('/api/memory/extract', async (req, res) => {
         `Rules:\n` +
         `- Use only facts grounded in the USER message.\n` +
         `- Never infer, elaborate, summarize culture/history, or add related facts.\n` +
+        `- Never store facts about OllamaBrah, app features, prompt templates, or one-off drafting instructions as memory.\n` +
         `- If the user only asked a question and shared no durable fact, return [].\n` +
         `- Return ONLY a raw JSON array of short strings. No explanation, no markdown fences.\n\n` +
         `User: ${userMessage.slice(0, 1200)}`;
@@ -716,6 +751,7 @@ app.post('/api/memory/extract', async (req, res) => {
                 const normalized = normalizeFactText(text);
                 if (!normalized || seenFacts.has(normalized)) continue;
                 if (!directFactSet.has(normalized) && !isFactGroundedInUserMessage(text, userMessage)) continue;
+                if (isLikelyMemoryNoise(text, userMessage)) continue;
                 seenFacts.add(normalized);
                 candidates.push({
                     text,

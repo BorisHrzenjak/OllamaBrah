@@ -15,6 +15,12 @@ function configureAppPaths() {
     const explicitDir = process.env.OLLAMABRAH_USER_DATA_DIR;
     const suffix = process.env.OLLAMABRAH_USER_DATA_SUFFIX
         || path.basename(__dirname).replace(/[^a-zA-Z0-9_.-]/g, '-');
+
+    if (!explicitDir && suffix === 'ollama_brah') {
+        console.log('[main] Using default dev userData path:', app.getPath('userData'));
+        return;
+    }
+
     const baseUserData = explicitDir || path.join(app.getPath('appData'), 'ollama-brah-dev', suffix);
 
     app.setPath('userData', baseUserData);

@@ -6514,6 +6514,34 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             });
         }
+
+        const junkCleanupBtn = document.getElementById('memoryJunkCleanupBtn');
+        if (junkCleanupBtn) {
+            junkCleanupBtn.addEventListener('click', async () => {
+                if (!confirm('Remove obvious junk memories like app-feature facts and prompt-template leftovers?')) return;
+                junkCleanupBtn.disabled = true;
+                const countEl = document.getElementById('memoryCountLabel');
+                const previous = countEl?.textContent || '';
+                if (countEl) countEl.textContent = 'Removing junk memories...';
+                try {
+                    const response = await fetch(`${PROXY_BASE}/api/memory/cleanup-junk`, { method: 'POST' });
+                    const result = await response.json();
+                    await refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                    loadMemoryStatus();
+                    if (countEl) {
+                        countEl.textContent = `Removed ${result.removedCount || 0} junk memories`;
+                        setTimeout(() => {
+                            if (countEl) countEl.textContent = previous || countEl.textContent;
+                            refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                        }, 2500);
+                    }
+                } catch {
+                    if (countEl) countEl.textContent = 'Junk cleanup failed';
+                } finally {
+                    junkCleanupBtn.disabled = false;
+                }
+            });
+        }
     }
 
     initMemorySettings();
