@@ -1967,11 +1967,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     // File processing functions
     const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
     const SUPPORTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'text/html', 'text/css', 'application/json', 'application/javascript'];
+    const SUPPORTED_DOCUMENT_TYPES = ['application/pdf'];
     const CODE_EXTENSIONS = ['.py', '.js', '.ts', '.jsx', '.tsx', '.json', '.html', '.css', '.md', '.sql', '.sh', '.bash', '.yml', '.yaml', '.xml', '.txt', '.log', '.csv', '.java', '.c', '.cpp', '.h', '.go', '.rs', '.rb', '.php', '.swift', '.kt', '.scala'];
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB limit
+    const MAX_DOC_CONTEXT_CHARS = 2600;
+    const MAX_DOC_CHUNKS_LATEST = 3;
+    const MAX_DOC_CHUNKS_HISTORY = 1;
 
     function isImageFile(file) {
         return SUPPORTED_IMAGE_TYPES.includes(file.type);
+    }
+
+    function isPdfFile(file) {
+        const extension = '.' + file.name.split('.').pop().toLowerCase();
+        return file.type === 'application/pdf' || extension === '.pdf';
     }
 
     function isTextFile(file) {
@@ -1985,10 +1994,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     function validateFile(file) {
         const isImage = isImageFile(file);
         const isText = isTextFile(file);
+        const isPdf = isPdfFile(file);
 
-        if (!isImage && !isText) {
+        if (currentModelBackend === 'llamacpp' && isImage) {
+            throw new Error('llama.cpp currently supports document uploads only. Choose a PDF or text document.');
+        }
+
+        if (!isImage && !isText && !isPdf) {
             const ext = file.name.split('.').pop().toLowerCase();
-            throw new Error(`Unsupported file type: .${ext}. Supported: images (JPEG, PNG, GIF, WebP) and text/code files`);
+            throw new Error(`Unsupported file type: .${ext}. Supported: images, PDFs, and text/code files`);
         }
 
         if (file.size > MAX_FILE_SIZE) {
@@ -2054,8 +2068,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const isImage = isImageFile(file);
             const isText = isTextFile(file);
+            const isPdf = isPdfFile(file);
 
-            const result = {
+            let result = {
                 fileName: file.name,
                 fileSize: file.size,
                 mimeType: file.type,
@@ -2072,9 +2087,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 result.base64 = await fileToBase64(processedFile);
                 result.previewUrl = URL.createObjectURL(processedFile);
                 result.fileSize = processedFile.size;
-            } else if (isText) {
-                // Extract text content for documents
-                result.textContent = await extractTextContent(file);
+            } else if (isText || isPdf) {
+                result = await processDocumentAttachment(file, result);
             }
 
             return result;
@@ -2110,7 +2124,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             const fileSize = document.createElement('div');
             fileSize.className = 'file-size';
-            fileSize.textContent = formatFileSize(fileData.fileSize);
+            const detailBits = [formatFileSize(fileData.fileSize)];
+            if (fileData.pageCount) detailBits.push(`${fileData.pageCount} pages`);
+            if (fileData.chunkCount) detailBits.push(`${fileData.chunkCount} chunks`);
+            fileSize.textContent = detailBits.join(' · ');
             
             fileInfo.appendChild(fileName);
             fileInfo.appendChild(fileSize);
@@ -2280,6 +2297,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                     fileName.title = doc.fileName;
                     
                     docDiv.appendChild(fileName);
+
+                    const docMeta = [];
+                    if (doc.pageCount) docMeta.push(`${doc.pageCount} pages`);
+                    if (doc.chunkCount) docMeta.push(`${doc.chunkCount} chunks`);
+                    if (doc.extractedCharCount) docMeta.push(`${Math.round(doc.extractedCharCount / 100) / 10}k chars`);
+                    if (docMeta.length) {
+                        const metaSpan = document.createElement('span');
+                        metaSpan.className = 'document-filename';
+                        metaSpan.style.opacity = '0.7';
+                        metaSpan.style.fontSize = '12px';
+                        metaSpan.textContent = ` (${docMeta.join(' · ')})`;
+                        docDiv.appendChild(metaSpan);
+                    }
+
                     documentsDiv.appendChild(docDiv);
                 });
                 attachmentsContainer.appendChild(documentsDiv);
@@ -4577,6 +4608,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.log(`Sending to /proxy/api/chat with model: ${currentModelName} for streaming.`);
 
             // Prepare messages for API - convert attachment data for Ollama format
+            const latestUserMessage = [...currentConversation.messages].reverse().find(m => m.role === 'user');
+            const attachmentQuery = latestUserMessage?.content || '';
             const apiMessages = currentConversation.messages
                 .filter(m => m.role === 'user' || m.role === 'assistant')
                 .map(message => {
@@ -4592,21 +4625,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const isNewFormat = !!message.attachments;
                         
                         if (isNewFormat) {
-                            // New format: attachments with type区分
+                            const isLatestUserMessage = message === latestUserMessage;
                             const imageAttachments = message.attachments.filter(a => a.type === 'image' || a.base64);
                             const docAttachments = message.attachments.filter(a => a.type === 'document' || a.textContent);
 
                             // Add images to API message
-                            if (imageAttachments.length > 0) {
+                            if (imageAttachments.length > 0 && currentModelBackend !== 'llamacpp') {
                                 images = imageAttachments.map(img => img.base64);
                             }
 
-                            // Prepend document content to message
+                            // Prepend document context to message
                             if (docAttachments.length > 0) {
-                                const docContent = docAttachments.map(doc => {
-                                    return `[File: ${doc.fileName}]\n\`\`\`\n${doc.textContent}\n\`\`\``;
-                                }).join('\n\n');
-                                content = docContent + '\n\n' + content;
+                                const docContent = docAttachments
+                                    .map(doc => buildDocumentContextBlock(doc, attachmentQuery, { isLatestUserMessage }))
+                                    .filter(Boolean)
+                                    .join('\n\n');
+                                if (docContent) {
+                                    content = `${docContent}\n\nUser request:\n${content}`;
+                                }
                             }
                         } else {
                             // Old format: just images
@@ -5053,7 +5089,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 textContent: file.textContent || null,
                 fileName: file.fileName,
                 fileSize: file.fileSize,
-                mimeType: file.mimeType
+                mimeType: file.mimeType,
+                summary: file.summary || null,
+                excerpt: file.excerpt || null,
+                extractedCharCount: file.extractedCharCount || null,
+                chunkCount: file.chunkCount || null,
+                pageCount: file.pageCount || null,
+                chunks: file.chunks || null
             }));
         }
 
@@ -5236,7 +5278,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Clear any selected images when switching models
         clearSelectedFiles();
 
-        // Show image upload UI (users can upload images to any model, API will error if unsupported)
+        // Keep attachment UI available for images and documents
         toggleFileUploadUI(true);
 
         let modelData = await loadModelChatState(currentModelName);
@@ -5305,8 +5347,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Fetch and cache context limit for llama.cpp model
             await getOrFetchContextLimit(currentModelName, 'llamacpp');
             
-        clearSelectedFiles();
-            toggleFileUploadUI(false); // vision not supported via llama.cpp yet
+            clearSelectedFiles();
+            toggleFileUploadUI(true); // llama.cpp supports document attachments even without vision
             checkServerStatus();
 
             let modelData = await loadModelChatState(currentModelName);
@@ -5377,7 +5419,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadDetectedContextLimits();
         await getOrFetchContextLimit(currentModelName, currentModelBackend);
 
-        toggleFileUploadUI(currentModelBackend !== 'llamacpp');
+        toggleFileUploadUI(true);
 
         const modelData = await loadModelChatState(currentModelName);
         if (!modelData.activeConversationId || !modelData.conversations[modelData.activeConversationId]) {
@@ -7136,6 +7178,98 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else if (currentModelName) {
             setComposerAvailability(true);
         }
+    }
+
+    async function processDocumentAttachment(file, seed) {
+        const payload = {
+            fileName: seed.fileName,
+            fileSize: seed.fileSize,
+            mimeType: seed.mimeType,
+        };
+
+        if (isPdfFile(file)) {
+            payload.base64 = await fileToBase64(file);
+        } else {
+            payload.textContent = await extractTextContent(file);
+        }
+
+        const response = await fetch(`${PROXY_BASE}/api/attachments/process`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ attachments: [payload] })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to process document attachment.');
+        }
+
+        const processed = data.attachments?.[0];
+        if (!processed) {
+            throw new Error('Document processor returned no attachment data.');
+        }
+
+        return {
+            ...seed,
+            ...processed,
+        };
+    }
+
+    function tokenizeAttachmentQuery(text) {
+        return new Set(
+            String(text || '')
+                .toLowerCase()
+                .match(/[a-z0-9]{3,}/g) || []
+        );
+    }
+
+    function scoreAttachmentChunk(chunkText, queryTokens) {
+        if (!queryTokens || queryTokens.size === 0) return 0;
+        const lower = String(chunkText || '').toLowerCase();
+        let score = 0;
+        queryTokens.forEach(token => {
+            if (lower.includes(token)) score += token.length > 6 ? 2 : 1;
+        });
+        return score;
+    }
+
+    function buildDocumentContextBlock(doc, query, options = {}) {
+        const chunks = Array.isArray(doc.chunks) ? doc.chunks : [];
+        const queryTokens = tokenizeAttachmentQuery(query);
+        const maxChunks = options.isLatestUserMessage ? MAX_DOC_CHUNKS_LATEST : MAX_DOC_CHUNKS_HISTORY;
+        const ranked = chunks
+            .map(chunk => ({ ...chunk, _score: scoreAttachmentChunk(chunk.text, queryTokens) }))
+            .sort((a, b) => b._score - a._score || a.charCount - b.charCount);
+
+        const selected = [];
+        let totalChars = 0;
+        for (const chunk of ranked) {
+            if (!options.isLatestUserMessage && chunk._score <= 0) continue;
+            if (selected.length >= maxChunks) break;
+            if (totalChars + chunk.charCount > MAX_DOC_CONTEXT_CHARS) break;
+            selected.push(chunk);
+            totalChars += chunk.charCount;
+        }
+
+        if (!selected.length && options.isLatestUserMessage && chunks[0]) {
+            selected.push(chunks[0]);
+        }
+
+        if (!selected.length && !doc.summary) return null;
+
+        const headerParts = [`Document: ${doc.fileName}`];
+        if (doc.pageCount) headerParts.push(`${doc.pageCount} pages`);
+        if (doc.chunkCount) headerParts.push(`${doc.chunkCount} chunks indexed`);
+
+        const lines = [`[${headerParts.join(' | ')}]`];
+        if (doc.summary) lines.push(`Summary: ${doc.summary}`);
+        if (selected.length) {
+            lines.push('Relevant excerpts:');
+            selected.forEach((chunk, index) => {
+                lines.push(`[${doc.fileName} excerpt ${index + 1}]\n${chunk.text}`);
+            });
+        }
+        return lines.join('\n\n');
     }
 
     async function checkLlamaCppStatusIndicator() {

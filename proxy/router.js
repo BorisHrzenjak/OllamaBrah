@@ -7,6 +7,7 @@ const os = require('os');
 const http = require('http');
 const { spawn } = require('child_process');
 const memory = require('./memory');
+const { handleProcessAttachments } = require('./attachments');
 
 const {
     handleSkillsList,
@@ -492,6 +493,8 @@ app.get('/api/readiness', async (req, res) => {
         });
     }
 });
+
+app.post('/api/attachments/process', handleProcessAttachments);
 
 // GET /api/keys — return whether each key is configured (never returns raw key value)
 app.get('/api/keys', (req, res) => {

@@ -6,10 +6,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.0.7
+## What's New — v1.0.8
 
-- **Startup diagnostics and guided recovery** — OllamaBrah now checks backend readiness on launch and replaces dead-end startup states with actionable recovery steps
-- **Smarter fallback guidance** — the app explains whether Ollama, llama.cpp, memory, or voice input needs attention and suggests the next best fix directly in the chat flow
+- **Smarter document attachments** — PDFs and text/code files are now extracted, chunked, and summarized before they reach the model, so large files stop flooding the prompt
+- **Better document follow-ups** — OllamaBrah now reuses the most relevant excerpts from attached files on later turns and allows document uploads while using `llama.cpp`
 
 ---
 
@@ -18,6 +18,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 ### Models & Backends
 - **Ollama** — chat with any locally installed Ollama model
 - **llama.cpp** — run GGUF models directly via `llama-server`; configure binary path, models directory, GPU layers, context size, and server port
+- Document attachments work with `llama.cpp` even when image attachments are unavailable
 - Model switcher with live availability checking
 - Startup diagnostics for Ollama, llama.cpp, memory, and voice prerequisites with guided recovery actions
 - Auto-detect context window size per model
@@ -36,6 +37,8 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Per-message actions: copy, read aloud, download as TXT or Markdown, remove
 - Drag & drop file attachments
 - Supported file types: images, PDF, TXT, Markdown, Python, JS, TS, JSON, HTML, CSS, SQL, Shell, YAML, XML, CSV, logs
+- Document attachments are chunked and summarized automatically, with only the most relevant excerpts injected into context on each turn
+- Attached documents stay useful on follow-up questions instead of being pasted in full every time
 - Export full conversations as Markdown
 - Context meter showing token breakdown (system prompt / search / conversation)
 
