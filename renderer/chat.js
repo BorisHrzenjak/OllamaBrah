@@ -1416,6 +1416,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         return meta;
     }
 
+    function getReadinessPrimaryNarrative(report) {
+        const issue = report?.blockingIssues?.[0] || report?.warnings?.[0];
+        if (issue) return issue.detail;
+
+        if (report?.overallState === 'blocked') {
+            return 'One required service still needs attention before chat can start.';
+        }
+        return 'Chat is available, but one or more optional features still need setup.';
+    }
+
     function renderReadinessCard(report) {
         clearReadinessCard();
         if (!report || (report.overallState === 'ready' && !report.blockingIssues?.length)) return;
@@ -1426,11 +1436,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         card.dataset.state = report.overallState || 'degraded';
 
         const title = report.overallState === 'blocked'
-            ? 'Finish setup before you start chatting'
-            : 'A few features need attention';
-        const subtitle = report.overallState === 'blocked'
-            ? 'OllamaBrah found an environment problem that would lead to a dead end. Fix the issue below or use the suggested fallback.'
-            : 'Chat is still usable, but a few supporting features are not ready yet.';
+            ? 'Finish one quick setup step to start chatting'
+            : 'Chat is ready, but a few helpers still need setup';
+        const subtitle = getReadinessPrimaryNarrative(report);
 
         const checks = [
             ['ollama', 'Ollama'],
@@ -1475,11 +1483,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 </div>
                 <div class="readiness-status-pill">${formatReadinessState(report.overallState)}</div>
             </div>
-            ${issueHtml ? `<div class="readiness-list">${issueHtml}</div>` : ''}
-            ${warningHtml ? `<div class="readiness-list">${warningHtml}</div>` : ''}
+            ${issueHtml ? `<div><div class="readiness-section-title">Blocking right now</div><div class="readiness-list">${issueHtml}</div></div>` : ''}
+            ${warningHtml ? `<div><div class="readiness-section-title">Also worth fixing</div><div class="readiness-list">${warningHtml}</div></div>` : ''}
             <div class="readiness-grid">${checksHtml}</div>
-            <div class="readiness-actions"></div>
-            <div class="readiness-footnote">Checks update automatically when you retry or change related settings.</div>
+            <div>
+                <div class="readiness-section-title">What to do next</div>
+                <div class="readiness-actions"></div>
+            </div>
+            <div class="readiness-footnote">The checks above refresh after you use an action or change related settings.</div>
         `;
 
         const actionsEl = card.querySelector('.readiness-actions');
@@ -1487,7 +1498,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         actions.forEach((action, index) => {
             const btn = document.createElement('button');
             btn.className = `readiness-action${index === 0 ? ' primary' : ''}`;
-            btn.textContent = action.label;
+            btn.innerHTML = `
+                <span class="readiness-action-label">${escapeHtml(action.label)}</span>
+                ${action.description ? `<span class="readiness-action-desc">${escapeHtml(action.description)}</span>` : ''}
+            `;
             btn.addEventListener('click', () => {
                 handleReadinessAction(action.id).catch(err => {
                     console.error('[Readiness] Action failed:', err);
@@ -1495,6 +1509,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             actionsEl.appendChild(btn);
         });
+
+        if (!actions.length) {
+            actionsEl.innerHTML = '<div class="readiness-footnote">No action needed right now.</div>';
+        }
 
         chatContainer.prepend(card);
     }

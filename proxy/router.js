@@ -221,14 +221,14 @@ async function buildReadinessReport() {
         overallState = 'blocked';
         blockingIssues.push({
             id: 'no_chat_backend',
-            title: 'No chat backend is ready',
+            title: 'Chat cannot start yet',
             detail: 'Ollama is unavailable and llama.cpp is not ready as a fallback.'
         });
-        addAction('retry', 'Retry checks', 'Run readiness diagnostics again.');
+        addAction('retry', 'Check again', 'Run startup checks again after you make a change.');
         if (llamacpp.canUse || llamacpp.modelCount > 0) {
-            addAction('switch_llamacpp', 'Switch to llama.cpp', 'Use an available GGUF model instead of Ollama.', { backend: 'llamacpp' });
+            addAction('switch_llamacpp', 'Use llama.cpp instead', 'Start chatting with an available GGUF model right away.', { backend: 'llamacpp' });
         }
-        addAction('open_llamacpp_settings', 'Configure llama.cpp', 'Open Settings and review your llama.cpp executable and models directory.', { section: 'llamaCpp' });
+        addAction('open_llamacpp_settings', 'Fix llama.cpp setup', 'Open Settings and review the executable path and models folder.', { section: 'llamaCpp' });
     }
 
     if (ollama.status === 'unreachable') {
@@ -237,17 +237,17 @@ async function buildReadinessReport() {
             title: 'Ollama is offline',
             detail: ollama.message
         });
-        addAction('retry', 'Retry checks', 'Check again after starting Ollama.');
+        addAction('retry', 'Check again', 'Refresh startup checks after Ollama finishes starting.');
     } else if (ollama.status === 'no_models') {
         overallState = overallState === 'blocked' ? 'blocked' : 'degraded';
         blockingIssues.push({
             id: 'ollama_no_models',
-            title: 'No Ollama models installed',
-            detail: 'Ollama is running, but there are no models available to chat with yet.'
+            title: 'No Ollama model is ready yet',
+            detail: 'Ollama is running, but there is nothing installed to chat with yet.'
         });
-        addAction('open_model_management', 'Open model management', 'Pull or update models from the Settings panel.', { section: 'modelMgmt' });
+        addAction('open_model_management', 'Install a model', 'Open Settings and pull your first Ollama model.', { section: 'modelMgmt' });
         if (llamacpp.canUse || llamacpp.modelCount > 0) {
-            addAction('switch_llamacpp', 'Switch to llama.cpp', 'Use an available GGUF model instead of installing an Ollama model first.', { backend: 'llamacpp' });
+            addAction('switch_llamacpp', 'Use llama.cpp instead', 'Skip model install for now and chat with an available GGUF model.', { backend: 'llamacpp' });
         }
     }
 
@@ -258,7 +258,7 @@ async function buildReadinessReport() {
             title: 'Memory support needs setup',
             detail: memoryStatus.reason || 'The embedding model for memory is not available.'
         });
-        addAction('open_memory_settings', 'Enable memory support', 'Open Settings and review the memory requirements.', { section: 'memory' });
+        addAction('open_memory_settings', 'Fix memory setup', 'Open Settings and enable the embedding model used for memory.', { section: 'memory' });
     }
 
     if (!stt.scriptPresent || !stt.pythonAvailable || stt.whisperStatus === 'error') {
@@ -268,7 +268,7 @@ async function buildReadinessReport() {
             title: 'Voice input needs setup',
             detail: stt.message
         });
-        addAction('open_tts_settings', 'Review voice setup', 'Open Settings and review voice requirements.', { section: 'tts' });
+        addAction('open_tts_settings', 'Fix voice setup', 'Open Settings and review Whisper and Python requirements.', { section: 'tts' });
     }
 
     if (!llamacpp.canUse && llamacpp.status !== 'ready') {
@@ -277,7 +277,7 @@ async function buildReadinessReport() {
             title: 'llama.cpp fallback not ready',
             detail: llamacpp.message
         });
-        addAction('open_llamacpp_settings', 'Configure llama.cpp', 'Open Settings and review your llama.cpp executable and models directory.', { section: 'llamaCpp' });
+        addAction('open_llamacpp_settings', 'Fix llama.cpp setup', 'Open Settings and review the executable path and models folder.', { section: 'llamaCpp' });
     }
 
     const primaryBackend = ollama.status === 'ready' ? 'ollama' : ((llamacpp.canUse || llamacpp.status === 'ready') ? 'llamacpp' : null);
