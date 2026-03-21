@@ -135,6 +135,51 @@ function lexicalOverlapScore(a, b) {
     return overlap / Math.max(aTokens.size, bTokens.size);
 }
 
+function tokenizeMemoryText(text) {
+    return normalizeMemoryText(text).split(' ').filter(t => t.length >= 2);
+}
+
+function lexicalQueryScore(query, candidate) {
+    const queryNorm = normalizeMemoryText(query);
+    const candidateNorm = normalizeMemoryText(candidate);
+    if (!queryNorm || !candidateNorm) return 0;
+
+    let score = 0;
+    if (candidateNorm === queryNorm) score += 10;
+    if (candidateNorm.includes(queryNorm)) score += 6;
+
+    const queryTokens = tokenizeMemoryText(query);
+    const candidateTokens = new Set(tokenizeMemoryText(candidate));
+    let matchedTokens = 0;
+    let strongMatches = 0;
+
+    for (const token of queryTokens) {
+        if (candidateTokens.has(token)) {
+            matchedTokens += 1;
+            score += token.length >= 5 ? 2.5 : 1.5;
+            if (token.length >= 4) strongMatches += 1;
+        }
+    }
+
+    if (queryTokens.length > 0) {
+        score += (matchedTokens / queryTokens.length) * 4;
+    }
+    if (strongMatches >= 2) score += 3;
+
+    const overlap = lexicalOverlapScore(query, candidate);
+    score += overlap * 4;
+    return score;
+}
+
+function hybridRankScore(query, candidateText, semanticScore) {
+    const lexicalScore = lexicalQueryScore(query, candidateText);
+    const semanticComponent = Math.max(0, semanticScore || 0) * 8;
+    return {
+        lexicalScore,
+        score: lexicalScore + semanticComponent,
+    };
+}
+
 async function addMemory(text, metadata = {}) {
     const index = await getIndex();
     const canonicalText = canonicalizeMemoryText(text);
@@ -206,12 +251,35 @@ async function updateMemory(id, updates = {}) {
 async function searchMemories(query, k = 3) {
     try {
         const index = await getIndex();
-        const results = await index.queryDocuments(query, { maxDocuments: k });
-        const filtered = results.filter(r => r.score > 0.1);
-        return await Promise.all(filtered.map(async (r) => {
-            const meta = await r.loadMetadata().catch(() => ({}));
-            return normalizeMemoryRecord(r.uri, meta, r.score);
+        const docs = await index.listDocuments();
+        const semanticResults = await index.queryDocuments(query, { maxDocuments: Math.max(k * 3, 12) });
+        const semanticById = new Map(semanticResults.map(r => [r.uri, r.score]));
+
+        const hydrated = await Promise.all(docs.map(async (doc) => {
+            const meta = await doc.loadMetadata().catch(() => ({}));
+            const text = meta?.text ?? '';
+            const semanticScore = semanticById.get(doc.uri) ?? 0;
+            const ranked = hybridRankScore(query, text, semanticScore);
+            return {
+                id: doc.uri,
+                meta,
+                semanticScore,
+                lexicalScore: ranked.lexicalScore,
+                hybridScore: ranked.score,
+            };
         }));
+
+        const filtered = hydrated
+            .filter(item => item.semanticScore > 0.1 || item.lexicalScore >= 2.5)
+            .sort((a, b) => b.hybridScore - a.hybridScore || new Date(b.meta?.timestamp || 0) - new Date(a.meta?.timestamp || 0))
+            .slice(0, k);
+
+        return filtered.map((r) => {
+            const record = normalizeMemoryRecord(r.id, r.meta, r.hybridScore);
+            record.semanticScore = r.semanticScore;
+            record.lexicalScore = r.lexicalScore;
+            return record;
+        });
     } catch (err) {
         console.warn('[Memory] Search failed:', err.message);
         return [];
