@@ -825,6 +825,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentLlamaCppPath = null;
     let currentAbortController = null; // Track current request for aborting
     let selectedFiles = []; // Store selected files (images and documents) for sending
+    let latestReadinessReport = null;
+    let readinessPollTimer = null;
 
     // Context management constants
     const DEFAULT_CONTEXT_LIMIT = 4096;   // 4K — local models
@@ -1286,6 +1288,289 @@ document.addEventListener('DOMContentLoaded', async () => {
     function toggleFileUploadUI(show) {
         if (fileButton) {
             fileButton.style.display = show ? 'flex' : 'none';
+        }
+    }
+
+    function setComposerAvailability(enabled) {
+        messageInput.disabled = !enabled;
+        sendButton.disabled = !enabled;
+        if (!enabled) {
+            stopButton.style.display = 'none';
+            loadingIndicator.style.display = 'none';
+        }
+    }
+
+    function formatReadinessState(state) {
+        switch (state) {
+            case 'ready': return 'Ready';
+            case 'blocked': return 'Blocked';
+            case 'degraded': return 'Needs Attention';
+            case 'no_models': return 'No Models';
+            case 'unreachable': return 'Offline';
+            case 'needs_attention': return 'Needs Setup';
+            default: return String(state || 'unknown').replace(/_/g, ' ');
+        }
+    }
+
+    function ensureSettingsSectionExpanded(toggleId, bodyId) {
+        const toggle = document.getElementById(toggleId);
+        const body = document.getElementById(bodyId);
+        if (!toggle || !body || body.classList.contains('expanded')) return;
+        toggleSection(toggleId, bodyId);
+    }
+
+    function openSettingsSection(section) {
+        openSettingsModal();
+        const sections = {
+            llamaCpp: ['llamaCppSectionToggle', 'llamaCppSectionBody'],
+            memory: ['memorySectionToggle', 'memorySectionBody'],
+            tts: ['ttsSectionToggle', 'ttsSectionBody'],
+            modelMgmt: ['modelMgmtSectionToggle', 'modelMgmtSectionBody'],
+            apiKeys: ['apiKeysSectionToggle', 'apiKeysSectionBody'],
+        };
+        const target = sections[section];
+        if (target) ensureSettingsSectionExpanded(target[0], target[1]);
+    }
+
+    async function fetchReadinessReport() {
+        const response = await fetch(`${PROXY_BASE}/api/readiness`);
+        if (!response.ok) {
+            throw new Error(`Readiness API error: ${response.status}`);
+        }
+        latestReadinessReport = await response.json();
+        return latestReadinessReport;
+    }
+
+    function summarizeReadiness(report) {
+        if (!report) {
+            return { state: 'disconnected', label: 'Readiness unknown' };
+        }
+        if (report.overallState === 'blocked') {
+            const firstIssue = report.blockingIssues?.[0];
+            return { state: 'disconnected', label: firstIssue?.detail || 'No chat backend is ready' };
+        }
+        if (report.overallState === 'degraded') {
+            const topWarning = report.warnings?.[0] || report.blockingIssues?.[0];
+            return { state: 'degraded', label: topWarning?.detail || 'Some features need attention' };
+        }
+        const backend = report.primaryBackend === 'llamacpp' ? 'llama.cpp ready' : 'Ollama ready';
+        return { state: 'connected', label: backend };
+    }
+
+    function clearReadinessCard() {
+        const existing = document.getElementById('startupReadinessCard');
+        if (existing) existing.remove();
+    }
+
+    async function handleReadinessAction(actionId) {
+        if (actionId === 'retry') {
+            const report = await refreshStartupReadiness({ forceRender: true });
+            await tryRecoverStartupModel(report);
+            return;
+        }
+        if (actionId === 'open_llamacpp_settings') {
+            openSettingsSection('llamaCpp');
+            return;
+        }
+        if (actionId === 'open_memory_settings') {
+            openSettingsSection('memory');
+            return;
+        }
+        if (actionId === 'open_tts_settings') {
+            openSettingsSection('tts');
+            return;
+        }
+        if (actionId === 'open_model_management') {
+            openSettingsSection('modelMgmt');
+            return;
+        }
+        if (actionId === 'switch_llamacpp') {
+            const models = await fetchAvailableModels();
+            const cppModel = models.find(m => m._backend === 'llamacpp');
+            if (!cppModel) {
+                await refreshStartupReadiness({ forceRender: true });
+                return;
+            }
+            await switchToLlamaCpp(cppModel);
+            clearReadinessCard();
+            return;
+        }
+    }
+
+    function buildReadinessMeta(checkKey, check) {
+        const meta = [];
+        if (checkKey === 'ollama' && typeof check.modelCount === 'number') {
+            meta.push(`${check.modelCount} model${check.modelCount === 1 ? '' : 's'}`);
+        }
+        if (checkKey === 'memory' && typeof check.count === 'number') {
+            meta.push(`${check.count} memories`);
+        }
+        if (checkKey === 'llamacpp') {
+            if (typeof check.modelCount === 'number') meta.push(`${check.modelCount} GGUF`);
+            if (check.port) meta.push(`port ${check.port}`);
+        }
+        if (checkKey === 'stt') {
+            if (check.model) meta.push(check.model);
+            if (check.pythonCommand) meta.push(check.pythonCommand);
+        }
+        return meta;
+    }
+
+    function renderReadinessCard(report) {
+        clearReadinessCard();
+        if (!report || (report.overallState === 'ready' && !report.blockingIssues?.length)) return;
+
+        const card = document.createElement('section');
+        card.id = 'startupReadinessCard';
+        card.className = 'readiness-card';
+        card.dataset.state = report.overallState || 'degraded';
+
+        const title = report.overallState === 'blocked'
+            ? 'Finish setup before you start chatting'
+            : 'A few features need attention';
+        const subtitle = report.overallState === 'blocked'
+            ? 'OllamaBrah found an environment problem that would lead to a dead end. Fix the issue below or use the suggested fallback.'
+            : 'Chat is still usable, but a few supporting features are not ready yet.';
+
+        const checks = [
+            ['ollama', 'Ollama'],
+            ['llamacpp', 'llama.cpp'],
+            ['memory', 'Memory'],
+            ['stt', 'Voice input']
+        ];
+
+        const checksHtml = checks.map(([key, label]) => {
+            const check = report.checks?.[key];
+            if (!check) return '';
+            const meta = buildReadinessMeta(key, check);
+            return `
+                <div class="readiness-check state-${check.status || 'unknown'}">
+                    <div class="readiness-check-head">
+                        <span class="readiness-check-name">${label}</span>
+                        <span class="readiness-check-state">${formatReadinessState(check.status || 'unknown')}</span>
+                    </div>
+                    <div class="readiness-check-message">${escapeHtml(check.message || check.reason || 'No details available.')}</div>
+                    ${meta.length ? `<div class="readiness-meta">${meta.map(item => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : ''}
+                </div>`;
+        }).join('');
+
+        const issueHtml = (report.blockingIssues || []).map(issue => `
+            <div class="readiness-list-item">
+                <strong>${escapeHtml(issue.title)}</strong>
+                <span>${escapeHtml(issue.detail)}</span>
+            </div>`).join('');
+
+        const warningHtml = (report.warnings || []).slice(0, 2).map(issue => `
+            <div class="readiness-list-item">
+                <strong>${escapeHtml(issue.title)}</strong>
+                <span>${escapeHtml(issue.detail)}</span>
+            </div>`).join('');
+
+        card.innerHTML = `
+            <div class="readiness-header">
+                <div class="readiness-title-wrap">
+                    <div class="readiness-kicker">Startup diagnostics</div>
+                    <div class="readiness-title">${title}</div>
+                    <div class="readiness-subtitle">${subtitle}</div>
+                </div>
+                <div class="readiness-status-pill">${formatReadinessState(report.overallState)}</div>
+            </div>
+            ${issueHtml ? `<div class="readiness-list">${issueHtml}</div>` : ''}
+            ${warningHtml ? `<div class="readiness-list">${warningHtml}</div>` : ''}
+            <div class="readiness-grid">${checksHtml}</div>
+            <div class="readiness-actions"></div>
+            <div class="readiness-footnote">Checks update automatically when you retry or change related settings.</div>
+        `;
+
+        const actionsEl = card.querySelector('.readiness-actions');
+        const actions = report.recommendedActions || [];
+        actions.forEach((action, index) => {
+            const btn = document.createElement('button');
+            btn.className = `readiness-action${index === 0 ? ' primary' : ''}`;
+            btn.textContent = action.label;
+            btn.addEventListener('click', () => {
+                handleReadinessAction(action.id).catch(err => {
+                    console.error('[Readiness] Action failed:', err);
+                });
+            });
+            actionsEl.appendChild(btn);
+        });
+
+        chatContainer.prepend(card);
+    }
+
+    async function tryRecoverStartupModel(report) {
+        if (currentModelName || report?.checks?.ollama?.status !== 'ready') return false;
+
+        const models = await fetchAvailableModels();
+        const stored = await chrome.storage.local.get('lastUsedOllamaModel');
+        const lastUsed = stored.lastUsedOllamaModel;
+        const ollamaModels = models.filter(m => m._backend !== 'llamacpp');
+        const match = lastUsed && ollamaModels.find(m => m.name === lastUsed);
+        const selected = match || ollamaModels[0];
+        if (!selected) return false;
+
+        currentModelBackend = 'ollama';
+        currentLlamaCppPath = null;
+        currentModelName = selected.name;
+        await initializeActiveModelSession();
+        return true;
+    }
+
+    async function refreshStartupReadiness({ forceRender = false } = {}) {
+        try {
+            const report = await fetchReadinessReport();
+            const summary = summarizeReadiness(report);
+            updateServerStatusDot(summary.state, summary.label);
+
+            if (forceRender || report.overallState !== 'ready' || (report.blockingIssues && report.blockingIssues.length > 0)) {
+                renderReadinessCard(report);
+            } else {
+                clearReadinessCard();
+            }
+            return report;
+        } catch (err) {
+            console.error('[Readiness] Failed to load readiness report:', err);
+            updateServerStatusDot('disconnected', 'Proxy server not running (port 3456)');
+            const fallback = {
+                overallState: 'blocked',
+                blockingIssues: [{
+                    title: 'Readiness checks failed',
+                    detail: 'The app could not reach its internal proxy on localhost:3456.'
+                }],
+                warnings: [],
+                recommendedActions: [{ id: 'retry', label: 'Retry checks' }],
+                checks: {
+                    ollama: { status: 'unreachable', message: 'Ollama status unavailable because the proxy is offline.' },
+                    llamacpp: { status: 'unreachable', message: 'llama.cpp status unavailable because the proxy is offline.' },
+                    memory: { status: 'unreachable', message: 'Memory status unavailable because the proxy is offline.' },
+                    stt: { status: 'unreachable', message: 'Voice status unavailable because the proxy is offline.' }
+                }
+            };
+            latestReadinessReport = fallback;
+            renderReadinessCard(fallback);
+            return fallback;
+        }
+    }
+
+    function startReadinessRecoveryPoll() {
+        stopReadinessRecoveryPoll();
+        readinessPollTimer = setInterval(async () => {
+            if (!currentModelName && latestReadinessReport && (latestReadinessReport.overallState !== 'ready' || latestReadinessReport.blockingIssues?.length)) {
+                try {
+                    const report = await refreshStartupReadiness({ forceRender: true });
+                    await tryRecoverStartupModel(report);
+                } catch {
+                    // Ignore background recovery errors.
+                }
+            }
+        }, 15000);
+    }
+
+    function stopReadinessRecoveryPoll() {
+        if (readinessPollTimer) {
+            clearInterval(readinessPollTimer);
+            readinessPollTimer = null;
         }
     }
 
@@ -5066,6 +5351,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         return availableModels;
     }
 
+    async function initializeActiveModelSession() {
+        if (!currentModelName) return;
+
+        updateModelDisplay(currentModelName);
+
+        await loadDetectedContextLimits();
+        await getOrFetchContextLimit(currentModelName, currentModelBackend);
+
+        toggleFileUploadUI(currentModelBackend !== 'llamacpp');
+
+        const modelData = await loadModelChatState(currentModelName);
+        if (!modelData.activeConversationId || !modelData.conversations[modelData.activeConversationId]) {
+            await startNewConversation(currentModelName);
+        } else {
+            displayConversationMessages(modelData, modelData.activeConversationId);
+            populateConversationSidebar(currentModelName, modelData);
+
+            const draftText = await loadDraft(modelData.activeConversationId);
+            if (draftText) {
+                messageInput.value = draftText;
+            }
+        }
+
+        clearReadinessCard();
+        setComposerAvailability(true);
+        messageInput.focus();
+    }
+
     async function loadDetectedContextLimits() {
         try {
             detectedContextLimitsCache = await window.electronAPI.db.getAllDetectedContextLimits() || {};
@@ -5203,6 +5516,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function init() {
+        setComposerAvailability(false);
+        const readiness = await refreshStartupReadiness({ forceRender: true });
+        startReadinessRecoveryPoll();
+        let startupBlocked = false;
+
         let urlModel = new URLSearchParams(window.location.search).get('model');
         if (!urlModel) {
             // No model in URL — pick last used Ollama model, or fall back to first available
@@ -5213,42 +5531,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             const match = lastUsed && ollamaModels.find(m => m.name === lastUsed);
             urlModel = match ? lastUsed : (ollamaModels[0] ? ollamaModels[0].name : null);
             if (!urlModel) {
-                modelNameDisplay.textContent = 'No models found.';
-                addMessageToChatUI('System', 'No Ollama models found. Make sure Ollama is running.', 'bot-message');
-                messageInput.disabled = true; sendButton.disabled = true;
-                return;
-            }
-        }
-        currentModelName = urlModel;
-        console.log('[OllamaBro] init - Initializing chat for model from URL:', currentModelName);
-        updateModelDisplay(currentModelName);
-
-        // Load detected context limits from database
-        await loadDetectedContextLimits();
-        
-        // Fetch context limit for current model if not cached
-        await getOrFetchContextLimit(currentModelName, currentModelBackend);
-
-        // Show image upload UI (users can upload images to any model, API will error if unsupported)
-        toggleFileUploadUI(true);
-
-        let modelData = await loadModelChatState(currentModelName);
-        if (!modelData.activeConversationId || !modelData.conversations[modelData.activeConversationId]) {
-            await startNewConversation(currentModelName);
-        } else {
-            displayConversationMessages(modelData, modelData.activeConversationId);
-            populateConversationSidebar(currentModelName, modelData);
-
-            // Load draft for active conversation
-            const draftText = await loadDraft(modelData.activeConversationId);
-            if (draftText) {
-                messageInput.value = draftText;
+                if (readiness?.primaryBackend === 'llamacpp' && readiness?.checks?.llamacpp?.canUse) {
+                    modelNameDisplay.textContent = 'llama.cpp fallback available';
+                } else if (readiness?.checks?.ollama?.status === 'no_models') {
+                    modelNameDisplay.textContent = 'No Ollama models installed';
+                } else if (readiness?.checks?.ollama?.status === 'unreachable') {
+                    modelNameDisplay.textContent = 'Ollama unavailable';
+                } else {
+                    modelNameDisplay.textContent = 'No models found';
+                }
+                startupBlocked = true;
             }
         }
 
-        messageInput.disabled = false;
-        sendButton.disabled = false;
-        messageInput.focus();
+        if (!startupBlocked) {
+            currentModelName = urlModel;
+            console.log('[OllamaBro] init - Initializing chat for model from URL:', currentModelName);
+            await initializeActiveModelSession();
+        }
 
         // Sidebar collapse/expand persistence
         const savedSidebarState = await chrome.storage.local.get(sidebarStateKey);
@@ -6812,57 +7112,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function checkServerStatus() {
         updateServerStatusDot('checking', 'Checking server...');
-        if (currentModelBackend === 'llamacpp') {
-            await checkLlamaCppStatusIndicator();
-            return;
-        }
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
-        try {
-            const resp = await fetch(`${PROXY_BASE}/proxy/api/tags`, { signal: controller.signal });
-            clearTimeout(timer);
-            if (resp.ok) {
-                const data = await resp.json();
-                const count = (data.models || []).length;
-                if (count > 0) {
-                    updateServerStatusDot('connected', `Ollama connected · ${count} model${count !== 1 ? 's' : ''}`);
-                } else {
-                    updateServerStatusDot('degraded', 'Ollama running but no models found');
-                }
-            } else {
-                updateServerStatusDot('degraded', `Ollama error (HTTP ${resp.status})`);
-            }
-        } catch (e) {
-            clearTimeout(timer);
-            if (e.name === 'AbortError') {
-                updateServerStatusDot('degraded', 'Ollama not responding (timeout)');
-            } else {
-                updateServerStatusDot('disconnected', 'Proxy server not running (port 3456)');
-            }
+        const report = await refreshStartupReadiness({ forceRender: false });
+        if (report?.overallState === 'blocked') {
+            setComposerAvailability(false);
+        } else if (currentModelName) {
+            setComposerAvailability(true);
         }
     }
 
     async function checkLlamaCppStatusIndicator() {
-        updateServerStatusDot('checking', 'Checking server...');
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
-        try {
-            const resp = await fetch(`${PROXY_BASE}/api/llamacpp/status`, { signal: controller.signal });
-            clearTimeout(timer);
-            if (resp.ok) {
-                const data = await resp.json();
-                const state = data.status === 'ready' ? 'connected' : 'degraded';
-                const label = data.status === 'ready'
-                    ? `llama.cpp running · ${data.model || 'model loaded'}`
-                    : `llama.cpp: ${data.status}`;
-                updateServerStatusDot(state, label);
-            } else {
-                updateServerStatusDot('degraded', 'llama.cpp status unavailable');
-            }
-        } catch (e) {
-            clearTimeout(timer);
-            updateServerStatusDot('disconnected', 'Proxy server not running (port 3456)');
-        }
+        await checkServerStatus();
     }
 
     function startServerStatusPoll() {
@@ -7084,6 +7343,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (e) {
             if (statusEl) { statusEl.textContent = 'Proxy unreachable'; statusEl.style.color = 'var(--error-text)'; }
         }
+
+        refreshStartupReadiness({ forceRender: true }).catch(() => {});
     }
 
     // ─── Dashboard ────────────────────────────────────────────────────────────

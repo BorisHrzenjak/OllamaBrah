@@ -46,6 +46,62 @@ let llamaModelsDir = process.env.LLAMACPP_MODELS_DIR || 'C:\\llama.cpp';
 let llamaGpuLayers = process.env.LLAMACPP_GPU_LAYERS || '-1';
 let llamaCtxSize = parseInt(process.env.LLAMACPP_CTX_SIZE || '32768', 10);
 
+function getLlamacppDiagnostics() {
+    const dirs = String(llamaModelsDir || '').split(',').map(d => d.trim()).filter(Boolean);
+    const existingDirs = dirs.filter(dir => fs.existsSync(dir));
+    let modelCount = 0;
+
+    for (const dir of existingDirs) {
+        try {
+            const files = fs.readdirSync(dir);
+            modelCount += files.filter(file => file.toLowerCase().endsWith('.gguf')).length;
+        } catch {
+            // Ignore unreadable directories in diagnostics and report via counts below.
+        }
+    }
+
+    const executableExists = !!llamaExecutable && fs.existsSync(llamaExecutable);
+    const modelsDirExists = existingDirs.length > 0;
+    const configured = !!llamaExecutable || !!llamaModelsDir;
+    const canUse = executableExists && modelsDirExists && modelCount > 0;
+
+    let message = 'llama.cpp is not configured yet.';
+    if (llamaStatus === 'ready') {
+        message = `llama.cpp is running${llamaCurrentModel ? ` with ${path.basename(llamaCurrentModel)}` : ''}.`;
+    } else if (!executableExists) {
+        message = `llama.cpp executable not found at ${llamaExecutable}.`;
+    } else if (!modelsDirExists) {
+        message = `No valid llama.cpp model directory found in ${llamaModelsDir}.`;
+    } else if (modelCount === 0) {
+        message = 'No GGUF models were found in the configured llama.cpp models directory.';
+    } else if (llamaStatus === 'loading') {
+        message = 'llama.cpp is starting up.';
+    } else if (llamaStatus === 'error') {
+        message = 'llama.cpp encountered an error while starting.';
+    } else if (canUse) {
+        message = `${modelCount} llama.cpp model${modelCount === 1 ? '' : 's'} available.`;
+    }
+
+    return {
+        status: llamaStatus,
+        configured,
+        canUse,
+        model: llamaCurrentModel ? path.basename(llamaCurrentModel) : null,
+        modelPath: llamaCurrentModel,
+        port: llamaPort,
+        executable: llamaExecutable,
+        executableExists,
+        modelsDir: llamaModelsDir,
+        modelsDirExists,
+        scannedDirs: dirs,
+        existingDirs,
+        modelCount,
+        gpuLayers: llamaGpuLayers,
+        ctxSize: llamaCtxSize,
+        message
+    };
+}
+
 async function waitForLlamaServer(timeoutMs) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -63,16 +119,7 @@ async function waitForLlamaServer(timeoutMs) {
 // --- Route handlers: llama.cpp management ---
 
 function handleLlamacppStatus(req, res) {
-    res.json({
-        status: llamaStatus,
-        model: llamaCurrentModel ? path.basename(llamaCurrentModel) : null,
-        modelPath: llamaCurrentModel,
-        port: llamaPort,
-        executable: llamaExecutable,
-        modelsDir: llamaModelsDir,
-        gpuLayers: llamaGpuLayers,
-        ctxSize: llamaCtxSize
-    });
+    res.json(getLlamacppDiagnostics());
 }
 
 function handleLlamacppConfig(req, res) {
@@ -1432,6 +1479,7 @@ module.exports = {
     handleResearch,
     handleAgentChat,
     handleOllamaProxy,
+    getLlamacppDiagnostics,
     getLlamaProcess,
     setLlamaProcess,
     getLlamaStatus,

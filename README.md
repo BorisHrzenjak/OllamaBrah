@@ -6,10 +6,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.0.6
+## What's New — v1.0.7
 
-- **API Keys settings panel** — enter Tavily (web search) and Exa (deep research) keys directly in Settings → 🔑 API Keys; no `.env` file required
-- Keys are stored locally in the app's data folder and applied immediately — no restart or rebuild needed
+- **Startup diagnostics and guided recovery** — OllamaBrah now checks backend readiness on launch and replaces dead-end startup states with actionable recovery steps
+- **Smarter fallback guidance** — the app explains whether Ollama, llama.cpp, memory, or voice input needs attention and suggests the next best fix directly in the chat flow
 
 ---
 
@@ -19,6 +19,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Ollama** — chat with any locally installed Ollama model
 - **llama.cpp** — run GGUF models directly via `llama-server`; configure binary path, models directory, GPU layers, context size, and server port
 - Model switcher with live availability checking
+- Startup diagnostics for Ollama, llama.cpp, memory, and voice prerequisites with guided recovery actions
 - Auto-detect context window size per model
 - Override context limit manually
 - Adjust model parameters per model: temperature, top-p, top-k, repeat penalty, max tokens, seed

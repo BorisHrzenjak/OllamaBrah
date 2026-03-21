@@ -22,6 +22,7 @@ const {
     handleSttStatus,
     handleSttLoad,
     handleSttTranscribe,
+    getWhisperDiagnostics,
     getWhisperProcess,
     getWhisperStatus,
     setWhisperStatus,
@@ -46,6 +47,7 @@ const {
     handleResearch,
     handleAgentChat,
     handleOllamaProxy,
+    getLlamacppDiagnostics,
     getLlamaProcess,
 } = require('./llm');
 
@@ -153,6 +155,153 @@ app.use((req, res, next) => {
         next();
     }
 });
+
+async function getOllamaDiagnostics() {
+    const result = {
+        status: 'unreachable',
+        reachable: false,
+        modelCount: 0,
+        models: [],
+        message: 'Ollama is not reachable.',
+        error: null
+    };
+
+    try {
+        const resp = await fetch(`${OLLAMA_API_BASE_URL}/api/tags`, {
+            signal: AbortSignal.timeout(4000)
+        });
+
+        if (!resp.ok) {
+            result.status = 'error';
+            result.error = `HTTP ${resp.status}`;
+            result.message = `Ollama returned HTTP ${resp.status}.`;
+            return result;
+        }
+
+        const data = await resp.json();
+        const models = data.models || [];
+        result.reachable = true;
+        result.models = models;
+        result.modelCount = models.length;
+        result.status = models.length > 0 ? 'ready' : 'no_models';
+        result.message = models.length > 0
+            ? `Ollama is running with ${models.length} installed model${models.length === 1 ? '' : 's'}.`
+            : 'Ollama is running, but no models are installed yet.';
+        return result;
+    } catch (err) {
+        result.error = err.name === 'TimeoutError' ? 'timeout' : err.message;
+        result.message = err.name === 'TimeoutError'
+            ? 'Ollama did not respond in time.'
+            : `Ollama is not reachable: ${err.message}`;
+        return result;
+    }
+}
+
+async function buildReadinessReport() {
+    const [ollama, memoryStatus] = await Promise.all([
+        getOllamaDiagnostics(),
+        memory.getStatus().catch(err => ({ available: false, reason: err.message, count: 0 }))
+    ]);
+
+    const stt = getWhisperDiagnostics();
+    const llamacpp = getLlamacppDiagnostics();
+    const blockingIssues = [];
+    const warnings = [];
+    const recommendedActions = [];
+
+    const addAction = (id, label, description, meta = {}) => {
+        if (recommendedActions.some(action => action.id === id)) return;
+        recommendedActions.push({ id, label, description, ...meta });
+    };
+
+    const chatAvailable = ollama.status === 'ready' || llamacpp.canUse || llamacpp.status === 'ready';
+    let overallState = 'ready';
+
+    if (ollama.status === 'unreachable' && !(llamacpp.canUse || llamacpp.status === 'ready')) {
+        overallState = 'blocked';
+        blockingIssues.push({
+            id: 'no_chat_backend',
+            title: 'No chat backend is ready',
+            detail: 'Ollama is unavailable and llama.cpp is not ready as a fallback.'
+        });
+        addAction('retry', 'Retry checks', 'Run readiness diagnostics again.');
+        if (llamacpp.canUse || llamacpp.modelCount > 0) {
+            addAction('switch_llamacpp', 'Switch to llama.cpp', 'Use an available GGUF model instead of Ollama.', { backend: 'llamacpp' });
+        }
+        addAction('open_llamacpp_settings', 'Configure llama.cpp', 'Open Settings and review your llama.cpp executable and models directory.', { section: 'llamaCpp' });
+    }
+
+    if (ollama.status === 'unreachable') {
+        warnings.push({
+            id: 'ollama_unreachable',
+            title: 'Ollama is offline',
+            detail: ollama.message
+        });
+        addAction('retry', 'Retry checks', 'Check again after starting Ollama.');
+    } else if (ollama.status === 'no_models') {
+        overallState = overallState === 'blocked' ? 'blocked' : 'degraded';
+        blockingIssues.push({
+            id: 'ollama_no_models',
+            title: 'No Ollama models installed',
+            detail: 'Ollama is running, but there are no models available to chat with yet.'
+        });
+        addAction('open_model_management', 'Open model management', 'Pull or update models from the Settings panel.', { section: 'modelMgmt' });
+        if (llamacpp.canUse || llamacpp.modelCount > 0) {
+            addAction('switch_llamacpp', 'Switch to llama.cpp', 'Use an available GGUF model instead of installing an Ollama model first.', { backend: 'llamacpp' });
+        }
+    }
+
+    if (!memoryStatus.available) {
+        if (overallState === 'ready') overallState = 'degraded';
+        warnings.push({
+            id: 'memory_unavailable',
+            title: 'Memory support needs setup',
+            detail: memoryStatus.reason || 'The embedding model for memory is not available.'
+        });
+        addAction('open_memory_settings', 'Enable memory support', 'Open Settings and review the memory requirements.', { section: 'memory' });
+    }
+
+    if (!stt.scriptPresent || !stt.pythonAvailable || stt.whisperStatus === 'error') {
+        if (overallState === 'ready') overallState = 'degraded';
+        warnings.push({
+            id: 'voice_unavailable',
+            title: 'Voice input needs setup',
+            detail: stt.message
+        });
+        addAction('open_tts_settings', 'Review voice setup', 'Open Settings and review voice requirements.', { section: 'tts' });
+    }
+
+    if (!llamacpp.canUse && llamacpp.status !== 'ready') {
+        warnings.push({
+            id: 'llamacpp_not_ready',
+            title: 'llama.cpp fallback not ready',
+            detail: llamacpp.message
+        });
+        addAction('open_llamacpp_settings', 'Configure llama.cpp', 'Open Settings and review your llama.cpp executable and models directory.', { section: 'llamaCpp' });
+    }
+
+    const primaryBackend = ollama.status === 'ready' ? 'ollama' : ((llamacpp.canUse || llamacpp.status === 'ready') ? 'llamacpp' : null);
+
+    return {
+        checkedAt: new Date().toISOString(),
+        overallState,
+        chatAvailable,
+        primaryBackend,
+        blockingIssues,
+        warnings,
+        recommendedActions,
+        checks: {
+            proxy: {
+                status: 'ready',
+                message: 'Internal proxy is running.'
+            },
+            ollama,
+            memory: memoryStatus,
+            stt,
+            llamacpp
+        }
+    };
+}
 
 // --- Server Management ---
 
@@ -316,6 +465,34 @@ app.post('/api/skills/run-cli', handleSkillsRunCli);
 
 // --- API Keys Endpoints ---
 
+app.get('/api/readiness', async (req, res) => {
+    try {
+        res.json(await buildReadinessReport());
+    } catch (err) {
+        res.status(500).json({
+            overallState: 'blocked',
+            chatAvailable: false,
+            blockingIssues: [{
+                id: 'readiness_failed',
+                title: 'Readiness checks failed',
+                detail: err.message
+            }],
+            warnings: [],
+            recommendedActions: [{
+                id: 'retry',
+                label: 'Retry checks',
+                description: 'Try the readiness checks again.'
+            }],
+            checks: {
+                proxy: {
+                    status: 'error',
+                    message: err.message
+                }
+            }
+        });
+    }
+});
+
 // GET /api/keys — return whether each key is configured (never returns raw key value)
 app.get('/api/keys', (req, res) => {
     res.json({
@@ -444,7 +621,7 @@ app.post('/api/memory/extract', async (req, res) => {
 
 app.all('/proxy/*', handleOllamaProxy);
 
-module.exports = { app, PORT, serverInstance: null };
+module.exports = { app, PORT, serverInstance: null, buildReadinessReport, getOllamaDiagnostics };
 
 // Export serverInstance setter so server.js can assign it after listen
 module.exports.setServerInstance = function(inst) { serverInstance = inst; };
