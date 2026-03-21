@@ -8,12 +8,26 @@ const { LocalDocumentIndex } = require('vectra/lib/LocalDocumentIndex');
 const MEMORY_DIR = process.env.MEMORY_DIR
     || path.join(os.homedir(), '.ollamabar', 'memory');
 const EMBED_MODEL = process.env.MEMORY_EMBED_MODEL || 'nomic-embed-text';
-const OLLAMA_BASE = (process.env.OLLAMA_API_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
+
+function getOllamaBaseUrl() {
+    return (process.env.OLLAMA_API_BASE_URL || 'http://localhost:11434').trim().replace(/\/$/, '');
+}
+
+function formatOllamaConnectionError(err) {
+    const message = String(err?.message || err || 'Unknown error');
+    if (message.includes('Failed to parse URL')) {
+        return 'Ollama URL is invalid. Check OLLAMA_API_BASE_URL in your environment or .env file.';
+    }
+    if (message === 'fetch failed') {
+        return 'Ollama is not reachable for memory setup.';
+    }
+    return message;
+}
 
 let _index = null;
 
 async function embedTexts(inputs) {
-    const resp = await fetch(`${OLLAMA_BASE}/api/embed`, {
+    const resp = await fetch(`${getOllamaBaseUrl()}/api/embed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: EMBED_MODEL, input: inputs })
@@ -134,7 +148,7 @@ async function clearMemories() {
 
 async function getStatus() {
     try {
-        const resp = await fetch(`${OLLAMA_BASE}/api/tags`);
+        const resp = await fetch(`${getOllamaBaseUrl()}/api/tags`);
         if (!resp.ok) return { available: false, reason: 'Ollama not reachable', count: 0 };
         const data = await resp.json();
         const models = data.models || [];
@@ -148,7 +162,7 @@ async function getStatus() {
             reason: hasEmbed ? null : `Run: ollama pull ${EMBED_MODEL}`
         };
     } catch (err) {
-        return { available: false, reason: err.message, count: 0 };
+        return { available: false, reason: formatOllamaConnectionError(err), count: 0 };
     }
 }
 
