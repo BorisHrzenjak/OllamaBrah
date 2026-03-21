@@ -6,11 +6,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.0.7
+## What's New — v1.1.0
 
-- **Security hardening** — patched path traversal vulnerability, added prompt injection defenses, removed CORS bypass
-- **Server refactor** — internal proxy (`server.js`) cleaned up for improved reliability and maintainability
-- **Updated app icon** — new Fallout-themed desktop and window icon
+- **Startup diagnostics and guided recovery** — OllamaBrah now checks backend readiness on launch and turns broken setup states into clear next-step recovery actions
+- **Smarter document attachments** — PDFs and text/code files are extracted, chunked, and summarized before they reach the model, with better follow-up handling and `llama.cpp` document support
+- **More transparent memory** — memory now has semantic search, inline editing, usage visibility, better deduplication, and cleanup for similar memories
 
 ---
 
@@ -19,7 +19,9 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 ### Models & Backends
 - **Ollama** — chat with any locally installed Ollama model
 - **llama.cpp** — run GGUF models directly via `llama-server`; configure binary path, models directory, GPU layers, context size, and server port
+- Document attachments work with `llama.cpp` even when image attachments are unavailable
 - Model switcher with live availability checking
+- Startup diagnostics for Ollama, llama.cpp, memory, and voice prerequisites with guided recovery actions
 - Auto-detect context window size per model
 - Override context limit manually
 - Adjust model parameters per model: temperature, top-p, top-k, repeat penalty, max tokens, seed
@@ -36,6 +38,8 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Per-message actions: copy, read aloud, download as TXT or Markdown, remove
 - Drag & drop file attachments
 - Supported file types: images, PDF, TXT, Markdown, Python, JS, TS, JSON, HTML, CSS, SQL, Shell, YAML, XML, CSV, logs
+- Document attachments are chunked and summarized automatically, with only the most relevant excerpts injected into context on each turn
+- Attached documents stay useful on follow-up questions instead of being pasted in full every time
 - Export full conversations as Markdown
 - Context meter showing token breakdown (system prompt / search / conversation)
 
@@ -44,6 +48,8 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Deep research** — multi-step Exa research pipeline before answering
 - **Agent mode** — autonomous tool-use loop with step-by-step visualization; configure max steps, tool permissions, allowed directories, and blocked paths
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
+- Semantic memory search in the memory manager, with provenance like source type, extraction mode, and linked conversation/message metadata
+- Auto-extracted memories save directly with provenance and deduplication, and replies can show which memories were used in context
 
 ### Voice & Audio
 - **Voice input** — speech-to-text via Whisper *(requires Python + faster-whisper)*

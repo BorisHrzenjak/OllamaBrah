@@ -46,6 +46,62 @@ let llamaModelsDir = process.env.LLAMACPP_MODELS_DIR || 'C:\\llama.cpp';
 let llamaGpuLayers = process.env.LLAMACPP_GPU_LAYERS || '-1';
 let llamaCtxSize = parseInt(process.env.LLAMACPP_CTX_SIZE || '32768', 10);
 
+function getLlamacppDiagnostics() {
+    const dirs = String(llamaModelsDir || '').split(',').map(d => d.trim()).filter(Boolean);
+    const existingDirs = dirs.filter(dir => fs.existsSync(dir));
+    let modelCount = 0;
+
+    for (const dir of existingDirs) {
+        try {
+            const files = fs.readdirSync(dir);
+            modelCount += files.filter(file => file.toLowerCase().endsWith('.gguf')).length;
+        } catch {
+            // Ignore unreadable directories in diagnostics and report via counts below.
+        }
+    }
+
+    const executableExists = !!llamaExecutable && fs.existsSync(llamaExecutable);
+    const modelsDirExists = existingDirs.length > 0;
+    const configured = !!llamaExecutable || !!llamaModelsDir;
+    const canUse = executableExists && modelsDirExists && modelCount > 0;
+
+    let message = 'llama.cpp is not configured yet.';
+    if (llamaStatus === 'ready') {
+        message = `llama.cpp is running${llamaCurrentModel ? ` with ${path.basename(llamaCurrentModel)}` : ''}.`;
+    } else if (!executableExists) {
+        message = `llama.cpp executable not found at ${llamaExecutable}.`;
+    } else if (!modelsDirExists) {
+        message = `No valid llama.cpp model directory found in ${llamaModelsDir}.`;
+    } else if (modelCount === 0) {
+        message = 'No GGUF models were found in the configured llama.cpp models directory.';
+    } else if (llamaStatus === 'loading') {
+        message = 'llama.cpp is starting up.';
+    } else if (llamaStatus === 'error') {
+        message = 'llama.cpp encountered an error while starting.';
+    } else if (canUse) {
+        message = `${modelCount} llama.cpp model${modelCount === 1 ? '' : 's'} available.`;
+    }
+
+    return {
+        status: llamaStatus,
+        configured,
+        canUse,
+        model: llamaCurrentModel ? path.basename(llamaCurrentModel) : null,
+        modelPath: llamaCurrentModel,
+        port: llamaPort,
+        executable: llamaExecutable,
+        executableExists,
+        modelsDir: llamaModelsDir,
+        modelsDirExists,
+        scannedDirs: dirs,
+        existingDirs,
+        modelCount,
+        gpuLayers: llamaGpuLayers,
+        ctxSize: llamaCtxSize,
+        message
+    };
+}
+
 async function waitForLlamaServer(timeoutMs) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -63,16 +119,7 @@ async function waitForLlamaServer(timeoutMs) {
 // --- Route handlers: llama.cpp management ---
 
 function handleLlamacppStatus(req, res) {
-    res.json({
-        status: llamaStatus,
-        model: llamaCurrentModel ? path.basename(llamaCurrentModel) : null,
-        modelPath: llamaCurrentModel,
-        port: llamaPort,
-        executable: llamaExecutable,
-        modelsDir: llamaModelsDir,
-        gpuLayers: llamaGpuLayers,
-        ctxSize: llamaCtxSize
-    });
+    res.json(getLlamacppDiagnostics());
 }
 
 function handleLlamacppConfig(req, res) {
@@ -1063,6 +1110,7 @@ async function handleOllamaProxy(req, res) {
         let ollamaSearchMeta = null;
         // Context breakdown for segmented meter
         let ollamaContextBreakdown = null;
+        let ollamaMemoryMeta = null;
 
         const proxyReq = http.request(options, (proxyRes) => {
             console.log(`Proxy to Ollama: Received response status: ${proxyRes.statusCode}`);
@@ -1076,6 +1124,9 @@ async function handleOllamaProxy(req, res) {
             // Emit context breakdown for segmented meter
             if (ollamaContextBreakdown && proxyRes.statusCode === 200) {
                 res.write(JSON.stringify({ _contextBreakdown: ollamaContextBreakdown }) + '\n');
+            }
+            if (ollamaMemoryMeta && proxyRes.statusCode === 200) {
+                res.write(JSON.stringify({ _memoryEvent: ollamaMemoryMeta }) + '\n');
             }
 
             if (!exaSourcesBlock) {
@@ -1162,6 +1213,7 @@ async function handleOllamaProxy(req, res) {
 
                     // --- Web search context injection ---
                     const lastMsg = ollamaPayload.messages?.at(-1);
+                    ollamaMemoryMeta = null;
 
                     if (lastMsg?.role === 'user') {
                         const messageContent = lastMsg.content || '';
@@ -1290,11 +1342,23 @@ async function handleOllamaProxy(req, res) {
                         // Inject memory context into system message
                         if (memHits !== null) {
                             const parts = [];
-                            parts.push('You have a persistent memory system. When the user asks you to remember something, acknowledge that it has been saved and will be available in future conversations. Do not say you lack persistent memory.');
+                            parts.push('You have a persistent memory system. Only say something has been saved, noted, remembered, or added to memory when the user explicitly asked you to remember or save it. If the user merely shares information, respond naturally without claiming it was stored. Do not say you lack persistent memory.');
                             if (memHits.length > 0) {
                                 parts.push('Relevant memories from previous conversations:\n' +
                                     memHits.map((h, i) => `[${i + 1}] ${h.text}`).join('\n'));
                                 console.log(`[Memory] Injected ${memHits.length} memories into context`);
+                                ollamaMemoryMeta = {
+                                    used: memHits.map((h, i) => ({
+                                        id: h.id,
+                                        text: h.text,
+                                        score: h.score,
+                                        index: i + 1,
+                                        source: h.source,
+                                        sourceType: h.sourceType,
+                                        extractionMode: h.extractionMode,
+                                        timestamp: h.timestamp,
+                                    }))
+                                };
                             }
                             const memBlock = parts.join('\n\n');
                             const sysIdx = ollamaPayload.messages.findIndex(m => m.role === 'system');
@@ -1312,7 +1376,7 @@ async function handleOllamaProxy(req, res) {
                         const SAVE_CMD_RE = /^\s*(save (this|that|it|the fact that)?(\s*(to|in|into))?(\s*the)?\s*memory|please (remember|save)|note that|remember (that|this)|don'?t forget (that|this)|keep in mind that|add (this|that|it) to (my |your |the )?memory)\s*$/i;
                         const isBareCommand = SAVE_CMD_RE.test(toSave);
                         if (toSave && !isBareCommand) {
-                            memory.addMemory(toSave, { source: 'user' })
+                            memory.addMemory(toSave, { source: 'user', sourceType: 'manual-save', extractionMode: 'explicit' })
                                 .then(id => console.log(`[Memory] Auto-saved from user request (id: ${id}): "${toSave.slice(0, 80)}"`))
                                 .catch(err => console.warn('[Memory] Auto-save failed:', err.message));
                             const saveNote = 'Note: The user\'s request to save information has been automatically processed and stored in your persistent memory.';
@@ -1328,7 +1392,7 @@ async function handleOllamaProxy(req, res) {
                             const userMsgs = msgs.filter(m => m.role === 'user');
                             const prevUserContent = userMsgs.length >= 2 ? (userMsgs[userMsgs.length - 2].content || '').trim() : '';
                             if (prevUserContent) {
-                                memory.addMemory(prevUserContent, { source: 'user' })
+                                memory.addMemory(prevUserContent, { source: 'user', sourceType: 'manual-save', extractionMode: 'explicit' })
                                     .then(id => console.log(`[Memory] Saved prior user message (id: ${id}): "${prevUserContent.slice(0, 80)}"`))
                                     .catch(err => console.warn('[Memory] Save prior user failed:', err.message));
                             } else {
@@ -1432,6 +1496,7 @@ module.exports = {
     handleResearch,
     handleAgentChat,
     handleOllamaProxy,
+    getLlamacppDiagnostics,
     getLlamaProcess,
     setLlamaProcess,
     getLlamaStatus,

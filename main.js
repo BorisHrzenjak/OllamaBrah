@@ -9,6 +9,21 @@ let win;
 let db;
 let store;
 
+function configureAppPaths() {
+    if (app.isPackaged) return;
+
+    const explicitDir = process.env.OLLAMABRAH_USER_DATA_DIR;
+    const suffix = process.env.OLLAMABRAH_USER_DATA_SUFFIX
+        || path.basename(__dirname).replace(/[^a-zA-Z0-9_.-]/g, '-');
+    const baseUserData = explicitDir || path.join(app.getPath('appData'), 'ollama-brah-dev', suffix);
+
+    app.setPath('userData', baseUserData);
+    app.setPath('sessionData', path.join(baseUserData, 'session'));
+    console.log('[main] Dev userData path:', app.getPath('userData'));
+}
+
+configureAppPaths();
+
 // ─── Database ────────────────────────────────────────────────────────────────
 
 function initDatabase() {
@@ -139,7 +154,7 @@ function createWindow() {
         height: 900,
         minWidth: 800,
         minHeight: 600,
-        icon: path.join(__dirname, 'assets', 'fallout_icon.ico'),
+        icon: path.join(__dirname, 'assets', 'icon.ico'),
         titleBarStyle: 'hidden',
         backgroundColor: '#0a0a0a',
         webPreferences: {

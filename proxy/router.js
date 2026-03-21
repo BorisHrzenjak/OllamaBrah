@@ -7,6 +7,7 @@ const os = require('os');
 const http = require('http');
 const { spawn } = require('child_process');
 const memory = require('./memory');
+const { handleProcessAttachments } = require('./attachments');
 
 const {
     handleSkillsList,
@@ -22,6 +23,7 @@ const {
     handleSttStatus,
     handleSttLoad,
     handleSttTranscribe,
+    getWhisperDiagnostics,
     getWhisperProcess,
     getWhisperStatus,
     setWhisperStatus,
@@ -46,12 +48,59 @@ const {
     handleResearch,
     handleAgentChat,
     handleOllamaProxy,
+    getLlamacppDiagnostics,
     getLlamaProcess,
 } = require('./llm');
 
 const PORT = 3456;
 const OLLAMA_API_BASE_URL = 'http://localhost:11434';
 const extensionOrigin = 'chrome-extension://gkpfpdekobmonacdgjgbfehilnloaacm';
+
+function normalizeFactText(text) {
+    return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function isFactGroundedInUserMessage(fact, userMessage) {
+    const factNorm = normalizeFactText(fact);
+    const userNorm = normalizeFactText(userMessage);
+    if (!factNorm || !userNorm) return false;
+    if (userNorm.includes(factNorm)) return true;
+
+    const factTokens = factNorm.split(' ').filter(t => t.length >= 3);
+    if (!factTokens.length) return false;
+    const hits = factTokens.filter(token => userNorm.includes(token)).length;
+    return hits >= Math.max(2, Math.ceil(factTokens.length * 0.5));
+}
+
+function extractSimpleMemoryFacts(userMessage) {
+    const text = String(userMessage || '').trim();
+    const facts = [];
+
+    const patterns = [
+        { re: /\bmy name is\s+([^,.!\n]+)/i, fmt: m => `User's name is ${m[1].trim()}` },
+        { re: /\bi live in\s+([^,.!\n]+)/i, fmt: m => `User lives in ${m[1].trim()}` },
+        { re: /\bi work with\s+([^,.!\n]+)/i, fmt: m => `User works with ${m[1].trim()}` },
+        { re: /\bi use\s+([^,.!\n]+)\s+for\s+([^,.!\n]+)/i, fmt: m => `User uses ${m[1].trim()} for ${m[2].trim()}` },
+        { re: /\bi prefer\s+([^,.!\n]+)/i, fmt: m => `User prefers ${m[1].trim()}` },
+        { re: /\bmy birthday is\s+([^,.!\n]+)/i, fmt: m => `User's birthday is ${m[1].trim()}` },
+        { re: /\bmy mom (?:is called|is named|is)\s+([^,.!\n]+)/i, fmt: m => `User's mom is named ${m[1].trim()}` },
+        { re: /\bmy mother (?:is called|is named|is)\s+([^,.!\n]+)/i, fmt: m => `User's mother is named ${m[1].trim()}` },
+        { re: /\bmy dad (?:is called|is named|is)\s+([^,.!\n]+)/i, fmt: m => `User's dad is named ${m[1].trim()}` },
+        { re: /\bmy father (?:is called|is named|is)\s+([^,.!\n]+)/i, fmt: m => `User's father is named ${m[1].trim()}` },
+        { re: /\bi have a brother(?:,?\s*(?:called|named)\s+([^,.!\n]+))?/i, fmt: m => m[1] ? `User has a brother named ${m[1].trim()}` : 'User has a brother' },
+        { re: /\bi have a sister(?:,?\s*(?:called|named)\s+([^,.!\n]+))?/i, fmt: m => m[1] ? `User has a sister named ${m[1].trim()}` : 'User has a sister' },
+    ];
+
+    for (const pattern of patterns) {
+        const match = text.match(pattern.re);
+        if (match) {
+            const fact = pattern.fmt(match).replace(/\s+/g, ' ').trim();
+            if (fact) facts.push(fact);
+        }
+    }
+
+    return [...new Set(facts)];
+}
 
 // Kokoro TTS state
 let kokoroTTS = null;
@@ -153,6 +202,153 @@ app.use((req, res, next) => {
         next();
     }
 });
+
+async function getOllamaDiagnostics() {
+    const result = {
+        status: 'unreachable',
+        reachable: false,
+        modelCount: 0,
+        models: [],
+        message: 'Ollama is not reachable.',
+        error: null
+    };
+
+    try {
+        const resp = await fetch(`${OLLAMA_API_BASE_URL}/api/tags`, {
+            signal: AbortSignal.timeout(4000)
+        });
+
+        if (!resp.ok) {
+            result.status = 'error';
+            result.error = `HTTP ${resp.status}`;
+            result.message = `Ollama returned HTTP ${resp.status}.`;
+            return result;
+        }
+
+        const data = await resp.json();
+        const models = data.models || [];
+        result.reachable = true;
+        result.models = models;
+        result.modelCount = models.length;
+        result.status = models.length > 0 ? 'ready' : 'no_models';
+        result.message = models.length > 0
+            ? `Ollama is running with ${models.length} installed model${models.length === 1 ? '' : 's'}.`
+            : 'Ollama is running, but no models are installed yet.';
+        return result;
+    } catch (err) {
+        result.error = err.name === 'TimeoutError' ? 'timeout' : err.message;
+        result.message = err.name === 'TimeoutError'
+            ? 'Ollama did not respond in time.'
+            : `Ollama is not reachable: ${err.message}`;
+        return result;
+    }
+}
+
+async function buildReadinessReport() {
+    const [ollama, memoryStatus] = await Promise.all([
+        getOllamaDiagnostics(),
+        memory.getStatus().catch(err => ({ available: false, reason: err.message, count: 0 }))
+    ]);
+
+    const stt = getWhisperDiagnostics();
+    const llamacpp = getLlamacppDiagnostics();
+    const blockingIssues = [];
+    const warnings = [];
+    const recommendedActions = [];
+
+    const addAction = (id, label, description, meta = {}) => {
+        if (recommendedActions.some(action => action.id === id)) return;
+        recommendedActions.push({ id, label, description, ...meta });
+    };
+
+    const chatAvailable = ollama.status === 'ready' || llamacpp.canUse || llamacpp.status === 'ready';
+    let overallState = 'ready';
+
+    if (ollama.status === 'unreachable' && !(llamacpp.canUse || llamacpp.status === 'ready')) {
+        overallState = 'blocked';
+        blockingIssues.push({
+            id: 'no_chat_backend',
+            title: 'Chat cannot start yet',
+            detail: 'Ollama is unavailable and llama.cpp is not ready as a fallback.'
+        });
+        addAction('retry', 'Check again', 'Run startup checks again after you make a change.');
+        if (llamacpp.canUse || llamacpp.modelCount > 0) {
+            addAction('switch_llamacpp', 'Use llama.cpp instead', 'Start chatting with an available GGUF model right away.', { backend: 'llamacpp' });
+        }
+        addAction('open_llamacpp_settings', 'Fix llama.cpp setup', 'Open Settings and review the executable path and models folder.', { section: 'llamaCpp' });
+    }
+
+    if (ollama.status === 'unreachable') {
+        warnings.push({
+            id: 'ollama_unreachable',
+            title: 'Ollama is offline',
+            detail: ollama.message
+        });
+        addAction('retry', 'Check again', 'Refresh startup checks after Ollama finishes starting.');
+    } else if (ollama.status === 'no_models') {
+        overallState = overallState === 'blocked' ? 'blocked' : 'degraded';
+        blockingIssues.push({
+            id: 'ollama_no_models',
+            title: 'No Ollama model is ready yet',
+            detail: 'Ollama is running, but there is nothing installed to chat with yet.'
+        });
+        addAction('open_model_management', 'Install a model', 'Open Settings and pull your first Ollama model.', { section: 'modelMgmt' });
+        if (llamacpp.canUse || llamacpp.modelCount > 0) {
+            addAction('switch_llamacpp', 'Use llama.cpp instead', 'Skip model install for now and chat with an available GGUF model.', { backend: 'llamacpp' });
+        }
+    }
+
+    if (!memoryStatus.available) {
+        if (overallState === 'ready') overallState = 'degraded';
+        warnings.push({
+            id: 'memory_unavailable',
+            title: 'Memory support needs setup',
+            detail: memoryStatus.reason || 'The embedding model for memory is not available.'
+        });
+        addAction('open_memory_settings', 'Fix memory setup', 'Open Settings and enable the embedding model used for memory.', { section: 'memory' });
+    }
+
+    if (!stt.scriptPresent || !stt.pythonAvailable || stt.whisperStatus === 'error') {
+        if (overallState === 'ready') overallState = 'degraded';
+        warnings.push({
+            id: 'voice_unavailable',
+            title: 'Voice input needs setup',
+            detail: stt.message
+        });
+        addAction('open_tts_settings', 'Fix voice setup', 'Open Settings and review Whisper and Python requirements.', { section: 'tts' });
+    }
+
+    if (!llamacpp.canUse && llamacpp.status !== 'ready') {
+        warnings.push({
+            id: 'llamacpp_not_ready',
+            title: 'llama.cpp fallback not ready',
+            detail: llamacpp.message
+        });
+        addAction('open_llamacpp_settings', 'Fix llama.cpp setup', 'Open Settings and review the executable path and models folder.', { section: 'llamaCpp' });
+    }
+
+    const primaryBackend = ollama.status === 'ready' ? 'ollama' : ((llamacpp.canUse || llamacpp.status === 'ready') ? 'llamacpp' : null);
+
+    return {
+        checkedAt: new Date().toISOString(),
+        overallState,
+        chatAvailable,
+        primaryBackend,
+        blockingIssues,
+        warnings,
+        recommendedActions,
+        checks: {
+            proxy: {
+                status: 'ready',
+                message: 'Internal proxy is running.'
+            },
+            ollama,
+            memory: memoryStatus,
+            stt,
+            llamacpp
+        }
+    };
+}
 
 // --- Server Management ---
 
@@ -316,6 +512,36 @@ app.post('/api/skills/run-cli', handleSkillsRunCli);
 
 // --- API Keys Endpoints ---
 
+app.get('/api/readiness', async (req, res) => {
+    try {
+        res.json(await buildReadinessReport());
+    } catch (err) {
+        res.status(500).json({
+            overallState: 'blocked',
+            chatAvailable: false,
+            blockingIssues: [{
+                id: 'readiness_failed',
+                title: 'Readiness checks failed',
+                detail: err.message
+            }],
+            warnings: [],
+            recommendedActions: [{
+                id: 'retry',
+                label: 'Retry checks',
+                description: 'Try the readiness checks again.'
+            }],
+            checks: {
+                proxy: {
+                    status: 'error',
+                    message: err.message
+                }
+            }
+        });
+    }
+});
+
+app.post('/api/attachments/process', handleProcessAttachments);
+
 // GET /api/keys — return whether each key is configured (never returns raw key value)
 app.get('/api/keys', (req, res) => {
     res.json({
@@ -346,15 +572,42 @@ app.get('/api/memory', async (req, res) => {
     catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.get('/api/memory/search', async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 8, 20));
+    if (!q) return res.json([]);
+    try { res.json(await memory.searchMemories(q, limit)); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST /api/memory — add a memory manually
 app.post('/api/memory', async (req, res) => {
-    const { text, source } = req.body || {};
+    const { text, source, sourceType, conversationId, messageId, extractionMode, reviewed, origin } = req.body || {};
     if (!text || !text.trim()) return res.status(400).json({ error: 'text is required' });
     try {
-        const id = await memory.addMemory(text.trim(), { source: source || 'manual' });
-        console.log(`[Memory] Manually added: "${text.slice(0, 80)}" (id: ${id})`);
+        const id = await memory.addMemory(text.trim(), {
+            source: source || 'manual',
+            sourceType: sourceType || source || 'manual',
+            conversationId: conversationId || null,
+            messageId: messageId || null,
+            extractionMode: extractionMode || 'manual',
+            reviewed: reviewed !== false,
+            origin: origin || null,
+        });
+        const kind = sourceType || source || 'manual';
+        console.log(`[Memory] Added (${kind}): "${text.slice(0, 80)}" (id: ${id})`);
         res.json({ id });
     } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/memory/:id', async (req, res) => {
+    try { res.json(await memory.updateMemory(req.params.id, req.body || {})); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/memory/dedupe', async (req, res) => {
+    try { res.json(await memory.dedupeExistingMemories()); }
+    catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // DELETE /api/memory/all — clear every memory
@@ -371,34 +624,60 @@ app.delete('/api/memory/:id', async (req, res) => {
 
 // POST /api/memory/extract — run LLM-based fact extraction on a conversation exchange
 app.post('/api/memory/extract', async (req, res) => {
-    const { userMessage, assistantMessage, model } = req.body || {};
+    const { userMessage, assistantMessage, model, backend, conversationId, userMessageId, assistantMessageId } = req.body || {};
     if (!userMessage || !assistantMessage || !model) {
         return res.status(400).json({ error: 'userMessage, assistantMessage, and model are required' });
     }
 
-    // Strip <think> blocks — we only want the actual response content
-    const cleanAssistant = assistantMessage.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-
     const extractionPrompt =
-        `You are a memory extraction assistant. Review this conversation exchange and extract any facts worth remembering for future conversations.\n\n` +
+        `You are a memory extraction assistant. Extract only durable facts that the USER explicitly stated and that would be useful in future conversations.\n\n` +
         `Extract ONLY:\n` +
         `- User preferences (e.g. "User prefers dark mode")\n` +
         `- Personal facts the user shared (e.g. "User works at Acme Corp")\n` +
         `- Ongoing project details (e.g. "User's project uses Python 3.11 and PostgreSQL")\n` +
-        `- Important decisions or conclusions\n\n` +
-        `Return ONLY a raw JSON array of short strings. If nothing is worth remembering, return []. No explanation, no markdown fences.\n\n` +
-        `User: ${userMessage.slice(0, 800)}\n` +
-        `Assistant: ${cleanAssistant.slice(0, 800)}`;
+        `- Important decisions the user made\n\n` +
+        `Rules:\n` +
+        `- Use only facts grounded in the USER message.\n` +
+        `- Never infer, elaborate, summarize culture/history, or add related facts.\n` +
+        `- If the user only asked a question and shared no durable fact, return [].\n` +
+        `- Return ONLY a raw JSON array of short strings. No explanation, no markdown fences.\n\n` +
+        `User: ${userMessage.slice(0, 1200)}`;
 
     try {
-        const payload = JSON.stringify({
-            model,
-            messages: [{ role: 'user', content: extractionPrompt }],
-            stream: false,
-            options: { temperature: 0 }
-        });
-
         const responseText = await new Promise((resolve, reject) => {
+            if (backend === 'llamacpp') {
+                const diag = getLlamacppDiagnostics();
+                const payload = JSON.stringify({
+                    model,
+                    messages: [{ role: 'user', content: extractionPrompt }],
+                    temperature: 0,
+                    stream: false,
+                });
+                const req2 = http.request({
+                    hostname: '127.0.0.1', port: diag.port || 8080, path: '/v1/chat/completions', method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+                }, (r) => {
+                    let raw = '';
+                    r.on('data', d => { raw += d; });
+                    r.on('end', () => {
+                        try { resolve(JSON.parse(raw).choices?.[0]?.message?.content || ''); }
+                        catch { reject(new Error('Bad llama.cpp extraction response')); }
+                    });
+                    r.on('error', reject);
+                });
+                req2.setTimeout(30000, () => { req2.destroy(); reject(new Error('Extraction timed out')); });
+                req2.on('error', reject);
+                req2.write(payload);
+                req2.end();
+                return;
+            }
+
+            const payload = JSON.stringify({
+                model,
+                messages: [{ role: 'user', content: extractionPrompt }],
+                stream: false,
+                options: { temperature: 0 }
+            });
             const req2 = http.request({
                 hostname: 'localhost', port: 11434, path: '/api/chat', method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
@@ -419,21 +698,43 @@ app.post('/api/memory/extract', async (req, res) => {
 
         // Pull out the first JSON array from the response
         const match = responseText.match(/\[[\s\S]*?\]/);
-        if (!match) return res.json({ saved: 0, facts: [] });
+        let facts = [];
+        if (match) {
+            try { facts = JSON.parse(match[0]); } catch { facts = []; }
+        }
+        if (!Array.isArray(facts)) facts = [];
+        const directFacts = extractSimpleMemoryFacts(userMessage);
+        const directFactSet = new Set(directFacts.map(normalizeFactText));
+        facts = [...facts, ...directFacts];
+        if (facts.length === 0) return res.json({ candidates: [] });
 
-        let facts;
-        try { facts = JSON.parse(match[0]); } catch { return res.json({ saved: 0, facts: [] }); }
-        if (!Array.isArray(facts) || facts.length === 0) return res.json({ saved: 0, facts: [] });
-
-        const saved = [];
+        const candidates = [];
+        const seenFacts = new Set();
         for (const fact of facts) {
             if (typeof fact === 'string' && fact.trim()) {
-                await memory.addMemory(fact.trim(), { source: 'auto-extract', model });
-                saved.push(fact.trim());
-                console.log(`[Memory] Auto-extracted: "${fact.trim().slice(0, 80)}"`);
+                const text = fact.trim();
+                const normalized = normalizeFactText(text);
+                if (!normalized || seenFacts.has(normalized)) continue;
+                if (!directFactSet.has(normalized) && !isFactGroundedInUserMessage(text, userMessage)) continue;
+                seenFacts.add(normalized);
+                candidates.push({
+                    text,
+                    source: 'auto-extract',
+                    sourceType: 'conversation',
+                    extractionMode: 'auto',
+                    reviewed: false,
+                    conversationId: conversationId || null,
+                    messageId: assistantMessageId || userMessageId || null,
+                    origin: {
+                        model,
+                        backend: backend || 'ollama',
+                        userMessageId: userMessageId || null,
+                        assistantMessageId: assistantMessageId || null,
+                    }
+                });
             }
         }
-        res.json({ saved: saved.length, facts: saved });
+        res.json({ candidates });
     } catch (err) {
         console.warn('[Memory] Extraction failed:', err.message);
         res.status(500).json({ error: err.message });
@@ -444,7 +745,7 @@ app.post('/api/memory/extract', async (req, res) => {
 
 app.all('/proxy/*', handleOllamaProxy);
 
-module.exports = { app, PORT, serverInstance: null };
+module.exports = { app, PORT, serverInstance: null, buildReadinessReport, getOllamaDiagnostics };
 
 // Export serverInstance setter so server.js can assign it after listen
 module.exports.setServerInstance = function(inst) { serverInstance = inst; };

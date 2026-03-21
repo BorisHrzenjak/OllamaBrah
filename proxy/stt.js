@@ -3,7 +3,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 // Resolve paths that may live in app.asar.unpacked when packaged
 function unpackedPath(...segments) {
@@ -18,6 +18,76 @@ let whisperProcess = null;
 let whisperStatus = 'idle'; // 'idle' | 'loading' | 'ready' | 'error'
 let whisperPort = parseInt(process.env.WHISPER_PORT || '5051', 10);
 let whisperModel = process.env.WHISPER_MODEL || 'small.en';
+let cachedPythonCheck = { checkedAt: 0, available: false, command: null, error: null };
+
+function getPythonCommand() {
+    return process.platform === 'win32' ? 'python' : 'python3';
+}
+
+function checkPythonAvailability() {
+    const now = Date.now();
+    if (now - cachedPythonCheck.checkedAt < 30000) return cachedPythonCheck;
+
+    const command = getPythonCommand();
+    try {
+        const result = spawnSync(command, ['--version'], {
+            encoding: 'utf8',
+            timeout: 4000,
+            windowsHide: true
+        });
+        const available = result.status === 0;
+        cachedPythonCheck = {
+            checkedAt: now,
+            available,
+            command,
+            error: available ? null : (result.stderr || result.stdout || `exit status ${result.status}` || 'Unknown error').trim()
+        };
+    } catch (err) {
+        cachedPythonCheck = {
+            checkedAt: now,
+            available: false,
+            command,
+            error: err.message
+        };
+    }
+
+    return cachedPythonCheck;
+}
+
+function getWhisperDiagnostics() {
+    const scriptPath = unpackedPath('..', 'whisper_server.py');
+    const python = checkPythonAvailability();
+    const scriptPresent = fs.existsSync(scriptPath);
+    const ready = whisperStatus === 'ready';
+
+    let message = 'Whisper ready';
+    if (!scriptPresent) {
+        message = 'Whisper server script is missing.';
+    } else if (!python.available) {
+        message = `Python is not available via ${python.command}.`;
+    } else if (ready) {
+        message = 'Whisper is ready for voice input.';
+    } else if (whisperStatus === 'loading') {
+        message = 'Whisper is warming up in the background.';
+    } else if (whisperStatus === 'error') {
+        message = 'Whisper failed to start. Install faster-whisper and flask.';
+    } else {
+        message = 'Voice input is available, but Whisper is not loaded yet.';
+    }
+
+    return {
+        status: ready ? 'ready' : ((!scriptPresent || !python.available || whisperStatus === 'error') ? 'needs_attention' : 'idle'),
+        whisperStatus,
+        model: whisperModel,
+        port: whisperPort,
+        scriptPresent,
+        scriptPath,
+        pythonAvailable: python.available,
+        pythonCommand: python.command,
+        pythonError: python.error,
+        message
+    };
+}
 
 async function waitForWhisperServer(timeoutMs = 30000) {
     const start = Date.now();
@@ -60,7 +130,7 @@ async function handleSttLoad(req, res) {
     whisperStatus = 'loading';
     console.log(`[STT] Starting Whisper server (model: ${whisperModel})...`);
 
-    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+    const pythonCmd = getPythonCommand();
     try {
         whisperProcess = spawn(pythonCmd, [
             scriptPath,
@@ -153,6 +223,7 @@ module.exports = {
     getWhisperProcess,
     setWhisperProcess,
     getWhisperStatus,
+    getWhisperDiagnostics,
     setWhisperStatus,
     getWhisperPort,
     getWhisperModel,

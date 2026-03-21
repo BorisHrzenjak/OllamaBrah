@@ -825,6 +825,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentLlamaCppPath = null;
     let currentAbortController = null; // Track current request for aborting
     let selectedFiles = []; // Store selected files (images and documents) for sending
+    let latestReadinessReport = null;
+    let readinessPollTimer = null;
 
     // Context management constants
     const DEFAULT_CONTEXT_LIMIT = 4096;   // 4K — local models
@@ -1289,6 +1291,307 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    function setComposerAvailability(enabled) {
+        messageInput.disabled = !enabled;
+        sendButton.disabled = !enabled;
+        if (!enabled) {
+            stopButton.style.display = 'none';
+            loadingIndicator.style.display = 'none';
+        }
+    }
+
+    function formatReadinessState(state) {
+        switch (state) {
+            case 'ready': return 'Ready';
+            case 'blocked': return 'Blocked';
+            case 'degraded': return 'Needs Attention';
+            case 'no_models': return 'No Models';
+            case 'unreachable': return 'Offline';
+            case 'needs_attention': return 'Needs Setup';
+            default: return String(state || 'unknown').replace(/_/g, ' ');
+        }
+    }
+
+    function ensureSettingsSectionExpanded(toggleId, bodyId) {
+        const toggle = document.getElementById(toggleId);
+        const body = document.getElementById(bodyId);
+        if (!toggle || !body || body.classList.contains('expanded')) return;
+        toggleSection(toggleId, bodyId);
+    }
+
+    function openSettingsSection(section) {
+        openSettingsModal();
+        const sections = {
+            llamaCpp: ['llamaCppSectionToggle', 'llamaCppSectionBody'],
+            memory: ['memorySectionToggle', 'memorySectionBody'],
+            tts: ['ttsSectionToggle', 'ttsSectionBody'],
+            modelMgmt: ['modelMgmtSectionToggle', 'modelMgmtSectionBody'],
+            apiKeys: ['apiKeysSectionToggle', 'apiKeysSectionBody'],
+        };
+        const target = sections[section];
+        if (target) ensureSettingsSectionExpanded(target[0], target[1]);
+    }
+
+    async function fetchReadinessReport() {
+        const response = await fetch(`${PROXY_BASE}/api/readiness`);
+        if (!response.ok) {
+            throw new Error(`Readiness API error: ${response.status}`);
+        }
+        latestReadinessReport = await response.json();
+        return latestReadinessReport;
+    }
+
+    function summarizeReadiness(report) {
+        if (!report) {
+            return { state: 'disconnected', label: 'Readiness unknown' };
+        }
+        if (report.overallState === 'blocked') {
+            const firstIssue = report.blockingIssues?.[0];
+            return { state: 'disconnected', label: firstIssue?.detail || 'No chat backend is ready' };
+        }
+        if (report.overallState === 'degraded') {
+            const topWarning = report.warnings?.[0] || report.blockingIssues?.[0];
+            return { state: 'degraded', label: topWarning?.detail || 'Some features need attention' };
+        }
+        const backend = report.primaryBackend === 'llamacpp' ? 'llama.cpp ready' : 'Ollama ready';
+        return { state: 'connected', label: backend };
+    }
+
+    function clearReadinessCard() {
+        const existing = document.getElementById('startupReadinessCard');
+        if (existing) existing.remove();
+    }
+
+    async function handleReadinessAction(actionId) {
+        if (actionId === 'retry') {
+            const report = await refreshStartupReadiness({ forceRender: true });
+            await tryRecoverStartupModel(report);
+            return;
+        }
+        if (actionId === 'open_llamacpp_settings') {
+            openSettingsSection('llamaCpp');
+            return;
+        }
+        if (actionId === 'open_memory_settings') {
+            openSettingsSection('memory');
+            return;
+        }
+        if (actionId === 'open_tts_settings') {
+            openSettingsSection('tts');
+            return;
+        }
+        if (actionId === 'open_model_management') {
+            openSettingsSection('modelMgmt');
+            return;
+        }
+        if (actionId === 'switch_llamacpp') {
+            const models = await fetchAvailableModels();
+            const cppModel = models.find(m => m._backend === 'llamacpp');
+            if (!cppModel) {
+                await refreshStartupReadiness({ forceRender: true });
+                return;
+            }
+            await switchToLlamaCpp(cppModel);
+            clearReadinessCard();
+            return;
+        }
+    }
+
+    function buildReadinessMeta(checkKey, check) {
+        const meta = [];
+        if (checkKey === 'ollama' && typeof check.modelCount === 'number') {
+            meta.push(`${check.modelCount} model${check.modelCount === 1 ? '' : 's'}`);
+        }
+        if (checkKey === 'memory' && typeof check.count === 'number') {
+            meta.push(`${check.count} memories`);
+        }
+        if (checkKey === 'llamacpp') {
+            if (typeof check.modelCount === 'number') meta.push(`${check.modelCount} GGUF`);
+            if (check.port) meta.push(`port ${check.port}`);
+        }
+        if (checkKey === 'stt') {
+            if (check.model) meta.push(check.model);
+            if (check.pythonCommand) meta.push(check.pythonCommand);
+        }
+        return meta;
+    }
+
+    function getReadinessPrimaryNarrative(report) {
+        const issue = report?.blockingIssues?.[0] || report?.warnings?.[0];
+        if (issue) return issue.detail;
+
+        if (report?.overallState === 'blocked') {
+            return 'One required service still needs attention before chat can start.';
+        }
+        return 'Chat is available, but one or more optional features still need setup.';
+    }
+
+    function renderReadinessCard(report) {
+        clearReadinessCard();
+        if (!report || (report.overallState === 'ready' && !report.blockingIssues?.length)) return;
+
+        const card = document.createElement('section');
+        card.id = 'startupReadinessCard';
+        card.className = 'readiness-card';
+        card.dataset.state = report.overallState || 'degraded';
+
+        const title = report.overallState === 'blocked'
+            ? 'Finish one quick setup step to start chatting'
+            : 'Chat is ready, but a few helpers still need setup';
+        const subtitle = getReadinessPrimaryNarrative(report);
+
+        const checks = [
+            ['ollama', 'Ollama'],
+            ['llamacpp', 'llama.cpp'],
+            ['memory', 'Memory'],
+            ['stt', 'Voice input']
+        ];
+
+        const checksHtml = checks.map(([key, label]) => {
+            const check = report.checks?.[key];
+            if (!check) return '';
+            const meta = buildReadinessMeta(key, check);
+            return `
+                <div class="readiness-check state-${check.status || 'unknown'}">
+                    <div class="readiness-check-head">
+                        <span class="readiness-check-name">${label}</span>
+                        <span class="readiness-check-state">${formatReadinessState(check.status || 'unknown')}</span>
+                    </div>
+                    <div class="readiness-check-message">${escapeHtml(check.message || check.reason || 'No details available.')}</div>
+                    ${meta.length ? `<div class="readiness-meta">${meta.map(item => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : ''}
+                </div>`;
+        }).join('');
+
+        const issueHtml = (report.blockingIssues || []).map(issue => `
+            <div class="readiness-list-item">
+                <strong>${escapeHtml(issue.title)}</strong>
+                <span>${escapeHtml(issue.detail)}</span>
+            </div>`).join('');
+
+        const warningHtml = (report.warnings || []).slice(0, 2).map(issue => `
+            <div class="readiness-list-item">
+                <strong>${escapeHtml(issue.title)}</strong>
+                <span>${escapeHtml(issue.detail)}</span>
+            </div>`).join('');
+
+        card.innerHTML = `
+            <div class="readiness-header">
+                <div class="readiness-title-wrap">
+                    <div class="readiness-kicker">Startup diagnostics</div>
+                    <div class="readiness-title">${title}</div>
+                    <div class="readiness-subtitle">${subtitle}</div>
+                </div>
+                <div class="readiness-status-pill">${formatReadinessState(report.overallState)}</div>
+            </div>
+            ${issueHtml ? `<div><div class="readiness-section-title">Blocking right now</div><div class="readiness-list">${issueHtml}</div></div>` : ''}
+            ${warningHtml ? `<div><div class="readiness-section-title">Also worth fixing</div><div class="readiness-list">${warningHtml}</div></div>` : ''}
+            <div class="readiness-grid">${checksHtml}</div>
+            <div>
+                <div class="readiness-section-title">What to do next</div>
+                <div class="readiness-actions"></div>
+            </div>
+            <div class="readiness-footnote">The checks above refresh after you use an action or change related settings.</div>
+        `;
+
+        const actionsEl = card.querySelector('.readiness-actions');
+        const actions = report.recommendedActions || [];
+        actions.forEach((action, index) => {
+            const btn = document.createElement('button');
+            btn.className = `readiness-action${index === 0 ? ' primary' : ''}`;
+            btn.innerHTML = `
+                <span class="readiness-action-label">${escapeHtml(action.label)}</span>
+                ${action.description ? `<span class="readiness-action-desc">${escapeHtml(action.description)}</span>` : ''}
+            `;
+            btn.addEventListener('click', () => {
+                handleReadinessAction(action.id).catch(err => {
+                    console.error('[Readiness] Action failed:', err);
+                });
+            });
+            actionsEl.appendChild(btn);
+        });
+
+        if (!actions.length) {
+            actionsEl.innerHTML = '<div class="readiness-footnote">No action needed right now.</div>';
+        }
+
+        chatContainer.prepend(card);
+    }
+
+    async function tryRecoverStartupModel(report) {
+        if (currentModelName || report?.checks?.ollama?.status !== 'ready') return false;
+
+        const models = await fetchAvailableModels();
+        const stored = await chrome.storage.local.get('lastUsedOllamaModel');
+        const lastUsed = stored.lastUsedOllamaModel;
+        const ollamaModels = models.filter(m => m._backend !== 'llamacpp');
+        const match = lastUsed && ollamaModels.find(m => m.name === lastUsed);
+        const selected = match || ollamaModels[0];
+        if (!selected) return false;
+
+        currentModelBackend = 'ollama';
+        currentLlamaCppPath = null;
+        currentModelName = selected.name;
+        await initializeActiveModelSession();
+        return true;
+    }
+
+    async function refreshStartupReadiness({ forceRender = false } = {}) {
+        try {
+            const report = await fetchReadinessReport();
+            const summary = summarizeReadiness(report);
+            updateServerStatusDot(summary.state, summary.label);
+
+            if (forceRender || report.overallState !== 'ready' || (report.blockingIssues && report.blockingIssues.length > 0)) {
+                renderReadinessCard(report);
+            } else {
+                clearReadinessCard();
+            }
+            return report;
+        } catch (err) {
+            console.error('[Readiness] Failed to load readiness report:', err);
+            updateServerStatusDot('disconnected', 'Proxy server not running (port 3456)');
+            const fallback = {
+                overallState: 'blocked',
+                blockingIssues: [{
+                    title: 'Readiness checks failed',
+                    detail: 'The app could not reach its internal proxy on localhost:3456.'
+                }],
+                warnings: [],
+                recommendedActions: [{ id: 'retry', label: 'Retry checks' }],
+                checks: {
+                    ollama: { status: 'unreachable', message: 'Ollama status unavailable because the proxy is offline.' },
+                    llamacpp: { status: 'unreachable', message: 'llama.cpp status unavailable because the proxy is offline.' },
+                    memory: { status: 'unreachable', message: 'Memory status unavailable because the proxy is offline.' },
+                    stt: { status: 'unreachable', message: 'Voice status unavailable because the proxy is offline.' }
+                }
+            };
+            latestReadinessReport = fallback;
+            renderReadinessCard(fallback);
+            return fallback;
+        }
+    }
+
+    function startReadinessRecoveryPoll() {
+        stopReadinessRecoveryPoll();
+        readinessPollTimer = setInterval(async () => {
+            if (!currentModelName && latestReadinessReport && (latestReadinessReport.overallState !== 'ready' || latestReadinessReport.blockingIssues?.length)) {
+                try {
+                    const report = await refreshStartupReadiness({ forceRender: true });
+                    await tryRecoverStartupModel(report);
+                } catch {
+                    // Ignore background recovery errors.
+                }
+            }
+        }, 15000);
+    }
+
+    function stopReadinessRecoveryPoll() {
+        if (readinessPollTimer) {
+            clearInterval(readinessPollTimer);
+            readinessPollTimer = null;
+        }
+    }
+
     function updateModelDisplay(modelName) {
         // Clear previous content
         modelNameDisplay.innerHTML = '';
@@ -1664,11 +1967,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     // File processing functions
     const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
     const SUPPORTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'text/html', 'text/css', 'application/json', 'application/javascript'];
+    const SUPPORTED_DOCUMENT_TYPES = ['application/pdf'];
     const CODE_EXTENSIONS = ['.py', '.js', '.ts', '.jsx', '.tsx', '.json', '.html', '.css', '.md', '.sql', '.sh', '.bash', '.yml', '.yaml', '.xml', '.txt', '.log', '.csv', '.java', '.c', '.cpp', '.h', '.go', '.rs', '.rb', '.php', '.swift', '.kt', '.scala'];
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB limit
+    const MAX_DOC_CONTEXT_CHARS = 2600;
+    const MAX_DOC_CHUNKS_LATEST = 3;
+    const MAX_DOC_CHUNKS_HISTORY = 1;
 
     function isImageFile(file) {
         return SUPPORTED_IMAGE_TYPES.includes(file.type);
+    }
+
+    function isPdfFile(file) {
+        const extension = '.' + file.name.split('.').pop().toLowerCase();
+        return file.type === 'application/pdf' || extension === '.pdf';
     }
 
     function isTextFile(file) {
@@ -1682,10 +1994,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     function validateFile(file) {
         const isImage = isImageFile(file);
         const isText = isTextFile(file);
+        const isPdf = isPdfFile(file);
 
-        if (!isImage && !isText) {
+        if (currentModelBackend === 'llamacpp' && isImage) {
+            throw new Error('llama.cpp currently supports document uploads only. Choose a PDF or text document.');
+        }
+
+        if (!isImage && !isText && !isPdf) {
             const ext = file.name.split('.').pop().toLowerCase();
-            throw new Error(`Unsupported file type: .${ext}. Supported: images (JPEG, PNG, GIF, WebP) and text/code files`);
+            throw new Error(`Unsupported file type: .${ext}. Supported: images, PDFs, and text/code files`);
         }
 
         if (file.size > MAX_FILE_SIZE) {
@@ -1751,8 +2068,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const isImage = isImageFile(file);
             const isText = isTextFile(file);
+            const isPdf = isPdfFile(file);
 
-            const result = {
+            let result = {
                 fileName: file.name,
                 fileSize: file.size,
                 mimeType: file.type,
@@ -1769,9 +2087,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 result.base64 = await fileToBase64(processedFile);
                 result.previewUrl = URL.createObjectURL(processedFile);
                 result.fileSize = processedFile.size;
-            } else if (isText) {
-                // Extract text content for documents
-                result.textContent = await extractTextContent(file);
+            } else if (isText || isPdf) {
+                result = await processDocumentAttachment(file, result);
             }
 
             return result;
@@ -1807,7 +2124,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             const fileSize = document.createElement('div');
             fileSize.className = 'file-size';
-            fileSize.textContent = formatFileSize(fileData.fileSize);
+            const detailBits = [formatFileSize(fileData.fileSize)];
+            if (fileData.pageCount) detailBits.push(`${fileData.pageCount} pages`);
+            if (fileData.chunkCount) detailBits.push(`${fileData.chunkCount} chunks`);
+            fileSize.textContent = detailBits.join(' · ');
             
             fileInfo.appendChild(fileName);
             fileInfo.appendChild(fileSize);
@@ -1977,6 +2297,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                     fileName.title = doc.fileName;
                     
                     docDiv.appendChild(fileName);
+
+                    const docMeta = [];
+                    if (doc.pageCount) docMeta.push(`${doc.pageCount} pages`);
+                    if (doc.chunkCount) docMeta.push(`${doc.chunkCount} chunks`);
+                    if (doc.extractedCharCount) docMeta.push(`${Math.round(doc.extractedCharCount / 100) / 10}k chars`);
+                    if (docMeta.length) {
+                        const metaSpan = document.createElement('span');
+                        metaSpan.className = 'document-filename';
+                        metaSpan.style.opacity = '0.7';
+                        metaSpan.style.fontSize = '12px';
+                        metaSpan.textContent = ` (${docMeta.join(' · ')})`;
+                        docDiv.appendChild(metaSpan);
+                    }
+
                     documentsDiv.appendChild(docDiv);
                 });
                 attachmentsContainer.appendChild(documentsDiv);
@@ -2254,6 +2588,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Add metadata to existing bot messages that have it stored
                 if (msg.role === 'assistant' && msg.metadata && textContentDiv && textContentDiv.messageDiv) {
                     addMetadataToMessage(textContentDiv.messageDiv, msg.metadata);
+                    if (Array.isArray(msg.metadata.memoryUsed) && msg.metadata.memoryUsed.length) {
+                        addMemoryUsageToMessage(textContentDiv.messageDiv, msg.metadata.memoryUsed);
+                    }
                 }
 
                 // Restore pinned state
@@ -4274,6 +4611,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.log(`Sending to /proxy/api/chat with model: ${currentModelName} for streaming.`);
 
             // Prepare messages for API - convert attachment data for Ollama format
+            const latestUserMessage = [...currentConversation.messages].reverse().find(m => m.role === 'user');
+            const attachmentQuery = latestUserMessage?.content || '';
             const apiMessages = currentConversation.messages
                 .filter(m => m.role === 'user' || m.role === 'assistant')
                 .map(message => {
@@ -4289,21 +4628,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const isNewFormat = !!message.attachments;
                         
                         if (isNewFormat) {
-                            // New format: attachments with type区分
+                            const isLatestUserMessage = message === latestUserMessage;
                             const imageAttachments = message.attachments.filter(a => a.type === 'image' || a.base64);
                             const docAttachments = message.attachments.filter(a => a.type === 'document' || a.textContent);
 
                             // Add images to API message
-                            if (imageAttachments.length > 0) {
+                            if (imageAttachments.length > 0 && currentModelBackend !== 'llamacpp') {
                                 images = imageAttachments.map(img => img.base64);
                             }
 
-                            // Prepend document content to message
+                            // Prepend document context to message
                             if (docAttachments.length > 0) {
-                                const docContent = docAttachments.map(doc => {
-                                    return `[File: ${doc.fileName}]\n\`\`\`\n${doc.textContent}\n\`\`\``;
-                                }).join('\n\n');
-                                content = docContent + '\n\n' + content;
+                                const docContent = docAttachments
+                                    .map(doc => buildDocumentContextBlock(doc, attachmentQuery, { isLatestUserMessage }))
+                                    .filter(Boolean)
+                                    .join('\n\n');
+                                if (docContent) {
+                                    content = `${docContent}\n\nUser request:\n${content}`;
+                                }
                             }
                         } else {
                             // Old format: just images
@@ -4443,6 +4785,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             let accumulatedContent = '';
             let hasThinking = false;
             let messageMetadata = null;
+            let memoryUsageMeta = null;
             let streamBuf = '';
 
             while (!done) {
@@ -4470,6 +4813,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (jsonResponse._contextBreakdown) {
                                 lastContextBreakdown = jsonResponse._contextBreakdown;
                                 console.log('[Context] Breakdown from proxy:', lastContextBreakdown);
+                                continue;
+                            }
+
+                            if (jsonResponse._memoryEvent) {
+                                memoryUsageMeta = jsonResponse._memoryEvent;
                                 continue;
                             }
 
@@ -4605,6 +4953,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (messageMetadata && botMessageDiv) {
                 addMetadataToMessage(botMessageDiv, messageMetadata);
             }
+            if (memoryUsageMeta?.used?.length && botMessageDiv) {
+                addMemoryUsageToMessage(botMessageDiv, memoryUsageMeta.used);
+            }
 
             // Build final message with thinking if present
             let finalBotMessageToSave = '';
@@ -4619,6 +4970,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const messageToSave = { role: 'assistant', content: finalBotMessageToSave };
             if (messageMetadata) {
                 messageToSave.metadata = messageMetadata;
+            }
+            if (memoryUsageMeta?.used?.length) {
+                messageToSave.metadata = {
+                    ...(messageToSave.metadata || {}),
+                    memoryUsed: memoryUsageMeta.used,
+                };
             }
             currentConversation.messages.push(messageToSave);
             currentConversation.summary = getConversationSummary(currentConversation.messages);
@@ -4750,7 +5107,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 textContent: file.textContent || null,
                 fileName: file.fileName,
                 fileSize: file.fileSize,
-                mimeType: file.mimeType
+                mimeType: file.mimeType,
+                summary: file.summary || null,
+                excerpt: file.excerpt || null,
+                extractedCharCount: file.extractedCharCount || null,
+                chunkCount: file.chunkCount || null,
+                pageCount: file.pageCount || null,
+                chunks: file.chunks || null
             }));
         }
 
@@ -4933,7 +5296,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Clear any selected images when switching models
         clearSelectedFiles();
 
-        // Show image upload UI (users can upload images to any model, API will error if unsupported)
+        // Keep attachment UI available for images and documents
         toggleFileUploadUI(true);
 
         let modelData = await loadModelChatState(currentModelName);
@@ -5002,8 +5365,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Fetch and cache context limit for llama.cpp model
             await getOrFetchContextLimit(currentModelName, 'llamacpp');
             
-        clearSelectedFiles();
-            toggleFileUploadUI(false); // vision not supported via llama.cpp yet
+            clearSelectedFiles();
+            toggleFileUploadUI(true); // llama.cpp supports document attachments even without vision
             checkServerStatus();
 
             let modelData = await loadModelChatState(currentModelName);
@@ -5064,6 +5427,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         return availableModels;
+    }
+
+    async function initializeActiveModelSession() {
+        if (!currentModelName) return;
+
+        updateModelDisplay(currentModelName);
+
+        await loadDetectedContextLimits();
+        await getOrFetchContextLimit(currentModelName, currentModelBackend);
+
+        toggleFileUploadUI(true);
+
+        const modelData = await loadModelChatState(currentModelName);
+        if (!modelData.activeConversationId || !modelData.conversations[modelData.activeConversationId]) {
+            await startNewConversation(currentModelName);
+        } else {
+            displayConversationMessages(modelData, modelData.activeConversationId);
+            populateConversationSidebar(currentModelName, modelData);
+
+            const draftText = await loadDraft(modelData.activeConversationId);
+            if (draftText) {
+                messageInput.value = draftText;
+            }
+        }
+
+        clearReadinessCard();
+        setComposerAvailability(true);
+        messageInput.focus();
     }
 
     async function loadDetectedContextLimits() {
@@ -5203,6 +5594,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function init() {
+        setComposerAvailability(false);
+        const readiness = await refreshStartupReadiness({ forceRender: true });
+        startReadinessRecoveryPoll();
+        let startupBlocked = false;
+
         let urlModel = new URLSearchParams(window.location.search).get('model');
         if (!urlModel) {
             // No model in URL — pick last used Ollama model, or fall back to first available
@@ -5213,42 +5609,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             const match = lastUsed && ollamaModels.find(m => m.name === lastUsed);
             urlModel = match ? lastUsed : (ollamaModels[0] ? ollamaModels[0].name : null);
             if (!urlModel) {
-                modelNameDisplay.textContent = 'No models found.';
-                addMessageToChatUI('System', 'No Ollama models found. Make sure Ollama is running.', 'bot-message');
-                messageInput.disabled = true; sendButton.disabled = true;
-                return;
-            }
-        }
-        currentModelName = urlModel;
-        console.log('[OllamaBro] init - Initializing chat for model from URL:', currentModelName);
-        updateModelDisplay(currentModelName);
-
-        // Load detected context limits from database
-        await loadDetectedContextLimits();
-        
-        // Fetch context limit for current model if not cached
-        await getOrFetchContextLimit(currentModelName, currentModelBackend);
-
-        // Show image upload UI (users can upload images to any model, API will error if unsupported)
-        toggleFileUploadUI(true);
-
-        let modelData = await loadModelChatState(currentModelName);
-        if (!modelData.activeConversationId || !modelData.conversations[modelData.activeConversationId]) {
-            await startNewConversation(currentModelName);
-        } else {
-            displayConversationMessages(modelData, modelData.activeConversationId);
-            populateConversationSidebar(currentModelName, modelData);
-
-            // Load draft for active conversation
-            const draftText = await loadDraft(modelData.activeConversationId);
-            if (draftText) {
-                messageInput.value = draftText;
+                if (readiness?.primaryBackend === 'llamacpp' && readiness?.checks?.llamacpp?.canUse) {
+                    modelNameDisplay.textContent = 'llama.cpp fallback available';
+                } else if (readiness?.checks?.ollama?.status === 'no_models') {
+                    modelNameDisplay.textContent = 'No Ollama models installed';
+                } else if (readiness?.checks?.ollama?.status === 'unreachable') {
+                    modelNameDisplay.textContent = 'Ollama unavailable';
+                } else {
+                    modelNameDisplay.textContent = 'No models found';
+                }
+                startupBlocked = true;
             }
         }
 
-        messageInput.disabled = false;
-        sendButton.disabled = false;
-        messageInput.focus();
+        if (!startupBlocked) {
+            currentModelName = urlModel;
+            console.log('[OllamaBro] init - Initializing chat for model from URL:', currentModelName);
+            await initializeActiveModelSession();
+        }
 
         // Sidebar collapse/expand persistence
         const savedSidebarState = await chrome.storage.local.get(sidebarStateKey);
@@ -5754,24 +6132,96 @@ document.addEventListener('DOMContentLoaded', async () => {
     const MEMORY_AUTO_EXTRACT_KEY = 'memoryAutoExtract';
     let memoryAutoExtract = false;
     let _allMemories = []; // cached list for filtering
+    let _editingMemoryId = null;
+
+    async function saveMemoryRecord(payload) {
+        const response = await fetch(`${PROXY_BASE}/api/memory`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Failed to save memory.');
+        return data;
+    }
 
     // Fire-and-forget: ask the model to extract memorable facts from a completed exchange
-    function triggerMemoryExtraction(userMessage, assistantMessage) {
+    async function triggerMemoryExtraction(userMessage, assistantMessage) {
         if (!userMessage || !assistantMessage) return;
         const model = currentModelName;
         if (!model) return;
+        const modelData = await loadModelChatState(model);
+        const conversationId = modelData?.activeConversationId || null;
         fetch(`${PROXY_BASE}/api/memory/extract`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userMessage, assistantMessage, model })
+            body: JSON.stringify({
+                userMessage,
+                assistantMessage,
+                model,
+                backend: currentModelBackend,
+                conversationId,
+            })
         })
         .then(r => r.json())
-        .then(data => {
-            if (data.saved > 0) {
-                console.log(`[Memory] Auto-extracted ${data.saved} fact(s):`, data.facts);
+        .then(async data => {
+            const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+            if (!candidates.length) return;
+            let saved = 0;
+            for (const candidate of candidates) {
+                try {
+                    await saveMemoryRecord({ ...candidate, reviewed: true });
+                    saved += 1;
+                } catch (err) {
+                    console.warn('[Memory] Auto-save candidate skipped:', err.message);
+                }
+            }
+            if (saved > 0) {
+                console.log(`[Memory] Auto-saved ${saved} extracted fact(s).`);
+                loadMemoryStatus();
             }
         })
         .catch(err => console.warn('[Memory] Extraction request failed:', err.message));
+    }
+
+    function formatMemoryTimestamp(ts) {
+        if (!ts) return 'Unknown time';
+        const d = new Date(ts);
+        return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    }
+
+    function renderMemoryReviewQueue() {
+        const panel = document.getElementById('memoryReviewPanel');
+        const list = document.getElementById('memoryReviewList');
+        if (!panel || !list) return;
+        panel.style.display = 'none';
+        list.innerHTML = '';
+    }
+
+    function addMemoryUsageToMessage(messageDiv, usedMemories = []) {
+        if (!messageDiv || !Array.isArray(usedMemories) || !usedMemories.length) return;
+        const existing = messageDiv.querySelector('.memory-used-card');
+        if (existing) existing.remove();
+
+        const card = document.createElement('div');
+        card.className = 'memory-used-card';
+        const title = document.createElement('div');
+        title.className = 'memory-used-title';
+        title.textContent = 'Used memory';
+        card.appendChild(title);
+
+        const list = document.createElement('div');
+        list.className = 'memory-used-list';
+        usedMemories.slice(0, 3).forEach(mem => {
+            const item = document.createElement('div');
+            item.className = 'memory-used-item';
+            const meta = [mem.sourceType || mem.source, mem.extractionMode, mem.score != null ? `score ${mem.score.toFixed(2)}` : null]
+                .filter(Boolean).join(' · ');
+            item.textContent = `${mem.text}${meta ? ` (${meta})` : ''}`;
+            list.appendChild(item);
+        });
+        card.appendChild(list);
+        messageDiv.appendChild(card);
     }
 
     async function loadMemoryStatus() {
@@ -5798,6 +6248,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!modal) return;
         closeSettingsModal();
         modal.classList.add('active');
+        renderMemoryReviewQueue();
         await refreshMemoryList();
     }
 
@@ -5819,15 +6270,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        const query = filter.trim().toLowerCase();
-        const shown = query
-            ? _allMemories.filter(m => m.text.toLowerCase().includes(query))
-            : _allMemories;
+        const query = filter.trim();
+        let shown = _allMemories;
+        if (query) {
+            try {
+                const r = await fetch(`${PROXY_BASE}/api/memory/search?q=${encodeURIComponent(query)}&limit=12`);
+                shown = await r.json();
+            } catch {
+                shown = _allMemories.filter(m => m.text.toLowerCase().includes(query.toLowerCase()));
+            }
+        }
 
-        if (countEl) countEl.textContent = `${_allMemories.length} stored`;
+        if (countEl) countEl.textContent = `${_allMemories.length} stored${query ? ` · ${shown.length} semantic matches` : ''}`;
 
         if (shown.length === 0) {
-            listEl.innerHTML = `<div class="memory-empty">${_allMemories.length === 0 ? 'No memories yet.' : 'No matches.'}</div>`;
+            listEl.innerHTML = `<div class="memory-empty">${_allMemories.length === 0 ? 'No memories yet.' : 'No semantic matches.'}</div>`;
             return;
         }
 
@@ -5838,20 +6295,77 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const textPart = document.createElement('div');
             textPart.className = 'memory-item-text';
-            textPart.textContent = mem.text;
+            const textValue = document.createElement('div');
+            textValue.textContent = mem.text;
+            textPart.appendChild(textValue);
 
-            if (mem.timestamp) {
-                const meta = document.createElement('span');
-                meta.className = 'memory-item-meta';
-                const d = new Date(mem.timestamp);
-                meta.textContent = `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${mem.source ? ' · ' + mem.source : ''}`;
-                textPart.appendChild(meta);
+            const meta = document.createElement('span');
+            meta.className = 'memory-item-meta';
+            const metaBits = [formatMemoryTimestamp(mem.createdAt || mem.timestamp)];
+            if (mem.sourceType || mem.source) metaBits.push(mem.sourceType || mem.source);
+            if (mem.extractionMode) metaBits.push(mem.extractionMode);
+            if (mem.score != null) metaBits.push(`score ${mem.score.toFixed(2)}`);
+            if (mem.conversationId) metaBits.push('conversation-linked');
+            meta.textContent = metaBits.join(' · ');
+            textPart.appendChild(meta);
+
+            const tags = document.createElement('div');
+            tags.className = 'memory-item-tags';
+            [mem.origin?.backend, mem.origin?.model, mem.messageId ? 'message-linked' : null].filter(Boolean).forEach(tag => {
+                const el = document.createElement('span');
+                el.className = 'memory-tag';
+                el.textContent = String(tag);
+                tags.appendChild(el);
+            });
+            if (tags.childNodes.length) textPart.appendChild(tags);
+
+            const actions = document.createElement('div');
+            actions.className = 'memory-item-actions';
+
+            const editBtn = document.createElement('button');
+            editBtn.className = 'memory-item-btn';
+            editBtn.textContent = _editingMemoryId === mem.id ? 'Save' : 'Edit';
+            editBtn.addEventListener('click', async () => {
+                if (_editingMemoryId !== mem.id) {
+                    _editingMemoryId = mem.id;
+                    await refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                    return;
+                }
+
+                const textarea = item.querySelector('textarea');
+                const text = textarea?.value.trim();
+                if (!text) return;
+                try {
+                    await fetch(`${PROXY_BASE}/api/memory/${encodeURIComponent(mem.id)}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text, reviewed: true })
+                    });
+                    _editingMemoryId = null;
+                    await refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                } catch { /* ignore */ }
+            });
+            actions.appendChild(editBtn);
+
+            if (_editingMemoryId === mem.id) {
+                const textarea = document.createElement('textarea');
+                textarea.value = mem.text;
+                textPart.replaceChild(textarea, textValue);
+
+                const cancelBtn = document.createElement('button');
+                cancelBtn.className = 'memory-item-btn';
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.addEventListener('click', async () => {
+                    _editingMemoryId = null;
+                    await refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                });
+                actions.appendChild(cancelBtn);
             }
 
             const delBtn = document.createElement('button');
-            delBtn.className = 'memory-item-del';
+            delBtn.className = 'memory-item-btn';
             delBtn.title = 'Delete memory';
-            delBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>';
+            delBtn.textContent = 'Delete';
             delBtn.addEventListener('click', async () => {
                 try {
                     await fetch(`${PROXY_BASE}/api/memory/${encodeURIComponent(mem.id)}`, { method: 'DELETE' });
@@ -5859,9 +6373,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     loadMemoryStatus();
                 } catch { /* ignore */ }
             });
+            actions.appendChild(delBtn);
 
             item.appendChild(textPart);
-            item.appendChild(delBtn);
+            item.appendChild(actions);
             listEl.appendChild(item);
         }
     }
@@ -5970,6 +6485,33 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await refreshMemoryList('');
                     loadMemoryStatus();
                 } catch { /* ignore */ }
+            });
+        }
+
+        const dedupeBtn = document.getElementById('memoryDedupeBtn');
+        if (dedupeBtn) {
+            dedupeBtn.addEventListener('click', async () => {
+                dedupeBtn.disabled = true;
+                const countEl = document.getElementById('memoryCountLabel');
+                const previous = countEl?.textContent || '';
+                if (countEl) countEl.textContent = 'Cleaning up similar memories...';
+                try {
+                    const response = await fetch(`${PROXY_BASE}/api/memory/dedupe`, { method: 'POST' });
+                    const result = await response.json();
+                    await refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                    loadMemoryStatus();
+                    if (countEl) {
+                        countEl.textContent = `Cleaned up ${result.removed || 0} duplicates${result.updated ? ` · normalized ${result.updated}` : ''}`;
+                        setTimeout(() => {
+                            if (countEl) countEl.textContent = previous || countEl.textContent;
+                            refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                        }, 2500);
+                    }
+                } catch {
+                    if (countEl) countEl.textContent = 'Cleanup failed';
+                } finally {
+                    dedupeBtn.disabled = false;
+                }
             });
         }
     }
@@ -6812,57 +7354,108 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function checkServerStatus() {
         updateServerStatusDot('checking', 'Checking server...');
-        if (currentModelBackend === 'llamacpp') {
-            await checkLlamaCppStatusIndicator();
-            return;
-        }
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
-        try {
-            const resp = await fetch(`${PROXY_BASE}/proxy/api/tags`, { signal: controller.signal });
-            clearTimeout(timer);
-            if (resp.ok) {
-                const data = await resp.json();
-                const count = (data.models || []).length;
-                if (count > 0) {
-                    updateServerStatusDot('connected', `Ollama connected · ${count} model${count !== 1 ? 's' : ''}`);
-                } else {
-                    updateServerStatusDot('degraded', 'Ollama running but no models found');
-                }
-            } else {
-                updateServerStatusDot('degraded', `Ollama error (HTTP ${resp.status})`);
-            }
-        } catch (e) {
-            clearTimeout(timer);
-            if (e.name === 'AbortError') {
-                updateServerStatusDot('degraded', 'Ollama not responding (timeout)');
-            } else {
-                updateServerStatusDot('disconnected', 'Proxy server not running (port 3456)');
-            }
+        const report = await refreshStartupReadiness({ forceRender: false });
+        if (report?.overallState === 'blocked') {
+            setComposerAvailability(false);
+        } else if (currentModelName) {
+            setComposerAvailability(true);
         }
     }
 
-    async function checkLlamaCppStatusIndicator() {
-        updateServerStatusDot('checking', 'Checking server...');
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
-        try {
-            const resp = await fetch(`${PROXY_BASE}/api/llamacpp/status`, { signal: controller.signal });
-            clearTimeout(timer);
-            if (resp.ok) {
-                const data = await resp.json();
-                const state = data.status === 'ready' ? 'connected' : 'degraded';
-                const label = data.status === 'ready'
-                    ? `llama.cpp running · ${data.model || 'model loaded'}`
-                    : `llama.cpp: ${data.status}`;
-                updateServerStatusDot(state, label);
-            } else {
-                updateServerStatusDot('degraded', 'llama.cpp status unavailable');
-            }
-        } catch (e) {
-            clearTimeout(timer);
-            updateServerStatusDot('disconnected', 'Proxy server not running (port 3456)');
+    async function processDocumentAttachment(file, seed) {
+        const payload = {
+            fileName: seed.fileName,
+            fileSize: seed.fileSize,
+            mimeType: seed.mimeType,
+        };
+
+        if (isPdfFile(file)) {
+            payload.base64 = await fileToBase64(file);
+        } else {
+            payload.textContent = await extractTextContent(file);
         }
+
+        const response = await fetch(`${PROXY_BASE}/api/attachments/process`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ attachments: [payload] })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to process document attachment.');
+        }
+
+        const processed = data.attachments?.[0];
+        if (!processed) {
+            throw new Error('Document processor returned no attachment data.');
+        }
+
+        return {
+            ...seed,
+            ...processed,
+        };
+    }
+
+    function tokenizeAttachmentQuery(text) {
+        return new Set(
+            String(text || '')
+                .toLowerCase()
+                .match(/[a-z0-9]{3,}/g) || []
+        );
+    }
+
+    function scoreAttachmentChunk(chunkText, queryTokens) {
+        if (!queryTokens || queryTokens.size === 0) return 0;
+        const lower = String(chunkText || '').toLowerCase();
+        let score = 0;
+        queryTokens.forEach(token => {
+            if (lower.includes(token)) score += token.length > 6 ? 2 : 1;
+        });
+        return score;
+    }
+
+    function buildDocumentContextBlock(doc, query, options = {}) {
+        const chunks = Array.isArray(doc.chunks) ? doc.chunks : [];
+        const queryTokens = tokenizeAttachmentQuery(query);
+        const maxChunks = options.isLatestUserMessage ? MAX_DOC_CHUNKS_LATEST : MAX_DOC_CHUNKS_HISTORY;
+        const ranked = chunks
+            .map(chunk => ({ ...chunk, _score: scoreAttachmentChunk(chunk.text, queryTokens) }))
+            .sort((a, b) => b._score - a._score || a.charCount - b.charCount);
+
+        const selected = [];
+        let totalChars = 0;
+        for (const chunk of ranked) {
+            if (!options.isLatestUserMessage && chunk._score <= 0) continue;
+            if (selected.length >= maxChunks) break;
+            if (totalChars + chunk.charCount > MAX_DOC_CONTEXT_CHARS) break;
+            selected.push(chunk);
+            totalChars += chunk.charCount;
+        }
+
+        if (!selected.length && options.isLatestUserMessage && chunks[0]) {
+            selected.push(chunks[0]);
+        }
+
+        if (!selected.length && !doc.summary) return null;
+
+        const headerParts = [`Document: ${doc.fileName}`];
+        if (doc.pageCount) headerParts.push(`${doc.pageCount} pages`);
+        if (doc.chunkCount) headerParts.push(`${doc.chunkCount} chunks indexed`);
+
+        const lines = [`[${headerParts.join(' | ')}]`];
+        if (doc.summary) lines.push(`Summary: ${doc.summary}`);
+        if (selected.length) {
+            lines.push('Relevant excerpts:');
+            selected.forEach((chunk, index) => {
+                lines.push(`[${doc.fileName} excerpt ${index + 1}]\n${chunk.text}`);
+            });
+        }
+        return lines.join('\n\n');
+    }
+
+    async function checkLlamaCppStatusIndicator() {
+        await checkServerStatus();
     }
 
     function startServerStatusPoll() {
@@ -7084,6 +7677,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (e) {
             if (statusEl) { statusEl.textContent = 'Proxy unreachable'; statusEl.style.color = 'var(--error-text)'; }
         }
+
+        refreshStartupReadiness({ forceRender: true }).catch(() => {});
     }
 
     // ─── Dashboard ────────────────────────────────────────────────────────────
