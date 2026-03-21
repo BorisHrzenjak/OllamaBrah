@@ -6,10 +6,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.0.8
+## What's New — v1.0.9
 
-- **Smarter document attachments** — PDFs and text/code files are now extracted, chunked, and summarized before they reach the model, so large files stop flooding the prompt
-- **Better document follow-ups** — OllamaBrah now reuses the most relevant excerpts from attached files on later turns and allows document uploads while using `llama.cpp`
+- **Smarter memory visibility** — the memory manager now supports semantic search, richer provenance, and inline editing
+- **More transparent memory usage** — replies can show which memories were injected into context, while auto-extracted memories save directly with better filtering and deduplication
 
 ---
 
@@ -47,6 +47,8 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Deep research** — multi-step Exa research pipeline before answering
 - **Agent mode** — autonomous tool-use loop with step-by-step visualization; configure max steps, tool permissions, allowed directories, and blocked paths
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
+- Semantic memory search in the memory manager, with provenance like source type, extraction mode, and linked conversation/message metadata
+- Auto-extracted memories save directly with provenance and deduplication, and replies can show which memories were used in context
 
 ### Voice & Audio
 - **Voice input** — speech-to-text via Whisper *(requires Python + faster-whisper)*

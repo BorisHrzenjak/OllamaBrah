@@ -4226,6 +4226,30 @@
         }
         .memory-search-row input::placeholder { color: var(--text-muted); }
         .memory-search-row input:focus { outline: none; border-color: var(--accent); }
+        .memory-review-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 10px;
+            padding: 10px 12px;
+            border-radius: var(--radius-sm);
+            background: rgba(59, 130, 246, 0.06);
+            border: 1px solid rgba(59, 130, 246, 0.18);
+        }
+        .memory-review-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+        .memory-review-subtitle {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        .memory-review-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
         .memory-list {
             flex: 1;
             display: flex;
@@ -4248,6 +4272,51 @@
             color: var(--text-primary);
             line-height: 1.45;
             word-break: break-word;
+        }
+        .memory-item textarea {
+            width: 100%;
+            min-height: 70px;
+            resize: vertical;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            padding: 8px 10px;
+            font-size: var(--font-size-sm);
+            box-sizing: border-box;
+        }
+        .memory-item-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .memory-tag {
+            font-size: 10px;
+            color: var(--text-muted);
+            border: 1px solid var(--border-subtle);
+            border-radius: 999px;
+            padding: 2px 7px;
+            background: var(--bg-primary);
+        }
+        .memory-item-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .memory-item-btn {
+            border: 1px solid var(--border);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border-radius: var(--radius-sm);
+            padding: 5px 8px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .memory-item-btn.primary {
+            background: var(--accent);
+            color: var(--accent-text, white);
+            border-color: transparent;
         }
         .memory-item-meta {
             font-size: 11px;
@@ -4287,6 +4356,31 @@
         }
         .memory-status-badge.ok { color: #10b981; }
         .memory-status-badge.warn { color: #f59e0b; }
+        .memory-used-card {
+            margin-top: 10px;
+            border: 1px solid rgba(16, 185, 129, 0.15);
+            background: rgba(16, 185, 129, 0.05);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+        }
+        .memory-used-title {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .memory-used-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .memory-used-item {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
 
         .agent-step-counter {
             font-size: var(--font-size-xs);
@@ -5680,7 +5774,12 @@ body {
                     <button id="memoryAddBtn" class="modal-button primary" style="white-space:nowrap;align-self:flex-end">Save</button>
                 </div>
                 <div class="memory-search-row">
-                    <input type="text" id="memorySearchInput" placeholder="Filter memories…">
+                    <input type="text" id="memorySearchInput" placeholder="Semantic search memories…">
+                </div>
+                <div class="memory-review-panel" id="memoryReviewPanel" style="display:none;">
+                    <div class="memory-review-title">Pending review</div>
+                    <div class="memory-review-subtitle">Approve, edit, or reject facts auto-extracted from recent chats before they become permanent memory.</div>
+                    <div class="memory-review-list" id="memoryReviewList"></div>
                 </div>
                 <div class="memory-list" id="memoryList">
                     <div class="memory-empty">Loading memories…</div>
@@ -5688,7 +5787,10 @@ body {
             </div>
             <div class="memory-modal-footer">
                 <span id="memoryCountLabel" class="memory-status-badge"></span>
-                <button id="memoryClearAllBtn" class="modal-button secondary" style="color:#ef4444;border-color:rgba(239,68,68,0.3)">Clear All</button>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button id="memoryDedupeBtn" class="modal-button secondary">Clean Up Similar</button>
+                    <button id="memoryClearAllBtn" class="modal-button secondary" style="color:#ef4444;border-color:rgba(239,68,68,0.3)">Clear All</button>
+                </div>
             </div>
         </div>
     </div>

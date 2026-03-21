@@ -2588,6 +2588,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Add metadata to existing bot messages that have it stored
                 if (msg.role === 'assistant' && msg.metadata && textContentDiv && textContentDiv.messageDiv) {
                     addMetadataToMessage(textContentDiv.messageDiv, msg.metadata);
+                    if (Array.isArray(msg.metadata.memoryUsed) && msg.metadata.memoryUsed.length) {
+                        addMemoryUsageToMessage(textContentDiv.messageDiv, msg.metadata.memoryUsed);
+                    }
                 }
 
                 // Restore pinned state
@@ -4782,6 +4785,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             let accumulatedContent = '';
             let hasThinking = false;
             let messageMetadata = null;
+            let memoryUsageMeta = null;
             let streamBuf = '';
 
             while (!done) {
@@ -4809,6 +4813,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (jsonResponse._contextBreakdown) {
                                 lastContextBreakdown = jsonResponse._contextBreakdown;
                                 console.log('[Context] Breakdown from proxy:', lastContextBreakdown);
+                                continue;
+                            }
+
+                            if (jsonResponse._memoryEvent) {
+                                memoryUsageMeta = jsonResponse._memoryEvent;
                                 continue;
                             }
 
@@ -4944,6 +4953,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (messageMetadata && botMessageDiv) {
                 addMetadataToMessage(botMessageDiv, messageMetadata);
             }
+            if (memoryUsageMeta?.used?.length && botMessageDiv) {
+                addMemoryUsageToMessage(botMessageDiv, memoryUsageMeta.used);
+            }
 
             // Build final message with thinking if present
             let finalBotMessageToSave = '';
@@ -4958,6 +4970,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const messageToSave = { role: 'assistant', content: finalBotMessageToSave };
             if (messageMetadata) {
                 messageToSave.metadata = messageMetadata;
+            }
+            if (memoryUsageMeta?.used?.length) {
+                messageToSave.metadata = {
+                    ...(messageToSave.metadata || {}),
+                    memoryUsed: memoryUsageMeta.used,
+                };
             }
             currentConversation.messages.push(messageToSave);
             currentConversation.summary = getConversationSummary(currentConversation.messages);
@@ -6114,24 +6132,96 @@ document.addEventListener('DOMContentLoaded', async () => {
     const MEMORY_AUTO_EXTRACT_KEY = 'memoryAutoExtract';
     let memoryAutoExtract = false;
     let _allMemories = []; // cached list for filtering
+    let _editingMemoryId = null;
+
+    async function saveMemoryRecord(payload) {
+        const response = await fetch(`${PROXY_BASE}/api/memory`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Failed to save memory.');
+        return data;
+    }
 
     // Fire-and-forget: ask the model to extract memorable facts from a completed exchange
-    function triggerMemoryExtraction(userMessage, assistantMessage) {
+    async function triggerMemoryExtraction(userMessage, assistantMessage) {
         if (!userMessage || !assistantMessage) return;
         const model = currentModelName;
         if (!model) return;
+        const modelData = await loadModelChatState(model);
+        const conversationId = modelData?.activeConversationId || null;
         fetch(`${PROXY_BASE}/api/memory/extract`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userMessage, assistantMessage, model })
+            body: JSON.stringify({
+                userMessage,
+                assistantMessage,
+                model,
+                backend: currentModelBackend,
+                conversationId,
+            })
         })
         .then(r => r.json())
-        .then(data => {
-            if (data.saved > 0) {
-                console.log(`[Memory] Auto-extracted ${data.saved} fact(s):`, data.facts);
+        .then(async data => {
+            const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+            if (!candidates.length) return;
+            let saved = 0;
+            for (const candidate of candidates) {
+                try {
+                    await saveMemoryRecord({ ...candidate, reviewed: true });
+                    saved += 1;
+                } catch (err) {
+                    console.warn('[Memory] Auto-save candidate skipped:', err.message);
+                }
+            }
+            if (saved > 0) {
+                console.log(`[Memory] Auto-saved ${saved} extracted fact(s).`);
+                loadMemoryStatus();
             }
         })
         .catch(err => console.warn('[Memory] Extraction request failed:', err.message));
+    }
+
+    function formatMemoryTimestamp(ts) {
+        if (!ts) return 'Unknown time';
+        const d = new Date(ts);
+        return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    }
+
+    function renderMemoryReviewQueue() {
+        const panel = document.getElementById('memoryReviewPanel');
+        const list = document.getElementById('memoryReviewList');
+        if (!panel || !list) return;
+        panel.style.display = 'none';
+        list.innerHTML = '';
+    }
+
+    function addMemoryUsageToMessage(messageDiv, usedMemories = []) {
+        if (!messageDiv || !Array.isArray(usedMemories) || !usedMemories.length) return;
+        const existing = messageDiv.querySelector('.memory-used-card');
+        if (existing) existing.remove();
+
+        const card = document.createElement('div');
+        card.className = 'memory-used-card';
+        const title = document.createElement('div');
+        title.className = 'memory-used-title';
+        title.textContent = 'Used memory';
+        card.appendChild(title);
+
+        const list = document.createElement('div');
+        list.className = 'memory-used-list';
+        usedMemories.slice(0, 3).forEach(mem => {
+            const item = document.createElement('div');
+            item.className = 'memory-used-item';
+            const meta = [mem.sourceType || mem.source, mem.extractionMode, mem.score != null ? `score ${mem.score.toFixed(2)}` : null]
+                .filter(Boolean).join(' · ');
+            item.textContent = `${mem.text}${meta ? ` (${meta})` : ''}`;
+            list.appendChild(item);
+        });
+        card.appendChild(list);
+        messageDiv.appendChild(card);
     }
 
     async function loadMemoryStatus() {
@@ -6158,6 +6248,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!modal) return;
         closeSettingsModal();
         modal.classList.add('active');
+        renderMemoryReviewQueue();
         await refreshMemoryList();
     }
 
@@ -6179,15 +6270,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        const query = filter.trim().toLowerCase();
-        const shown = query
-            ? _allMemories.filter(m => m.text.toLowerCase().includes(query))
-            : _allMemories;
+        const query = filter.trim();
+        let shown = _allMemories;
+        if (query) {
+            try {
+                const r = await fetch(`${PROXY_BASE}/api/memory/search?q=${encodeURIComponent(query)}&limit=12`);
+                shown = await r.json();
+            } catch {
+                shown = _allMemories.filter(m => m.text.toLowerCase().includes(query.toLowerCase()));
+            }
+        }
 
-        if (countEl) countEl.textContent = `${_allMemories.length} stored`;
+        if (countEl) countEl.textContent = `${_allMemories.length} stored${query ? ` · ${shown.length} semantic matches` : ''}`;
 
         if (shown.length === 0) {
-            listEl.innerHTML = `<div class="memory-empty">${_allMemories.length === 0 ? 'No memories yet.' : 'No matches.'}</div>`;
+            listEl.innerHTML = `<div class="memory-empty">${_allMemories.length === 0 ? 'No memories yet.' : 'No semantic matches.'}</div>`;
             return;
         }
 
@@ -6198,20 +6295,77 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const textPart = document.createElement('div');
             textPart.className = 'memory-item-text';
-            textPart.textContent = mem.text;
+            const textValue = document.createElement('div');
+            textValue.textContent = mem.text;
+            textPart.appendChild(textValue);
 
-            if (mem.timestamp) {
-                const meta = document.createElement('span');
-                meta.className = 'memory-item-meta';
-                const d = new Date(mem.timestamp);
-                meta.textContent = `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${mem.source ? ' · ' + mem.source : ''}`;
-                textPart.appendChild(meta);
+            const meta = document.createElement('span');
+            meta.className = 'memory-item-meta';
+            const metaBits = [formatMemoryTimestamp(mem.createdAt || mem.timestamp)];
+            if (mem.sourceType || mem.source) metaBits.push(mem.sourceType || mem.source);
+            if (mem.extractionMode) metaBits.push(mem.extractionMode);
+            if (mem.score != null) metaBits.push(`score ${mem.score.toFixed(2)}`);
+            if (mem.conversationId) metaBits.push('conversation-linked');
+            meta.textContent = metaBits.join(' · ');
+            textPart.appendChild(meta);
+
+            const tags = document.createElement('div');
+            tags.className = 'memory-item-tags';
+            [mem.origin?.backend, mem.origin?.model, mem.messageId ? 'message-linked' : null].filter(Boolean).forEach(tag => {
+                const el = document.createElement('span');
+                el.className = 'memory-tag';
+                el.textContent = String(tag);
+                tags.appendChild(el);
+            });
+            if (tags.childNodes.length) textPart.appendChild(tags);
+
+            const actions = document.createElement('div');
+            actions.className = 'memory-item-actions';
+
+            const editBtn = document.createElement('button');
+            editBtn.className = 'memory-item-btn';
+            editBtn.textContent = _editingMemoryId === mem.id ? 'Save' : 'Edit';
+            editBtn.addEventListener('click', async () => {
+                if (_editingMemoryId !== mem.id) {
+                    _editingMemoryId = mem.id;
+                    await refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                    return;
+                }
+
+                const textarea = item.querySelector('textarea');
+                const text = textarea?.value.trim();
+                if (!text) return;
+                try {
+                    await fetch(`${PROXY_BASE}/api/memory/${encodeURIComponent(mem.id)}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text, reviewed: true })
+                    });
+                    _editingMemoryId = null;
+                    await refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                } catch { /* ignore */ }
+            });
+            actions.appendChild(editBtn);
+
+            if (_editingMemoryId === mem.id) {
+                const textarea = document.createElement('textarea');
+                textarea.value = mem.text;
+                textPart.replaceChild(textarea, textValue);
+
+                const cancelBtn = document.createElement('button');
+                cancelBtn.className = 'memory-item-btn';
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.addEventListener('click', async () => {
+                    _editingMemoryId = null;
+                    await refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                });
+                actions.appendChild(cancelBtn);
             }
 
             const delBtn = document.createElement('button');
-            delBtn.className = 'memory-item-del';
+            delBtn.className = 'memory-item-btn';
             delBtn.title = 'Delete memory';
-            delBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>';
+            delBtn.textContent = 'Delete';
             delBtn.addEventListener('click', async () => {
                 try {
                     await fetch(`${PROXY_BASE}/api/memory/${encodeURIComponent(mem.id)}`, { method: 'DELETE' });
@@ -6219,9 +6373,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     loadMemoryStatus();
                 } catch { /* ignore */ }
             });
+            actions.appendChild(delBtn);
 
             item.appendChild(textPart);
-            item.appendChild(delBtn);
+            item.appendChild(actions);
             listEl.appendChild(item);
         }
     }
@@ -6330,6 +6485,33 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await refreshMemoryList('');
                     loadMemoryStatus();
                 } catch { /* ignore */ }
+            });
+        }
+
+        const dedupeBtn = document.getElementById('memoryDedupeBtn');
+        if (dedupeBtn) {
+            dedupeBtn.addEventListener('click', async () => {
+                dedupeBtn.disabled = true;
+                const countEl = document.getElementById('memoryCountLabel');
+                const previous = countEl?.textContent || '';
+                if (countEl) countEl.textContent = 'Cleaning up similar memories...';
+                try {
+                    const response = await fetch(`${PROXY_BASE}/api/memory/dedupe`, { method: 'POST' });
+                    const result = await response.json();
+                    await refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                    loadMemoryStatus();
+                    if (countEl) {
+                        countEl.textContent = `Cleaned up ${result.removed || 0} duplicates${result.updated ? ` · normalized ${result.updated}` : ''}`;
+                        setTimeout(() => {
+                            if (countEl) countEl.textContent = previous || countEl.textContent;
+                            refreshMemoryList(document.getElementById('memorySearchInput')?.value || '');
+                        }, 2500);
+                    }
+                } catch {
+                    if (countEl) countEl.textContent = 'Cleanup failed';
+                } finally {
+                    dedupeBtn.disabled = false;
+                }
             });
         }
     }
