@@ -6,10 +6,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.0.6
+## What's New — v1.0.7
 
-- **API Keys settings panel** — enter Tavily (web search) and Exa (deep research) keys directly in Settings → 🔑 API Keys; no `.env` file required
-- Keys are stored locally in the app's data folder and applied immediately — no restart or rebuild needed
+- **Security hardening** — patched path traversal vulnerability, added prompt injection defenses, removed CORS bypass
+- **Server refactor** — internal proxy (`server.js`) cleaned up for improved reliability and maintainability
+- **Updated app icon** — new Fallout-themed desktop and window icon
 
 ---
 

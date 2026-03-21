@@ -139,7 +139,7 @@ function createWindow() {
         height: 900,
         minWidth: 800,
         minHeight: 600,
-        icon: path.join(__dirname, 'assets', 'icon.ico'),
+        icon: path.join(__dirname, 'assets', 'fallout_icon.ico'),
         titleBarStyle: 'hidden',
         backgroundColor: '#0a0a0a',
         webPreferences: {

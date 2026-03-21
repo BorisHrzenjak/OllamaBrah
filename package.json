@@ -1,6 +1,6 @@
 {
   "name": "ollama-brah",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Ollama Brah - Standalone Electron chat app for local Ollama models",
   "main": "main.js",
   "scripts": {
@@ -12,7 +12,7 @@
     "productName": "Ollama Brah",
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/fallout_icon.ico"
     },
     "files": [
       "main.js",
