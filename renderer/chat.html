@@ -1471,6 +1471,12 @@
             gap: 2px;
         }
 
+        #inputActions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
         /* Slash Command Popup */
         #slashCommandPopup {
             position: absolute;
@@ -1559,18 +1565,17 @@
         }
 
         #inputTokenCount {
-            position: absolute;
-            bottom: 7px;
-            right: 10px;
             font-size: 11px;
             font-weight: 500;
             color: var(--text-secondary);
             background: var(--bg-primary);
             border: 1px solid var(--border-subtle);
             border-radius: 4px;
-            padding: 1px 5px;
+            padding: 2px 6px;
+            line-height: 1;
             pointer-events: none;
             display: none;
+            flex-shrink: 0;
         }
 
         #messageInput {
@@ -4789,6 +4794,149 @@ body {
     height: 100vh;
     overflow: hidden;
 }
+
+        /* ── Settings Modal Sidebar Layout ── */
+        #settingsModal .modal-content {
+            max-width: 860px;
+            height: min(85vh, 720px);
+            max-height: min(85vh, 720px);
+        }
+
+        .settings-layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            height: 100%;
+        }
+
+        .settings-sidebar-nav {
+            width: 200px;
+            min-width: 200px;
+            background-color: var(--bg-primary);
+            border-right: 1px solid var(--border-subtle);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            padding: 16px 8px;
+            gap: 1px;
+        }
+
+        .settings-nav-brand {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            padding: 2px 10px 14px;
+            border-bottom: 1px solid var(--border-subtle);
+            margin-bottom: 6px;
+        }
+
+        .settings-nav-group-label {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            padding: 10px 10px 4px;
+        }
+
+        .settings-nav-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            padding: 7px 10px;
+            background: none;
+            border: none;
+            border-radius: 7px;
+            color: var(--text-secondary);
+            font-size: var(--font-size-sm);
+            font-weight: 500;
+            cursor: pointer;
+            text-align: left;
+            transition: all var(--transition);
+            font-family: inherit;
+        }
+
+        .settings-nav-item:hover {
+            background-color: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .settings-nav-item.active {
+            background-color: var(--accent-subtle);
+            color: var(--accent);
+        }
+
+        .settings-nav-item .lucide {
+            width: 15px;
+            height: 15px;
+            flex-shrink: 0;
+        }
+
+        .settings-panel-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 0;
+        }
+
+        .settings-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: var(--space-lg) var(--space-xl);
+            border-bottom: 1px solid var(--border-subtle);
+            flex-shrink: 0;
+        }
+
+        .settings-panel-header h2 {
+            font-size: var(--font-size-md);
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .settings-panel-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: var(--space-xl);
+        }
+
+        /* Hide accordion toggles in sidebar layout */
+        #settingsModal .settings-section-toggle {
+            display: none;
+        }
+
+        /* Remove accordion borders/padding in sidebar mode */
+        #settingsModal .collapsible-section {
+            border: none !important;
+            padding: 0 !important;
+            margin-bottom: 0 !important;
+        }
+
+        #settingsModal .settings-section {
+            margin-bottom: 0;
+        }
+
+        /* Override accordion animation — use display:none/block via panel-active */
+        #settingsModal .settings-section-body {
+            max-height: none !important;
+            opacity: 1 !important;
+            overflow: visible !important;
+            display: none;
+            transition: none !important;
+        }
+
+        #settingsModal .settings-section-body.panel-active {
+            display: block;
+        }
+
+        /* Footer pinned to bottom of panel area */
+        #settingsModal .settings-footer {
+            margin-top: 0;
+            padding: var(--space-md) var(--space-xl);
+            flex-shrink: 0;
+        }
     </style>
 </head>
 
@@ -4909,7 +5057,6 @@ body {
                 <div id="inputCard">
                     <div id="messageInputWrapper">
                         <textarea id="messageInput" placeholder="Message..." rows="1" autofocus></textarea>
-                        <span id="inputTokenCount"></span>
                     </div>
                     <div id="inputToolbar">
                         <div id="inputToolsLeft">
@@ -4933,12 +5080,15 @@ body {
                             </button>
                             <div id="voicePreview" style="display:none;"></div>
                         </div>
-                        <button id="sendButton" title="Send message">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-send"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></svg>
-                        </button>
-                        <button id="stopButton" title="Stop generation (Esc)" style="display:none;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-square"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>
-                        </button>
+                        <div id="inputActions">
+                            <span id="inputTokenCount"></span>
+                            <button id="sendButton" title="Send message">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-send"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></svg>
+                            </button>
+                            <button id="stopButton" title="Stop generation (Esc)" style="display:none;">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-square"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -4948,13 +5098,66 @@ body {
     <!-- System Prompt Settings Modal -->
     <div id="settingsModal" class="modal">
         <div class="modal-content">
-            <div class="modal-header">
-                <h2>Settings</h2>
-                <button id="closeSettingsModal" class="modal-close-button">
-                    <i data-lucide="x"></i>
-                </button>
-            </div>
-            <div class="modal-body">
+            <div class="settings-layout">
+                <!-- Left sidebar navigation -->
+                <nav class="settings-sidebar-nav">
+                    <div class="settings-nav-brand">Settings</div>
+
+                    <div class="settings-nav-group-label">Personalization</div>
+                    <button class="settings-nav-item" data-toggle="appearanceSectionToggle" data-body="appearanceSectionBody">
+                        <i data-lucide="palette"></i><span>Appearance</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="personaSectionToggle" data-body="personaSectionBody">
+                        <i data-lucide="user-circle"></i><span>Persona Presets</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="slashCmdSectionToggle" data-body="slashCmdSectionBody">
+                        <i data-lucide="file-text"></i><span>Prompt Templates</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="skillsSectionToggle" data-body="skillsSectionBody">
+                        <i data-lucide="zap"></i><span>Skills</span>
+                    </button>
+
+                    <div class="settings-nav-group-label">Model</div>
+                    <button class="settings-nav-item" data-toggle="systemPromptSectionToggle" data-body="systemPromptSectionBody">
+                        <i data-lucide="message-square"></i><span>System Prompt</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="paramSectionToggle" data-body="paramSectionBody">
+                        <i data-lucide="sliders-horizontal"></i><span>Parameters</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="modelMgmtSectionToggle" data-body="modelMgmtSectionBody">
+                        <i data-lucide="package"></i><span>Model Management</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="contextWindowSectionToggle" data-body="contextWindowSectionBody">
+                        <i data-lucide="align-left"></i><span>Context Window</span>
+                    </button>
+
+                    <div class="settings-nav-group-label">Advanced</div>
+                    <button class="settings-nav-item" data-toggle="llamaCppSectionToggle" data-body="llamaCppSectionBody">
+                        <i data-lucide="cpu"></i><span>llama.cpp</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="agentSectionToggle" data-body="agentSectionBody">
+                        <i data-lucide="bot"></i><span>Agent Mode</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="memorySectionToggle" data-body="memorySectionBody">
+                        <i data-lucide="brain"></i><span>Memory</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="ttsSectionToggle" data-body="ttsSectionBody">
+                        <i data-lucide="volume-2"></i><span>Text-to-Speech</span>
+                    </button>
+                    <button class="settings-nav-item" data-toggle="apiKeysSectionToggle" data-body="apiKeysSectionBody">
+                        <i data-lucide="key"></i><span>API Keys</span>
+                    </button>
+                </nav>
+
+                <!-- Right panel area -->
+                <div class="settings-panel-area">
+                    <div class="settings-panel-header">
+                        <h2 id="settingsPanelTitle">Settings</h2>
+                        <button id="closeSettingsModal" class="modal-close-button">
+                            <i data-lucide="x"></i>
+                        </button>
+                    </div>
+                    <div class="settings-panel-body">
                 <!-- Appearance -->
                 <div class="settings-section collapsible-section">
                     <button class="settings-section-toggle" id="appearanceSectionToggle">
@@ -5616,20 +5819,22 @@ body {
                     </div>
                 </div>
 
-                <div class="modal-footer settings-footer">
-                    <button id="openShortcutsFromSettings" class="modal-button secondary"
-                        title="View keyboard shortcuts (Alt+H)">
-                        <i data-lucide="keyboard"></i>
-                        Shortcuts
-                    </button>
-                    <div class="modal-actions">
-                        <button id="clearSystemPromptButton" class="modal-button secondary">Clear</button>
-                        <button id="saveSystemPromptButton" class="modal-button primary">Save</button>
+                    </div><!-- /settings-panel-body -->
+                    <div class="modal-footer settings-footer">
+                        <button id="openShortcutsFromSettings" class="modal-button secondary"
+                            title="View keyboard shortcuts (Alt+H)">
+                            <i data-lucide="keyboard"></i>
+                            Shortcuts
+                        </button>
+                        <div class="modal-actions">
+                            <button id="clearSystemPromptButton" class="modal-button secondary">Clear</button>
+                            <button id="saveSystemPromptButton" class="modal-button primary">Save</button>
+                        </div>
                     </div>
-                </div>
-            </div>
-        </div>
-    </div>
+                </div><!-- /settings-panel-area -->
+            </div><!-- /settings-layout -->
+        </div><!-- /modal-content -->
+    </div><!-- /settingsModal -->
 
     <!-- Keyboard Shortcuts Modal -->
     <div id="shortcutsModal" class="modal">

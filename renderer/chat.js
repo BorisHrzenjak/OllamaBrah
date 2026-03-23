@@ -3474,15 +3474,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         pullBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Pull`;
         pullBtn.addEventListener('click', () => {
             closeLlmfitModal();
-            // Ensure settings modal is open and Model Management section is expanded
+            // Ensure settings modal is open and Model Management section is shown
             const settingsModal = document.getElementById('settingsModal');
             if (settingsModal && !settingsModal.classList.contains('active')) {
                 openSettingsModal();
             }
-            const mgmtBody = document.getElementById('modelMgmtSectionBody');
-            if (mgmtBody && !mgmtBody.classList.contains('expanded')) {
-                toggleSection('modelMgmtSectionToggle', 'modelMgmtSectionBody');
-            }
+            showSettingsPanel('modelMgmtSectionBody');
             const input = document.getElementById('pullNewModelInput');
             if (input) {
                 input.value = ollamaName;
@@ -3694,6 +3691,57 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadTTSSettings();
 
         settingsModal.classList.add('active');
+
+        // Ensure a panel is always shown (restore active or default to appearance)
+        const hasActive = document.querySelector('#settingsModal .settings-section-body.panel-active');
+        if (!hasActive) showSettingsPanel('appearanceSectionBody');
+    }
+
+    // Sidebar navigation: show a specific settings panel by its body element ID
+    function showSettingsPanel(bodyId) {
+        // Collapse all section bodies (remove expanded + panel-active)
+        document.querySelectorAll('#settingsModal .settings-section-body').forEach(b => {
+            b.classList.remove('panel-active', 'expanded');
+        });
+        document.querySelectorAll('#settingsModal .settings-section-toggle').forEach(t => {
+            t.classList.remove('expanded');
+        });
+
+        // Dispatch a click on the corresponding toggle button so side-effect listeners fire
+        const navItem = document.querySelector(`.settings-nav-item[data-body="${bodyId}"]`);
+        if (navItem) {
+            const toggleId = navItem.dataset.toggle;
+            const toggle = toggleId ? document.getElementById(toggleId) : null;
+            if (toggle) {
+                // Dispatch click — listeners call toggleSection (adds expanded) + any side effects
+                toggle.dispatchEvent(new MouseEvent('click', { bubbles: false }));
+            }
+        }
+
+        // Make the panel visible
+        const body = document.getElementById(bodyId);
+        if (body) body.classList.add('panel-active');
+
+        // Update active nav item and panel title
+        document.querySelectorAll('.settings-nav-item').forEach(item => {
+            const isActive = item.dataset.body === bodyId;
+            item.classList.toggle('active', isActive);
+            if (isActive) {
+                const label = item.querySelector('span')?.textContent || 'Settings';
+                const titleEl = document.getElementById('settingsPanelTitle');
+                if (titleEl) titleEl.textContent = label;
+            }
+        });
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+
+    function initSettingsSidebar() {
+        document.querySelectorAll('.settings-nav-item').forEach(item => {
+            item.addEventListener('click', () => showSettingsPanel(item.dataset.body));
+        });
+        // Show appearance panel by default on first init
+        showSettingsPanel('appearanceSectionBody');
     }
 
     function closeSettingsModal() {
@@ -5807,14 +5855,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (modelParamsButton) {
         modelParamsButton.addEventListener('click', () => {
             openSettingsModal();
-            // Ensure the Model Parameters section is expanded
-            const body = document.getElementById('paramSectionBody');
-            const toggle = document.getElementById('paramSectionToggle');
-            if (body && !body.classList.contains('expanded')) {
-                body.classList.add('expanded');
-                toggle.classList.add('expanded');
-                if (typeof lucide !== 'undefined') lucide.createIcons();
-            }
+            showSettingsPanel('paramSectionBody');
         });
     }
 
@@ -6638,6 +6679,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Init slash commands and skills settings sections
     initSlashCommandsSettings();
     initSkillsSettings();
+
+    // Init settings sidebar navigation
+    initSettingsSidebar();
 
     // Persona preset event listeners
     const personaSectionToggle = document.getElementById('personaSectionToggle');
