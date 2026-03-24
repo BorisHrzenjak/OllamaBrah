@@ -421,6 +421,41 @@ app.post('/api/tts/load', async (req, res) => {
     res.json({ status: 'loading' });
 });
 
+app.get('/api/tts/self-test', async (req, res) => {
+    try {
+        if (kokoroStatus === 'not_loaded' || kokoroStatus === 'error') {
+            await loadKokoroModel();
+        }
+        if (kokoroStatus === 'loading') {
+            return res.status(503).json({ status: 'loading', message: 'Model is still loading' });
+        }
+        if (kokoroStatus !== 'ready' || !kokoroTTS) {
+            return res.status(500).json({ status: 'error', error: kokoroLoadError || 'TTS model not available' });
+        }
+
+        const voice = 'af_heart';
+        const text = 'Kokoro self test.';
+        const startedAt = Date.now();
+        const audio = await kokoroTTS.generate(text, { voice });
+        const durationMs = Date.now() - startedAt;
+
+        return res.json({
+            status: 'ok',
+            text,
+            voice,
+            sampleRate: audio.sampling_rate || 24000,
+            samples: audio.audio?.length || 0,
+            durationMs,
+        });
+    } catch (err) {
+        console.error('[TTS] Self-test failed:', err);
+        return res.status(500).json({
+            status: 'error',
+            error: err.message,
+        });
+    }
+});
+
 // Split text into sentences for chunked generation
 function splitIntoSentences(text) {
     // Split on sentence-ending punctuation followed by space/newline, or on double newlines

@@ -7163,57 +7163,53 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             const sampleRate = parseInt(response.headers.get('X-Sample-Rate')) || 24000;
-            let scheduledTime = kokoroAudioContext.currentTime;
-
             setTTSButtonState(buttonElement, 'speaking');
 
             const reader = response.body.getReader();
-            let leftover = new Uint8Array(0);
+            const chunks = [];
+            let totalBytes = 0;
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                if (!value || value.length === 0) continue;
+                chunks.push(value);
+                totalBytes += value.length;
+            }
 
-                // Combine leftover bytes with new data
-                const combined = new Uint8Array(leftover.length + value.length);
-                combined.set(leftover);
-                combined.set(value, leftover.length);
+            const usableBytes = totalBytes - (totalBytes % 4);
+            if (usableBytes <= 0) {
+                throw new Error('No audio data received from Kokoro');
+            }
 
-                // Align to 4-byte float32 boundary
-                const usableBytes = combined.length - (combined.length % 4);
-                if (usableBytes === 0) {
-                    leftover = combined;
-                    continue;
-                }
+            const combined = new Uint8Array(usableBytes);
+            let offset = 0;
+            for (const chunk of chunks) {
+                const bytesToCopy = Math.min(chunk.length, usableBytes - offset);
+                if (bytesToCopy <= 0) break;
+                combined.set(chunk.subarray(0, bytesToCopy), offset);
+                offset += bytesToCopy;
+            }
 
-                leftover = combined.slice(usableBytes);
-                const float32 = new Float32Array(combined.buffer.slice(combined.byteOffset, combined.byteOffset + usableBytes));
+            const float32 = new Float32Array(combined.buffer, combined.byteOffset, usableBytes / 4);
+            const audioBuffer = kokoroAudioContext.createBuffer(1, float32.length, sampleRate);
+            audioBuffer.getChannelData(0).set(float32);
 
-                // Create AudioBuffer and schedule playback
-                const audioBuffer = kokoroAudioContext.createBuffer(1, float32.length, sampleRate);
-                audioBuffer.getChannelData(0).set(float32);
+            const source = kokoroAudioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(kokoroAudioContext.destination);
 
-                const source = kokoroAudioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(kokoroAudioContext.destination);
-
-                // Schedule seamlessly after previous chunk
-                const startTime = Math.max(scheduledTime, kokoroAudioContext.currentTime);
-                source.start(startTime);
-                scheduledTime = startTime + audioBuffer.duration;
-
-                kokoroSources.push(source);
+            const playbackEnded = new Promise(resolve => {
                 source.onended = () => {
                     const idx = kokoroSources.indexOf(source);
                     if (idx !== -1) kokoroSources.splice(idx, 1);
+                    resolve();
                 };
-            }
+            });
 
-            // Wait for all audio to finish playing
-            const remainingTime = scheduledTime - kokoroAudioContext.currentTime;
-            if (remainingTime > 0) {
-                await new Promise(resolve => setTimeout(resolve, remainingTime * 1000 + 100));
-            }
+            kokoroSources.push(source);
+            source.start();
+            await playbackEnded;
 
             isSpeaking = false;
             resetTTSButton(buttonElement);
