@@ -1244,16 +1244,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     function isCloudModel(modelName) {
         if (!modelName || typeof modelName !== 'string') return false;
 
-        // Pattern 1: :cloud or .cloud tag in name (Ollama cloud models use :cloud)
-        if (modelName.includes(':cloud') || modelName.includes('.cloud')) return true;
+        const normalizedName = modelName.toLowerCase();
 
-        // Pattern 2: Check if model has size 0 (cloud models don't occupy local storage)
-        const model = availableModels.find(m => m.name === modelName);
-        if (model && (model.size === 0 || model.size === undefined || model.size === null)) {
+        // Pattern 1: common cloud naming variants
+        if (normalizedName.includes(':cloud') || normalizedName.includes('.cloud') || normalizedName.endsWith('-cloud')) {
             return true;
         }
 
-        return false;
+        // Pattern 2: cloud models report zero local disk usage
+        const model = availableModels.find(m => m.name === modelName);
+        if (!model) return false;
+
+        const numericSize = typeof model.size === 'number' ? model.size : Number(model.size);
+        return Number.isFinite(numericSize) && numericSize === 0;
     }
 
     // Get effective context limit for current model
@@ -1615,10 +1618,55 @@ document.addEventListener('DOMContentLoaded', async () => {
         modelNameDisplay.appendChild(container);
     }
 
+    function getLegacyModelStorageKey(model) {
+        return `${storageKeyPrefix}${model.replace(/[^a-zA-Z0-9_.-]/g, '_')}`;
+    }
+
+    function encodeModelStorageName(model) {
+        return encodeURIComponent(model).replace(/\./g, '%2E');
+    }
+
     function getModelStorageKey(model) {
-        const key = `${storageKeyPrefix}${model.replace(/[^a-zA-Z0-9_.-]/g, '_')}`;
+        const key = `${storageKeyPrefix}v2_${encodeModelStorageName(model)}`;
         console.log('[OllamaBro] getModelStorageKey - Model:', model, 'Generated Key:', key);
         return key;
+    }
+
+    function isModelChatStateObject(value) {
+        return !!(value && typeof value === 'object' && !Array.isArray(value) && typeof value.conversations === 'object');
+    }
+
+    function normalizeModelChatState(modelSpecificData) {
+        if (!modelSpecificData || typeof modelSpecificData !== 'object' || Array.isArray(modelSpecificData)) {
+            return {
+                data: { conversations: {}, activeConversationId: null, systemPrompt: '', contextLimitOverride: null, params: null },
+                changed: false
+            };
+        }
+
+        let needsSave = false;
+        if (typeof modelSpecificData.conversations !== 'object' || modelSpecificData.conversations === null) {
+            modelSpecificData.conversations = {};
+            needsSave = true;
+        }
+        if (typeof modelSpecificData.activeConversationId === 'undefined') {
+            modelSpecificData.activeConversationId = null;
+            needsSave = true;
+        }
+        if (typeof modelSpecificData.systemPrompt === 'undefined') {
+            modelSpecificData.systemPrompt = '';
+            needsSave = true;
+        }
+        if (typeof modelSpecificData.contextLimitOverride === 'undefined') {
+            modelSpecificData.contextLimitOverride = null;
+            needsSave = true;
+        }
+        if (typeof modelSpecificData.params === 'undefined') {
+            modelSpecificData.params = null;
+            needsSave = true;
+        }
+
+        return { data: modelSpecificData, changed: needsSave };
     }
 
     async function loadModelChatState(modelToLoad) {
@@ -1628,58 +1676,41 @@ document.addEventListener('DOMContentLoaded', async () => {
             return { conversations: {}, activeConversationId: null, systemPrompt: '', contextLimitOverride: null, params: null };
         }
         try {
-            const key = getModelStorageKey(modelToLoad); // Key generation will also log
-            const storageResult = await chrome.storage.local.get(key);
-            console.log('[OllamaBro] loadModelChatState - Key used:', key, 'Data loaded from storage:', storageResult);
+            const key = getModelStorageKey(modelToLoad);
+            const legacyKey = getLegacyModelStorageKey(modelToLoad);
+            const storageResult = await chrome.storage.local.get([key, legacyKey]);
+            console.log('[OllamaBro] loadModelChatState - Keys used:', { key, legacyKey }, 'Data loaded from storage:', storageResult);
 
             let modelSpecificData = storageResult[key];
-            let needsSave = false;
+            let loadedFromLegacy = false;
+
+            if (!isModelChatStateObject(modelSpecificData) && storageResult[legacyKey] && isModelChatStateObject(storageResult[legacyKey])) {
+                modelSpecificData = storageResult[legacyKey];
+                loadedFromLegacy = true;
+                console.log(`[OllamaBro] loadModelChatState - Loaded legacy chat state for ${modelToLoad}.`);
+            }
 
             if (modelSpecificData && typeof modelSpecificData === 'object') {
-                // Data exists and is an object, proceed with checks
-                // Ensure a deep copy for logging to avoid showing mutated object if it's referenced elsewhere
                 try {
                     console.log(`Raw chat state loaded for ${modelToLoad}:`, JSON.parse(JSON.stringify(modelSpecificData)));
                 } catch (e) {
                     console.warn(`[OllamaBro] loadModelChatState - Could not stringify modelSpecificData for logging for model ${modelToLoad}:`, modelSpecificData);
                 }
 
-                if (typeof modelSpecificData.conversations !== 'object' || modelSpecificData.conversations === null) {
-                    modelSpecificData.conversations = {};
-                    needsSave = true;
-                }
-                if (typeof modelSpecificData.activeConversationId === 'undefined') {
-                    modelSpecificData.activeConversationId = null;
-                    needsSave = true;
-                }
-                if (typeof modelSpecificData.systemPrompt === 'undefined') {
-                    modelSpecificData.systemPrompt = '';
-                    needsSave = true;
-                }
-                if (typeof modelSpecificData.contextLimitOverride === 'undefined') {
-                    modelSpecificData.contextLimitOverride = null;
-                    needsSave = true;
-                }
-                if (typeof modelSpecificData.params === 'undefined') {
-                    modelSpecificData.params = null;
-                    needsSave = true;
+                const normalized = normalizeModelChatState(modelSpecificData);
+                if (loadedFromLegacy || normalized.changed) {
+                    console.log(`[OllamaBro] loadModelChatState - Migrating chat state for ${modelToLoad} to safe storage key`);
+                    await chrome.storage.local.set({ [key]: normalized.data });
                 }
 
-                // Save back to storage if we initialized any missing fields
-                if (needsSave) {
-                    console.log(`[OllamaBro] loadModelChatState - Migrating old data for ${modelToLoad} with new fields`);
-                    await chrome.storage.local.set({ [key]: modelSpecificData });
-                }
-
-                return modelSpecificData;
+                return normalized.data;
             } else if (modelSpecificData) {
-                // Data exists but is NOT an object (e.g., string, number, boolean due to corruption)
-                console.warn(`[OllamaBro] loadModelChatState - Data for model ${modelToLoad} is not an object:`, modelSpecificData, ". Resetting to default structure.");
-                return { conversations: {}, activeConversationId: null, systemPrompt: '', contextLimitOverride: null, params: null }; // Return default structure
+                console.warn(`[OllamaBro] loadModelChatState - Data for model ${modelToLoad} is not an object:`, modelSpecificData, '. Resetting to default structure.');
+                return { conversations: {}, activeConversationId: null, systemPrompt: '', contextLimitOverride: null, params: null };
             }
-            // modelSpecificData is null or undefined (no data for this key)
+
             console.log(`[OllamaBro] loadModelChatState - No data found for ${modelToLoad}. Returning default structure.`);
-            return { conversations: {}, activeConversationId: null, systemPrompt: '', contextLimitOverride: null, params: null }; // Default if nothing stored
+            return { conversations: {}, activeConversationId: null, systemPrompt: '', contextLimitOverride: null, params: null };
         } catch (error) {
             console.error('Error loading chat state:', error);
             return { conversations: {}, activeConversationId: null, systemPrompt: '', contextLimitOverride: null, params: null };
@@ -3219,51 +3250,71 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             if (models.length === 0) {
-                listEl.innerHTML = '<span class="mgmt-empty">No local models found.</span>';
+                listEl.innerHTML = '<span class="mgmt-empty">No Ollama models found.</span>';
                 return;
             }
 
             listEl.innerHTML = '';
 
-            for (const model of models) {
-                const row = document.createElement('div');
-                row.className = 'mgmt-model-row';
+            const localModels = models.filter(model => !isCloudModel(model.name));
+            const cloudModels = models.filter(model => isCloudModel(model.name));
 
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'mgmt-model-name';
-                nameSpan.textContent = model.name;
-                nameSpan.title = model.name;
-                row.appendChild(nameSpan);
+            const appendMgmtSection = (title, sectionModels) => {
+                if (sectionModels.length === 0) return;
 
-                const capsSpan = document.createElement('span');
-                capsSpan.className = 'mgmt-model-caps';
-                row.appendChild(capsSpan);
+                const sectionEl = document.createElement('div');
+                sectionEl.className = 'mgmt-model-section';
 
-                const sizeSpan = document.createElement('span');
-                sizeSpan.className = 'mgmt-model-size';
-                if (model.size && model.size > 0) {
-                    sizeSpan.textContent = (model.size / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+                const titleEl = document.createElement('div');
+                titleEl.className = 'mgmt-model-section-title';
+                titleEl.textContent = title;
+                sectionEl.appendChild(titleEl);
+
+                for (const model of sectionModels) {
+                    const row = document.createElement('div');
+                    row.className = 'mgmt-model-row';
+
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'mgmt-model-name';
+                    nameSpan.textContent = model.name;
+                    nameSpan.title = model.name;
+                    row.appendChild(nameSpan);
+
+                    const capsSpan = document.createElement('span');
+                    capsSpan.className = 'mgmt-model-caps';
+                    row.appendChild(capsSpan);
+
+                    const sizeSpan = document.createElement('span');
+                    sizeSpan.className = 'mgmt-model-size';
+                    if (model.size && model.size > 0) {
+                        sizeSpan.textContent = (model.size / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+                    }
+                    row.appendChild(sizeSpan);
+
+                    const delBtn = document.createElement('button');
+                    delBtn.className = 'mgmt-delete-btn';
+                    delBtn.title = `Delete ${model.name}`;
+                    delBtn.innerHTML = '<i data-lucide="trash-2"></i>';
+                    delBtn.addEventListener('click', async () => {
+                        if (!confirm(`Delete "${model.name}"?\n\nThis will permanently remove the model from disk.`)) return;
+                        delBtn.disabled = true;
+                        await deleteOllamaModel(model.name, row);
+                    });
+                    row.appendChild(delBtn);
+
+                    if (isCloudModel(model.name)) {
+                        capsSpan.appendChild(makeCloudBadge(13));
+                    }
+
+                    sectionEl.appendChild(row);
                 }
-                row.appendChild(sizeSpan);
 
-                const delBtn = document.createElement('button');
-                delBtn.className = 'mgmt-delete-btn';
-                delBtn.title = `Delete ${model.name}`;
-                delBtn.innerHTML = '<i data-lucide="trash-2"></i>';
-                delBtn.addEventListener('click', async () => {
-                    if (!confirm(`Delete "${model.name}"?\n\nThis will permanently remove the model from disk.`)) return;
-                    delBtn.disabled = true;
-                    await deleteOllamaModel(model.name, row);
-                });
-                row.appendChild(delBtn);
+                listEl.appendChild(sectionEl);
+            };
 
-                listEl.appendChild(row);
+            appendMgmtSection('Local models', localModels);
+            appendMgmtSection('Cloud models', cloudModels);
 
-                // Show cloud badge synchronously
-                if (isCloudModel(model.name)) {
-                    capsSpan.appendChild(makeCloudBadge(13));
-                }
-            }
             if (typeof lucide !== 'undefined') lucide.createIcons({ el: listEl });
         } catch (err) {
             listEl.innerHTML = `<span class="mgmt-error">Error: ${err.message}</span>`;
@@ -3278,8 +3329,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 body: JSON.stringify({ name })
             });
             if (res.ok) {
-                rowEl.remove();
                 availableModels = availableModels.filter(m => m.name !== name);
+                await populateMgmtModelList();
                 populateModelDropdown(availableModels, currentModelName);
             } else {
                 const err = await res.json().catch(() => ({}));
@@ -5555,6 +5606,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const ollamaModels = models.filter(m => m._backend !== 'llamacpp');
         const cppModels = models.filter(m => m._backend === 'llamacpp');
+        const cloudModels = ollamaModels.filter(model => isCloudModel(model.name || model));
+        const localModels = ollamaModels.filter(model => !isCloudModel(model.name || model));
 
         if (ollamaModels.length === 0 && cppModels.length === 0) {
             const noModelsItem = document.createElement('li');
@@ -5578,10 +5631,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (isCloud) detailsContainer.appendChild(makeCloudBadge(14));
 
-            if (modelSize) {
+            const numericSize = typeof modelSize === 'number' ? modelSize : Number(modelSize);
+            if (Number.isFinite(numericSize) && numericSize > 0) {
                 const sizeSpan = document.createElement('span');
                 sizeSpan.classList.add('model-size');
-                const sizeGB = (modelSize / (1024 * 1024 * 1024)).toFixed(2);
+                const sizeGB = (numericSize / (1024 * 1024 * 1024)).toFixed(2);
                 sizeSpan.textContent = `${sizeGB} GB`;
                 sizeSpan.style.color = 'var(--text-muted)';
                 sizeSpan.style.fontSize = '0.9em';
@@ -5592,49 +5646,52 @@ document.addEventListener('DOMContentLoaded', async () => {
             return modelNameContainer;
         }
 
-        // Ollama models
-        ollamaModels.forEach(model => {
-            const modelName = model.name || model;
-            const li = document.createElement('li');
-            const a = document.createElement('a');
-            a.href = '#';
-            a.appendChild(buildModelRow(modelName, model.size, isCloudModel(modelName)));
-            a.dataset.modelName = modelName;
-            li.classList.add('model-dropdown-item');
-            if (modelName === currentModel) li.classList.add('active-model');
-            a.addEventListener('click', async (e) => {
-                e.preventDefault();
-                if (modelName !== currentModelName) await switchModel(modelName);
-                modelSwitcherDropdown.style.display = 'none';
-                ul.querySelectorAll('li.model-dropdown-item').forEach(i => i.classList.remove('active-model'));
-                li.classList.add('active-model');
-            });
-            li.appendChild(a);
-            ul.appendChild(li);
-        });
-
-        // llama.cpp section
-        if (cppModels.length > 0) {
+        function appendSection(title, sectionModels, onSelect) {
             const sep = document.createElement('li');
             sep.className = 'model-dropdown-separator';
-            sep.innerHTML = '<span>⚡ llama.cpp</span>';
+            sep.innerHTML = `<span>${title}</span>`;
             ul.appendChild(sep);
 
-            cppModels.forEach(model => {
+            sectionModels.forEach(model => {
+                const modelName = model.name || model;
                 const li = document.createElement('li');
                 const a = document.createElement('a');
                 a.href = '#';
-                a.appendChild(buildModelRow(model.name, model.size, false));
-                a.dataset.modelName = model.name;
+                a.appendChild(buildModelRow(modelName, model.size, isCloudModel(modelName)));
+                a.dataset.modelName = modelName;
                 li.classList.add('model-dropdown-item');
-                if (model.name === currentModel) li.classList.add('active-model');
+                if (modelName === currentModel) li.classList.add('active-model');
                 a.addEventListener('click', async (e) => {
                     e.preventDefault();
                     modelSwitcherDropdown.style.display = 'none';
-                    await switchToLlamaCpp(model);
+                    await onSelect(model, li);
                 });
                 li.appendChild(a);
                 ul.appendChild(li);
+            });
+        }
+
+        if (localModels.length > 0) {
+            appendSection('Local models', localModels, async (model, li) => {
+                const modelName = model.name || model;
+                if (modelName !== currentModelName) await switchModel(modelName);
+                ul.querySelectorAll('li.model-dropdown-item').forEach(i => i.classList.remove('active-model'));
+                li.classList.add('active-model');
+            });
+        }
+
+        if (cloudModels.length > 0) {
+            appendSection('Cloud models', cloudModels, async (model, li) => {
+                const modelName = model.name || model;
+                if (modelName !== currentModelName) await switchModel(modelName);
+                ul.querySelectorAll('li.model-dropdown-item').forEach(i => i.classList.remove('active-model'));
+                li.classList.add('active-model');
+            });
+        }
+
+        if (cppModels.length > 0) {
+            appendSection('⚡ llama.cpp', cppModels, async (model) => {
+                await switchToLlamaCpp(model);
             });
         }
 
@@ -7776,7 +7833,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             totalBotMessages: 0,
             totalImages: 0,
             speedSamples: [],
-            modelStats: {},   // storageKey → { displayName, isCloud, installed, conversations, messages, tokens, speedSamples }
+            modelStats: {},   // storageKey → { displayName, isCloud, backend, installed, conversations, messages, tokens, speedSamples }
             dayActivity: {},  // 'YYYY-MM-DD' → message count
             longestConvMessages: 0,
             longestConvModel: '—',
@@ -7784,26 +7841,76 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Build reverse-lookup without calling getModelStorageKey (avoids console spam)
         const sanitize = name => `${storageKeyPrefix}${name.replace(/[^a-zA-Z0-9_.-]/g, '_')}`;
+        const encodeV2 = name => `${storageKeyPrefix}v2_${encodeModelStorageName(name)}`;
         const knownKeyToName = {};
+        const installedModelMeta = {};
+        const migratedLegacyKeyToCanonicalId = {};
         const installedKeys = new Set();
         for (const m of availableModels) {
-            const k = sanitize(m.name);
-            knownKeyToName[k] = m.name;
-            installedKeys.add(k);
+            const legacyKey = sanitize(m.name);
+            const v2Key = encodeV2(m.name);
+            knownKeyToName[legacyKey] = m.name;
+            knownKeyToName[v2Key] = m.name;
+            installedModelMeta[legacyKey] = {
+                backend: m._backend === 'llamacpp' ? 'llamacpp' : (isCloudModel(m.name) ? 'cloud' : 'local'),
+                isCloud: isCloudModel(m.name)
+            };
+            installedModelMeta[v2Key] = {
+                backend: m._backend === 'llamacpp' ? 'llamacpp' : (isCloudModel(m.name) ? 'cloud' : 'local'),
+                isCloud: isCloudModel(m.name)
+            };
+            installedKeys.add(legacyKey);
+            installedKeys.add(v2Key);
+            migratedLegacyKeyToCanonicalId[legacyKey] = `model:${m.name}`;
         }
+
+        function collectStoredModelEntries(storeObject) {
+            const entries = [];
+
+            const walkLegacyTree = (prefix, node) => {
+                if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+                if (isModelChatStateObject(node)) {
+                    entries.push({ storageKey: prefix, data: node, format: 'legacy' });
+                    return;
+                }
+                for (const [childKey, childValue] of Object.entries(node)) {
+                    walkLegacyTree(`${prefix}.${childKey}`, childValue);
+                }
+            };
+
+            for (const [key, value] of Object.entries(storeObject)) {
+                if (!key.startsWith(storageKeyPrefix)) continue;
+                if (key.startsWith(`${storageKeyPrefix}v2_`)) {
+                    if (isModelChatStateObject(value)) {
+                        entries.push({ storageKey: key, data: value, format: 'v2' });
+                    }
+                    continue;
+                }
+                walkLegacyTree(key, value);
+            }
+
+            return entries;
+        }
+
+        const storedModelEntries = collectStoredModelEntries(allStorage)
+            .sort((a, b) => (a.format === 'v2' ? -1 : 1) - (b.format === 'v2' ? -1 : 1));
+        for (const entry of storedModelEntries) {
+            if (entry.format !== 'v2') continue;
+            const decodedName = decodeURIComponent(entry.storageKey.slice((`${storageKeyPrefix}v2_`).length));
+            migratedLegacyKeyToCanonicalId[sanitize(decodedName)] = `model:${decodedName}`;
+        }
+        const processedModelIds = new Set();
 
         // Collect legacy tab-scoped keys for cleanup (populated in loop below)
         const legacyStorageKeysSet = new Set();
 
-        for (const [key, data] of Object.entries(allStorage)) {
-            if (!key.startsWith(storageKeyPrefix)) continue;
-            if (!data || typeof data !== 'object' || !data.conversations) continue;
+        for (const { storageKey: key, data, format } of storedModelEntries) {
 
             // Detect legacy tab-scoped keys: ollamaBroChat_${tabId}__${model}
             // Tab IDs from generateId() are base-36 encoded timestamps, e.g. "mmreb2sd5wnnmt"
             const rawSuffix = key.slice(storageKeyPrefix.length);
             const legacyTabMatch = rawSuffix.match(/^[a-z0-9]{10,18}__(.+)$/);
-            const isLegacyTabKey = !knownKeyToName[key] && !!legacyTabMatch;
+            const isLegacyTabKey = format === 'legacy' && !knownKeyToName[key] && !!legacyTabMatch;
 
             // For legacy keys: try to match the stripped suffix to a known model key.
             // If matched, merge stats into the canonical key and skip this entry.
@@ -7817,15 +7924,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 continue;
             }
 
-            const displayName = knownKeyToName[key] || rawSuffix;
-            const installed = installedKeys.has(key);
-            // Use isCloudModel with the real display name now that availableModels is populated
-            const cloud = isCloudModel(displayName);
+            const decodedV2Name = format === 'v2' ? decodeURIComponent(rawSuffix.slice(3)) : null;
+            const displayName = decodedV2Name || knownKeyToName[key] || rawSuffix;
+            const canonicalId = decodedV2Name
+                ? `model:${decodedV2Name}`
+                : (migratedLegacyKeyToCanonicalId[key] || `legacy:${key}`);
+            if (processedModelIds.has(canonicalId)) continue;
+            processedModelIds.add(canonicalId);
 
-            if (!stats.modelStats[key]) {
-                stats.modelStats[key] = {
+            const installed = decodedV2Name ? availableModels.some(m => m.name === decodedV2Name) : installedKeys.has(key);
+            // Use isCloudModel with the real display name now that availableModels is populated
+            const cloud = installedModelMeta[key]?.isCloud ?? isCloudModel(displayName);
+            const backend = installedModelMeta[key]?.backend || (installed ? (cloud ? 'cloud' : 'local') : 'removed');
+
+            if (!stats.modelStats[canonicalId]) {
+                stats.modelStats[canonicalId] = {
                     displayName,
                     isCloud: cloud,
+                    backend,
                     installed,
                     isLegacyTabKey,
                     conversations: 0,
@@ -7834,7 +7950,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     speedSamples: [],
                 };
             }
-            const ms = stats.modelStats[key];
+            const ms = stats.modelStats[canonicalId];
 
             for (const conv of Object.values(data.conversations)) {
                 const msgs = conv.messages || [];
@@ -7889,11 +8005,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Seed ALL installed models so they appear in the table even with 0 usage
         for (const m of availableModels) {
-            const k = sanitize(m.name);
-            if (!stats.modelStats[k]) {
-                stats.modelStats[k] = {
+            const canonicalId = `model:${m.name}`;
+            if (!stats.modelStats[canonicalId]) {
+                stats.modelStats[canonicalId] = {
                     displayName: m.name,
                     isCloud: isCloudModel(m.name),
+                    backend: m._backend === 'llamacpp' ? 'llamacpp' : (isCloudModel(m.name) ? 'cloud' : 'local'),
                     installed: true,
                     conversations: 0,
                     messages: 0,
@@ -7924,9 +8041,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         stats.topModel = topModel;
         stats.topModelMessages = topModelMessages;
 
-        // Local / cloud counts — based on currently installed models, not storage history
-        stats.localModels = availableModels.filter(m => !isCloudModel(m.name)).length;
-        stats.cloudModels = availableModels.filter(m => isCloudModel(m.name)).length;
+        // Current installed model counts by backend/type
+        stats.localModels = availableModels.filter(m => m._backend !== 'llamacpp' && !isCloudModel(m.name)).length;
+        stats.cloudModels = availableModels.filter(m => m._backend !== 'llamacpp' && isCloudModel(m.name)).length;
+        stats.llamaCppModels = availableModels.filter(m => m._backend === 'llamacpp').length;
 
         // Pass legacy keys through for cleanup button
         stats.legacyStorageKeys = Array.from(legacyStorageKeysSet);
@@ -7949,6 +8067,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const removedModels = allModels
             .filter(m => !m.installed)
             .sort((a, b) => b.messages - a.messages);
+        const installedLocalModels = installedModels.filter(m => m.backend === 'local');
+        const installedCloudModels = installedModels.filter(m => m.backend === 'cloud');
+        const installedLlamaCppModels = installedModels.filter(m => m.backend === 'llamacpp');
 
         const cloudSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="#3b82f6" viewBox="0 0 16 16" title="Cloud model"><path d="M4.406 3.342A5.53 5.53 0 0 1 8 2c2.69 0 4.923 2 5.166 4.579C14.758 6.804 16 8.137 16 9.773 16 11.569 14.502 13 12.687 13H3.781C1.708 13 0 11.366 0 9.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z"/></svg>`;
 
@@ -7966,6 +8087,41 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <td>${avgSpd}</td>
             </tr>`;
         }).join('');
+
+        const makeInstalledSection = (title, models, startRank) => {
+            if (models.length === 0) return '';
+            return `
+                <div style="margin-top:${startRank === 1 ? '0' : 'var(--space-lg)'};">
+                    <div class="dashboard-section-title" style="margin-bottom:var(--space-sm);font-size:12px;">${title}</div>
+                    <table class="dashboard-table">
+                        <thead>
+                            <tr>
+                                <th>Model</th>
+                                <th>Convs</th>
+                                <th>Messages</th>
+                                <th>Tokens</th>
+                                <th>Avg Speed</th>
+                            </tr>
+                        </thead>
+                        <tbody>${makeModelRows(models, startRank)}</tbody>
+                    </table>
+                </div>`;
+        };
+
+        const installedSections = [];
+        let installedRank = 1;
+        if (installedLocalModels.length > 0) {
+            installedSections.push(makeInstalledSection('Local models', installedLocalModels, installedRank));
+            installedRank += installedLocalModels.length;
+        }
+        if (installedCloudModels.length > 0) {
+            installedSections.push(makeInstalledSection('Cloud models', installedCloudModels, installedRank));
+            installedRank += installedCloudModels.length;
+        }
+        if (installedLlamaCppModels.length > 0) {
+            installedSections.push(makeInstalledSection('llama.cpp models', installedLlamaCppModels, installedRank));
+            installedRank += installedLlamaCppModels.length;
+        }
 
         content.innerHTML = `
             <div class="dashboard-section">
@@ -8037,6 +8193,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 <div class="split-value">${stats.cloudModels}</div>
                                 <div class="split-label">Cloud</div>
                             </div>
+                            <div class="split-divider"></div>
+                            <div class="split-item">
+                                <div class="split-value">${stats.llamaCppModels}</div>
+                                <div class="split-label">llama.cpp</div>
+                            </div>
                         </div>
                         <div class="stat-label" style="margin-top:var(--space-sm);">Models by Type</div>
                     </div>
@@ -8078,18 +8239,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     <div class="dashboard-section-title" style="margin-bottom:0;">Installed Models</div>
                     ${legacyStorageKeys.length > 0 ? `<button id="cleanLegacyBtn" style="font-size:11px;padding:3px 10px;background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.3);border-radius:4px;cursor:pointer;" title="Remove ${legacyStorageKeys.length} orphaned legacy data entries from a previous version of the app">🧹 Clean up ${legacyStorageKeys.length} legacy entr${legacyStorageKeys.length === 1 ? 'y' : 'ies'}</button>` : ''}
                 </div>
-                <table class="dashboard-table">
-                    <thead>
-                        <tr>
-                            <th>Model</th>
-                            <th>Convs</th>
-                            <th>Messages</th>
-                            <th>Tokens</th>
-                            <th>Avg Speed</th>
-                        </tr>
-                    </thead>
-                    <tbody>${makeModelRows(installedModels)}</tbody>
-                </table>
+                ${installedSections.join('')}
             </div>` : ''}
 
             ${removedModels.length > 0 ? `

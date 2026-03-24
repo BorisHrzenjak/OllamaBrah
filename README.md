@@ -8,11 +8,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.1.0
+## What's New — v1.1.4
 
-- **Startup diagnostics and guided recovery** — OllamaBrah now checks backend readiness on launch and turns broken setup states into clear next-step recovery actions
-- **Smarter document attachments** — PDFs and text/code files are extracted, chunked, and summarized before they reach the model, with better follow-up handling and `llama.cpp` document support
-- **More transparent memory** — memory now has semantic search, inline editing, usage visibility, better deduplication, and cleanup for similar memories
+- **Dashboard now prefers migrated history correctly** — when both legacy and new safe chat-state keys exist, OllamaBrah now uses the migrated entry first so recent usage is not masked by an older empty legacy record
+- **Safer chat-state storage keys** — new model history is saved under a dot-safe key format with legacy fallback, which prevents future dashboard mismatches and keeps old conversations readable
 
 ---
 
@@ -22,7 +21,8 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Ollama** — chat with any locally installed Ollama model
 - **llama.cpp** — run GGUF models directly via `llama-server`; configure binary path, models directory, GPU layers, context size, and server port
 - Document attachments work with `llama.cpp` even when image attachments are unavailable
-- Model switcher with live availability checking
+- Model switcher, model management, and dashboard views with live availability checking plus separate local, cloud, and `llama.cpp` sections
+- Dot-safe model history storage with legacy migration so dashboard and usage stats stay accurate for future model names
 - Startup diagnostics for Ollama, llama.cpp, memory, and voice prerequisites with guided recovery actions
 - Auto-detect context window size per model
 - Override context limit manually

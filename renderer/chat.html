@@ -3824,6 +3824,27 @@
             overflow-y: auto;
         }
 
+        .mgmt-model-section {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .mgmt-model-section + .mgmt-model-section {
+            margin-top: var(--space-sm);
+            padding-top: var(--space-sm);
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        .mgmt-model-section-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 2px 4px;
+        }
+
         .mgmt-model-row {
             display: flex;
             align-items: center;

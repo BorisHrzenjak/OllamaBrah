@@ -1169,8 +1169,8 @@ async function handleOllamaProxy(req, res) {
         });
 
         // Pull requests can take many minutes; cloud models route through external APIs so also need more headroom
-        const reqModelName = req.body?.model || '';
-        const isCloudModelReq = reqModelName.includes(':cloud') || reqModelName.includes('.cloud');
+        const reqModelName = String(req.body?.model || '').toLowerCase();
+        const isCloudModelReq = reqModelName.includes(':cloud') || reqModelName.includes('.cloud') || reqModelName.endsWith('-cloud');
         const OLLAMA_REQUEST_TIMEOUT = ollamaPath.startsWith('/api/pull') ? 1800000
             : isCloudModelReq ? 300000  // 5 min for cloud models (they call external APIs)
             : 60000;
