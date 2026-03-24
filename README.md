@@ -1,5 +1,7 @@
 # OllamaBrah
 
+![OllamaBrah](assets/banner.png)
+
 A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](https://github.com/ggerganov/llama.cpp) models. Built with Electron.
 
 > Ported from the [OllamaBro browser extension](https://github.com/BorisHrzenjak/OllamaBro) — all the same features, now as a standalone desktop app.
