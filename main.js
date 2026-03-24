@@ -8,6 +8,7 @@ const Store = require('electron-store');
 let win;
 let db;
 let store;
+let isCleaningUp = false;
 
 function configureAppPaths() {
     if (app.isPackaged) return;
@@ -164,6 +165,38 @@ async function startProxy() {
         console.log('[main] Proxy server started');
     } catch (err) {
         console.error('[main] Proxy server failed to start:', err);
+    }
+}
+
+async function cleanupAppResources() {
+    if (isCleaningUp) return;
+    isCleaningUp = true;
+
+    try {
+        const { getServerInstance } = require('./proxy/router');
+        const { getWhisperProcess } = require('./proxy/stt');
+        const { getLlamaProcess } = require('./proxy/llm');
+
+        const server = typeof getServerInstance === 'function' ? getServerInstance() : null;
+        const whisperProcess = typeof getWhisperProcess === 'function' ? getWhisperProcess() : null;
+        const llamaProcess = typeof getLlamaProcess === 'function' ? getLlamaProcess() : null;
+
+        if (llamaProcess) {
+            try { llamaProcess.kill(); } catch (err) {}
+        }
+        if (whisperProcess) {
+            try { whisperProcess.kill(); } catch (err) {}
+        }
+        if (server) {
+            await new Promise(resolve => server.close(() => resolve()));
+        }
+    } catch (err) {
+        console.warn('[main] Cleanup warning:', err.message);
+    }
+
+    if (db) {
+        try { db.close(); } catch (err) {}
+        db = null;
     }
 }
 
@@ -398,7 +431,12 @@ app.whenReady().then(async () => {
     });
 });
 
+app.on('before-quit', (event) => {
+    if (isCleaningUp) return;
+    event.preventDefault();
+    cleanupAppResources().finally(() => app.exit(0));
+});
+
 app.on('window-all-closed', () => {
-    if (db) db.close();
     if (process.platform !== 'darwin') app.quit();
 });

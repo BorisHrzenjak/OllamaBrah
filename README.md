@@ -8,10 +8,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.1.10
+## What's New — v1.2.1
 
+- **App shutdown is now cleaner for installs and upgrades** — OllamaBrah explicitly closes its local proxy, Whisper, llama.cpp, and database on quit so Windows installers are less likely to get blocked by a lingering app process
 - **Kokoro now reads full multi-sentence replies again** — the proxy no longer mistakes a completed request body for a cancelled stream, so sentence-by-sentence TTS generation continues until the whole reply is finished or you stop it
-- **Proxy startup now replaces stale old instances** — OllamaBrah shuts down an already-running local proxy before starting the current bundled one, which prevents packaged builds from accidentally reusing outdated TTS code
 
 ---
 
