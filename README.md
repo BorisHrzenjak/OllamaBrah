@@ -8,10 +8,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.1.4
+## What's New — v1.1.5
 
+- **Kokoro TTS works reliably again** — the proxy now loads `kokoro-js` through its Node/CommonJS entry so local voice data resolves correctly during sentence generation
 - **Dashboard now prefers migrated history correctly** — when both legacy and new safe chat-state keys exist, OllamaBrah now uses the migrated entry first so recent usage is not masked by an older empty legacy record
-- **Safer chat-state storage keys** — new model history is saved under a dot-safe key format with legacy fallback, which prevents future dashboard mismatches and keeps old conversations readable
 
 ---
 
@@ -23,6 +23,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Document attachments work with `llama.cpp` even when image attachments are unavailable
 - Model switcher, model management, and dashboard views with live availability checking plus separate local, cloud, and `llama.cpp` sections
 - Dot-safe model history storage with legacy migration so dashboard and usage stats stay accurate for future model names
+- Kokoro TTS via the local proxy with on-demand model caching and sentence streaming playback
 - Startup diagnostics for Ollama, llama.cpp, memory, and voice prerequisites with guided recovery actions
 - Auto-detect context window size per model
 - Override context limit manually

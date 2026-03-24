@@ -174,7 +174,7 @@ async function loadKokoroModel() {
     kokoroLoadError = null;
     console.log('[TTS] Loading Kokoro model (q8, ~86MB first time)...');
     try {
-        const { KokoroTTS } = await import('kokoro-js');
+        const { KokoroTTS } = require('kokoro-js');
         // Redirect model cache to a writable directory outside app.asar
         const { env } = await import('@huggingface/transformers');
         const cacheBase = process.env.USER_DATA_PATH
