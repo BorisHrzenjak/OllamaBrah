@@ -2,6 +2,7 @@
 
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const http = require('http');
@@ -175,11 +176,14 @@ async function loadKokoroModel() {
     console.log('[TTS] Loading Kokoro model (q8, ~86MB first time)...');
     try {
         const { KokoroTTS } = require('kokoro-js');
+        const { env } = require('@huggingface/transformers');
         // Redirect model cache to a writable directory outside app.asar
-        const { env } = await import('@huggingface/transformers');
         const cacheBase = process.env.USER_DATA_PATH
             ? path.join(process.env.USER_DATA_PATH, 'hf_cache')
             : path.join(os.homedir(), '.cache', 'ollama-brah', 'hf_cache');
+        fs.mkdirSync(cacheBase, { recursive: true });
+        env.allowLocalModels = false;
+        env.useFSCache = true;
         env.cacheDir = cacheBase;
         console.log('[TTS] Using cache dir:', cacheBase);
         kokoroTTS = await KokoroTTS.from_pretrained(
@@ -499,7 +503,10 @@ app.post('/api/tts/generate', async (req, res) => {
         let sampleRateSent = false;
         let aborted = false;
 
-        req.on('close', () => { aborted = true; });
+        req.on('aborted', () => { aborted = true; });
+        res.on('close', () => {
+            if (!res.writableEnded) aborted = true;
+        });
 
         for (const sentence of sentences) {
             if (aborted) break;

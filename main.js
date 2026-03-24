@@ -132,7 +132,22 @@ function initStore() {
 
 // ─── Proxy ───────────────────────────────────────────────────────────────────
 
-function startProxy() {
+async function stopExistingProxy() {
+    try {
+        const response = await fetch('http://127.0.0.1:3456/api/shutdown', {
+            method: 'POST',
+            signal: AbortSignal.timeout(1500)
+        });
+        if (response.ok) {
+            console.log('[main] Existing proxy detected, requesting shutdown...');
+            await new Promise(resolve => setTimeout(resolve, 1200));
+        }
+    } catch (err) {
+        // No running proxy, or it is not ours — safe to ignore here.
+    }
+}
+
+async function startProxy() {
     process.env.ALLOWED_ORIGIN = 'electron-app';
     process.env.USER_DATA_PATH = app.getPath('userData');
     process.env.MEMORY_DIR = path.join(app.getPath('userData'), 'memory');
@@ -144,6 +159,7 @@ function startProxy() {
     if (tavilyKey) process.env.TAVILY_API_KEY = tavilyKey;
     if (exaKey)    process.env.EXA_API_KEY    = exaKey;
     try {
+        await stopExistingProxy();
         require('./proxy/server.js');
         console.log('[main] Proxy server started');
     } catch (err) {
@@ -360,10 +376,10 @@ function registerIpcHandlers() {
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
     initDatabase();
     initStore();
-    startProxy();
+    await startProxy();
     registerIpcHandlers();
 
     // Grant microphone permission for voice input

@@ -8,10 +8,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.1.7
+## What's New — v1.1.10
 
-- **Kokoro read-aloud now finishes full replies** — the renderer now buffers the generated Kokoro audio before playback so multi-sentence responses play through reliably until you stop them
-- **Kokoro TTS includes a self-test endpoint** — the local proxy can now verify model loading and voice generation directly, which makes TTS regressions easier to diagnose
+- **Kokoro now reads full multi-sentence replies again** — the proxy no longer mistakes a completed request body for a cancelled stream, so sentence-by-sentence TTS generation continues until the whole reply is finished or you stop it
+- **Proxy startup now replaces stale old instances** — OllamaBrah shuts down an already-running local proxy before starting the current bundled one, which prevents packaged builds from accidentally reusing outdated TTS code
 
 ---
 
