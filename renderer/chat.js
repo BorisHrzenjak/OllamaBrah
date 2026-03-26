@@ -5223,6 +5223,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 extractedCharCount: file.extractedCharCount || null,
                 chunkCount: file.chunkCount || null,
                 pageCount: file.pageCount || null,
+                parser: file.parser || null,
+                truncated: !!file.truncated,
                 chunks: file.chunks || null
             }));
         }
