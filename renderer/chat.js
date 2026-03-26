@@ -2341,6 +2341,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (doc.pageCount) docMeta.push(`${doc.pageCount} pages`);
                     if (doc.chunkCount) docMeta.push(`${doc.chunkCount} chunks`);
                     if (doc.extractedCharCount) docMeta.push(`${Math.round(doc.extractedCharCount / 100) / 10}k chars`);
+                    const processingHint = getAttachmentProcessingHint(doc);
+                    if (processingHint) docMeta.push(processingHint);
+                    if (doc.truncated) docMeta.push('truncated');
                     if (docMeta.length) {
                         const metaSpan = document.createElement('span');
                         metaSpan.className = 'document-filename';
@@ -7550,6 +7553,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         return score;
     }
 
+    function getAttachmentProcessingHint(doc) {
+        const parser = String(doc?.parser || '').toLowerCase();
+        if (!parser) return null;
+        if (parser.includes('ocr')) return 'OCR processed';
+        if (parser.includes('liteparse')) return 'Parsed text';
+        if (parser.includes('pdf-parse')) return 'Fallback parser';
+        return null;
+    }
+
     function buildDocumentContextBlock(doc, query, options = {}) {
         const chunks = Array.isArray(doc.chunks) ? doc.chunks : [];
         const queryTokens = tokenizeAttachmentQuery(query);
@@ -7577,8 +7589,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const headerParts = [`Document: ${doc.fileName}`];
         if (doc.pageCount) headerParts.push(`${doc.pageCount} pages`);
         if (doc.chunkCount) headerParts.push(`${doc.chunkCount} chunks indexed`);
+        const processingHint = getAttachmentProcessingHint(doc);
+        if (processingHint) headerParts.push(processingHint);
 
         const lines = [`[${headerParts.join(' | ')}]`];
+        if (processingHint === 'OCR processed') {
+            lines.push('Note: This content comes from OCR extracted from an uploaded image or image-based document. It may contain recognition errors or miss visual details outside the extracted text.');
+        }
         if (doc.summary) lines.push(`Summary: ${doc.summary}`);
         if (selected.length) {
             lines.push('Relevant excerpts:');
