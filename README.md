@@ -8,10 +8,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.2.1
+## What's New — v1.3.0
 
-- **App shutdown is now cleaner for installs and upgrades** — OllamaBrah explicitly closes its local proxy, Whisper, llama.cpp, and database on quit so Windows installers are less likely to get blocked by a lingering app process
-- **Kokoro now reads full multi-sentence replies again** — the proxy no longer mistakes a completed request body for a cancelled stream, so sentence-by-sentence TTS generation continues until the whole reply is finished or you stop it
+- **Scanned and image-first PDFs are now OCR-readable** — OllamaBrah first tries native PDF extraction, then falls back to screenshot-based OCR for scan-heavy PDFs that used to come through empty
+- **Plain image uploads can now feed text-only models too** — screenshots, photos, and other image attachments are OCR-processed into chunked document context so non-vision models can still use their text
 
 ---
 
@@ -42,6 +42,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Drag & drop file attachments
 - Supported file types: images, PDF, TXT, Markdown, Python, JS, TS, JSON, HTML, CSS, SQL, Shell, YAML, XML, CSV, logs
 - Document attachments are chunked and summarized automatically, with only the most relevant excerpts injected into context on each turn
+- Scanned PDFs and plain image attachments are OCR-processed automatically, so text-only models can use screenshots, photos, and image-based documents too
 - Attached documents stay useful on follow-up questions instead of being pasted in full every time
 - Export full conversations as Markdown
 - Context meter showing token breakdown (system prompt / search / conversation)
@@ -120,3 +121,4 @@ Produces a Windows installer in `/dist`.
 - The internal proxy runs on `localhost:3456` — make sure that port is free
 - Memory feature requires the `nomic-embed-text` model: `ollama pull nomic-embed-text`
 - Voice input requires: `pip install faster-whisper`
+- First OCR use may take longer while English OCR assets are cached locally

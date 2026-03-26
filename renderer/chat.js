@@ -2109,7 +2109,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             };
 
             if (isImage) {
-                // Compress if the image is large
                 let processedFile = file;
                 if (file.size > 2 * 1024 * 1024) {
                     processedFile = await compressImage(file);
@@ -2118,6 +2117,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 result.base64 = await fileToBase64(processedFile);
                 result.previewUrl = URL.createObjectURL(processedFile);
                 result.fileSize = processedFile.size;
+                try {
+                    result = await processDocumentAttachment(processedFile, result);
+                    result.base64 = result.base64 || await fileToBase64(processedFile);
+                    result.previewUrl = result.previewUrl || URL.createObjectURL(processedFile);
+                    result.fileSize = processedFile.size;
+                    result.fileType = 'image';
+                } catch (ocrError) {
+                    console.warn('Image OCR unavailable for upload:', ocrError);
+                }
             } else if (isText || isPdf) {
                 result = await processDocumentAttachment(file, result);
             }
@@ -2295,7 +2303,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             // Separate images and documents
             const images = attachments.filter(a => a.type === 'image' || (a.base64 && a.mimeType?.startsWith('image/')));
-            const documents = attachments.filter(a => a.type === 'document' || (a.textContent && !a.base64));
+            const documents = attachments.filter(a => a.type === 'document' || a.summary || a.chunkCount || a.textContent);
 
             // Render images
             if (images.length > 0) {
@@ -4729,7 +4737,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (isNewFormat) {
                             const isLatestUserMessage = message === latestUserMessage;
                             const imageAttachments = message.attachments.filter(a => a.type === 'image' || a.base64);
-                            const docAttachments = message.attachments.filter(a => a.type === 'document' || a.textContent);
+                            const docAttachments = message.attachments.filter(a => a.type === 'document' || a.summary || a.chunkCount || a.textContent);
 
                             // Add images to API message
                             if (imageAttachments.length > 0 && currentModelBackend !== 'llamacpp') {
@@ -7496,6 +7504,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (isPdfFile(file)) {
             payload.base64 = await fileToBase64(file);
+        } else if (isImageFile(file)) {
+            payload.base64 = seed.base64 || await fileToBase64(file);
         } else {
             payload.textContent = await extractTextContent(file);
         }

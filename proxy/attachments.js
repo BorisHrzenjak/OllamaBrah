@@ -1,6 +1,6 @@
 'use strict';
 
-const { parsePdfBuffer } = require('./document-parser');
+const { parseImageBuffer, parsePdfBuffer } = require('./document-parser');
 
 const MAX_CHUNK_CHARS = 1200;
 const CHUNK_OVERLAP_CHARS = 180;
@@ -95,6 +95,20 @@ async function extractPdfText(base64, fileName) {
     };
 }
 
+async function extractImageText(base64, fileName) {
+    const buffer = Buffer.from(base64, 'base64');
+    const data = await parseImageBuffer(buffer, {
+        fileName,
+        source: 'image-attachment',
+    });
+    return {
+        text: data.text || '',
+        pageCount: data.pageCount || 1,
+        parser: data.parser || 'unknown',
+        truncated: false,
+    };
+}
+
 async function processAttachment(attachment) {
     const mimeType = attachment.mimeType || '';
     let text = attachment.textContent || '';
@@ -111,6 +125,14 @@ async function processAttachment(attachment) {
         pageCount = pdf.pageCount;
         parser = pdf.parser;
         truncated = pdf.truncated;
+    } else if (mimeType.startsWith('image/') || /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i.test(attachment.fileName || '')) {
+        if (!attachment.base64) {
+            throw new Error('Image OCR requires base64 content.');
+        }
+        const image = await extractImageText(attachment.base64, attachment.fileName);
+        text = image.text;
+        pageCount = image.pageCount;
+        parser = image.parser;
     }
 
     const cleaned = cleanText(text);

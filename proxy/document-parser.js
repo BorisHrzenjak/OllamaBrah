@@ -153,6 +153,31 @@ async function ocrImageBuffer(worker, imageBuffer, { fileName, source, pageNum, 
     return text;
 }
 
+async function parseImageBuffer(buffer, options = {}) {
+    const fileName = options.fileName || 'unknown-image';
+    const source = options.source || 'unknown';
+    const ocrLanguage = options.ocrLanguage || DEFAULT_OCR_LANGUAGE;
+    const worker = await createOcrWorker(ocrLanguage);
+
+    try {
+        const text = await ocrImageBuffer(worker, clonePdfBuffer(buffer), {
+            fileName,
+            source,
+            pageNum: 1,
+            ocrLanguage,
+        });
+
+        return {
+            text,
+            pageCount: 1,
+            parser: 'tesseract-image-ocr',
+            truncated: false,
+        };
+    } finally {
+        try { await worker.terminate(); } catch (_) {}
+    }
+}
+
 async function parseWithScreenshotOcr(buffer, { fileName, ocrLanguage, maxPages, source }) {
     const startedAt = now();
     const parser = await getLiteParseInstance({ ocrLanguage, maxPages });
@@ -283,5 +308,6 @@ async function parsePdfBuffer(buffer, options = {}) {
 }
 
 module.exports = {
+    parseImageBuffer,
     parsePdfBuffer,
 };
