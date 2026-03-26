@@ -8,6 +8,7 @@ const memory = require('./memory');
 const diffLib = require('diff');
 const { fetchPageViaJina, fetchBinaryUrl, fetchTavilyResults, heuristicTimeRange } = require('./search');
 const skillsModule = require('./skills');
+const { parsePdfBuffer } = require('./document-parser');
 
 // --- Agent config (updated via POST /api/agent/config) ---
 let agentMaxSteps = parseInt(process.env.AGENT_MAX_STEPS || '15', 10);
@@ -516,10 +517,6 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 const isHttpUrl = /^https?:\/\//i.test(url);
                 const isPdf = /\.pdf(\?.*)?$/i.test(url) || args.type === 'pdf';
                 if (isPdf) {
-                    let pdfParse;
-                    try { pdfParse = require('pdf-parse'); } catch {
-                        return { result: 'pdf-parse is not installed. Run: npm install pdf-parse in proxy_server/', error: true };
-                    }
                     try {
                         let buffer;
                         if (isHttpUrl) {
@@ -528,8 +525,11 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                             if (!isPathAllowed(url)) return { result: 'Path not allowed', error: true };
                             buffer = fs.readFileSync(url);
                         }
-                        const data = await pdfParse(buffer, { max: 20 });
-                        const meta = data.numpages ? `Pages: ${data.numpages}\n\n` : '';
+                        const data = await parsePdfBuffer(buffer, {
+                            fileName: url,
+                            source: 'readUrl',
+                        });
+                        const meta = data.pageCount ? `Pages: ${data.pageCount}\n\n` : '';
                         return { result: (meta + data.text).slice(0, 8000) || '(no text extracted)' };
                     } catch (e) { return { result: 'Error reading PDF: ' + e.message, error: true }; }
                 } else {
