@@ -976,7 +976,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
             'chevron-up': '<polyline points="18 15 12 9 6 15"/>',
             'external-link': '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
-            'pin': '<line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>'
+            'pin': '<line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>',
+            'git-branch': '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/><path d="M6 15a9 9 0 0 0 9-9"/>'
         };
 
         if (icons[iconName]) {
@@ -2286,6 +2287,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         messageDiv.style.position = 'relative';
     }
 
+    function createForkButton(messageDiv) {
+        const forkButton = document.createElement('button');
+        forkButton.classList.add('action-button', 'fork-button');
+        forkButton.title = 'Fork conversation from here';
+        forkButton.appendChild(createLucideIcon('git-branch', 16));
+        forkButton.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (isStreaming) return;
+            const messageIndex = Number.parseInt(messageDiv.dataset.messageIndex || '-1', 10);
+            if (messageIndex < 0) return;
+            await openForkPopover(messageIndex, forkButton);
+        });
+        return forkButton;
+    }
+
     function addMessageToChatUI(sender, initialText, messageClass, modelDataForFilename, attachments = null, messageIndex = -1) {
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', messageClass);
@@ -2397,6 +2413,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const pinButton = createPinButton(messageDiv, messageIndex);
             actionsDiv.appendChild(pinButton);
 
+            actionsDiv.appendChild(createForkButton(messageDiv));
+
             messageDiv.appendChild(actionsDiv);
         }
 
@@ -2464,6 +2482,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const pinButton = createPinButton(messageDiv, messageIndex);
                 actionsDiv.appendChild(pinButton);
             }
+
+            actionsDiv.appendChild(createForkButton(messageDiv));
 
 
             messageDiv.appendChild(actionsDiv);
@@ -2979,12 +2999,219 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     let activeTagPopover = null;
+    let activeForkPopover = null;
 
     function closeTagPopover() {
         if (activeTagPopover) {
             activeTagPopover.remove();
             activeTagPopover = null;
         }
+    }
+
+    function closeForkPopover() {
+        if (activeForkPopover) {
+            activeForkPopover.remove();
+            activeForkPopover = null;
+        }
+    }
+
+    function getCurrentModelDescriptor() {
+        return {
+            name: currentModelName,
+            _backend: currentModelBackend,
+            _path: currentModelBackend === 'llamacpp' ? currentLlamaCppPath : null
+        };
+    }
+
+    function getModelDescriptorKey(model) {
+        if (!model) return '';
+        const backend = model._backend || 'ollama';
+        const path = backend === 'llamacpp' ? (model._path || '') : '';
+        return `${backend}:${model.name || ''}:${path}`;
+    }
+
+    function isSameModelDescriptor(a, b) {
+        return getModelDescriptorKey(a) === getModelDescriptorKey(b);
+    }
+
+    function getForkModelOptions(models = []) {
+        const currentModel = getCurrentModelDescriptor();
+        const deduped = new Map();
+        [currentModel, ...models].forEach(model => {
+            if (!model?.name) return;
+            const normalized = {
+                ...model,
+                _backend: model._backend || 'ollama',
+                _path: model._backend === 'llamacpp' ? (model._path || model.path || null) : null
+            };
+            deduped.set(getModelDescriptorKey(normalized), normalized);
+        });
+
+        const currentKey = getModelDescriptorKey(currentModel);
+        return Array.from(deduped.values()).sort((a, b) => {
+            const aKey = getModelDescriptorKey(a);
+            const bKey = getModelDescriptorKey(b);
+            if (aKey === currentKey) return -1;
+            if (bKey === currentKey) return 1;
+            return a.name.localeCompare(b.name);
+        });
+    }
+
+    function cloneAttachmentForFork(attachment) {
+        if (!attachment || typeof attachment !== 'object') return attachment;
+        const cloned = cloneSerializable(attachment);
+        if (!cloned || typeof cloned !== 'object') return cloned;
+        delete cloned.base64;
+        return cloned;
+    }
+
+    function cloneMessageForFork(message) {
+        if (!message || typeof message !== 'object') return message;
+        const cloned = {
+            role: message.role,
+            content: typeof message.content === 'string' ? message.content : ''
+        };
+
+        if (message.metadata !== undefined) {
+            cloned.metadata = cloneSerializable(message.metadata);
+        }
+        if (message.thinking !== undefined) {
+            cloned.thinking = message.thinking;
+        }
+        if (message.attachments) {
+            cloned.attachments = message.attachments.map(cloneAttachmentForFork);
+        }
+        if (message.images) {
+            cloned.images = message.images.map(cloneAttachmentForFork);
+        }
+        if (message.pinned) {
+            cloned.pinned = true;
+        }
+
+        return cloned;
+    }
+
+    async function forkConversationFromMessage(messageIndex, targetModel) {
+        if (isStreaming || messageIndex < 0 || !targetModel?.name) return;
+
+        const sourceModelData = await loadModelChatState(currentModelName);
+        const sourceConversationId = sourceModelData.activeConversationId;
+        const sourceConversation = sourceModelData.conversations[sourceConversationId];
+        if (!sourceConversation || !Array.isArray(sourceConversation.messages)) return;
+        if (messageIndex >= sourceConversation.messages.length) return;
+
+        const sourceMessages = sourceConversation.messages
+            .slice(0, messageIndex + 1)
+            .map(cloneMessageForFork);
+
+        const targetModelData = await loadModelChatState(targetModel.name);
+        const newConversationId = generateUUID();
+        const sourceSummary = sourceConversation.summary || getConversationSummary(sourceConversation.messages);
+        const forkSummary = sourceSummary.startsWith('⑂ ') ? sourceSummary : `⑂ ${sourceSummary}`;
+
+        targetModelData.conversations[newConversationId] = {
+            id: newConversationId,
+            messages: sourceMessages,
+            summary: forkSummary,
+            lastMessageTime: Date.now(),
+            forkedFrom: {
+                model: currentModelName,
+                backend: currentModelBackend,
+                conversationId: sourceConversationId,
+                messageIndex: messageIndex
+            }
+        };
+        targetModelData.activeConversationId = newConversationId;
+
+        await saveModelChatState(targetModel.name, targetModelData);
+
+        const currentModel = getCurrentModelDescriptor();
+        if (isSameModelDescriptor(targetModel, currentModel)) {
+            await switchActiveConversation(currentModelName, newConversationId);
+            return;
+        }
+
+        if (targetModel._backend === 'llamacpp') {
+            await switchToLlamaCpp(targetModel);
+            return;
+        }
+
+        await switchModel(targetModel.name);
+    }
+
+    async function openForkPopover(messageIndex, anchorEl) {
+        closeForkPopover();
+        const models = getForkModelOptions(await fetchAvailableModels());
+        if (!models.length) return;
+
+        const popover = document.createElement('div');
+        popover.className = 'fork-popover';
+
+        const title = document.createElement('div');
+        title.className = 'fork-popover-title';
+        title.textContent = 'Fork to model:';
+        popover.appendChild(title);
+
+        const list = document.createElement('div');
+        list.className = 'fork-popover-list';
+
+        const currentModel = getCurrentModelDescriptor();
+        models.forEach(model => {
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.className = 'fork-popover-option';
+            if (isSameModelDescriptor(model, currentModel)) {
+                option.classList.add('is-current');
+            }
+
+            const radio = document.createElement('span');
+            radio.className = 'fork-popover-radio';
+            radio.textContent = isSameModelDescriptor(model, currentModel) ? '●' : '○';
+
+            const label = document.createElement('span');
+            label.className = 'fork-popover-label';
+            label.textContent = model.name;
+
+            const meta = document.createElement('span');
+            meta.className = 'fork-popover-meta';
+            if (isSameModelDescriptor(model, currentModel)) {
+                meta.textContent = 'same model';
+            } else if (model._backend === 'llamacpp') {
+                meta.textContent = 'llama.cpp';
+            } else if (isCloudModel(model.name)) {
+                meta.textContent = 'cloud';
+            } else {
+                meta.textContent = 'local';
+            }
+
+            option.append(radio, label, meta);
+            option.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                closeForkPopover();
+                await forkConversationFromMessage(messageIndex, model);
+            });
+            list.appendChild(option);
+        });
+
+        popover.appendChild(list);
+        document.body.appendChild(popover);
+        activeForkPopover = popover;
+
+        const rect = anchorEl.getBoundingClientRect();
+        popover.style.top = (rect.bottom + 6) + 'px';
+        const width = Math.min(280, window.innerWidth - 8);
+        popover.style.width = width + 'px';
+        const left = Math.min(rect.left, window.innerWidth - width - 4);
+        popover.style.left = Math.max(4, left) + 'px';
+
+        setTimeout(() => {
+            document.addEventListener('click', function handler(e) {
+                if (!popover.contains(e.target) && e.target !== anchorEl) {
+                    closeForkPopover();
+                    document.removeEventListener('click', handler);
+                }
+            });
+        }, 0);
     }
 
     function openTagEditor(convId, anchorEl, modelData) {

@@ -8,10 +8,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.4.0
+## What's New — v1.5.0
 
-- **Regenerate is now non-destructive** — previous assistant drafts are preserved as response versions instead of being discarded, so you can compare and revisit earlier replies
-- **Assistant messages can be version-swapped later** — versioned replies get inline arrows in the metadata bar, and the selected version persists across app restarts
+- **Conversations can now fork from any message** — user and assistant messages now expose a fork action so you can branch from any point in a thread without overwriting the original
+- **Forks can jump across models instantly** — pick the current model, another Ollama model, or a `llama.cpp` model from the inline popover and continue from the copied checkpoint
 
 ---
 
@@ -35,6 +35,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 ### Chat
 - Full streaming responses with stop button
 - Non-destructive regenerate with per-message response version history
+- Fork conversations from any message, including into a different model
 - Thinking/reasoning model support — collapsible reasoning blocks (DeepSeek, QwQ, etc.)
 - Multiple conversations per model with search and tag filtering
 - Message history navigation with `↑` / `↓`
