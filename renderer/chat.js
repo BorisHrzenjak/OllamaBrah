@@ -2499,17 +2499,90 @@ document.addEventListener('DOMContentLoaded', async () => {
         scrollToBottom(false);
     }
 
-    // Helper function to add metadata to an existing message
-    function addMetadataToMessage(messageDiv, metadata) {
-        if (!metadata || (!metadata.tokens && !metadata.promptTokens)) return;
+    function cloneSerializable(value) {
+        if (value === undefined) return undefined;
+        return JSON.parse(JSON.stringify(value));
+    }
 
-        // Check if metadata already exists
-        if (messageDiv.querySelector('.message-metadata')) return;
+    function normalizeMessageVersion(version) {
+        if (!version || typeof version !== 'object') {
+            return { content: '' };
+        }
 
-        const metadataDiv = document.createElement('div');
-        metadataDiv.className = 'message-metadata';
+        const normalized = {
+            content: typeof version.content === 'string' ? version.content : ''
+        };
 
-        // Format metadata items with titles for tooltips
+        if (typeof version.thinking === 'string') {
+            normalized.thinking = version.thinking;
+        }
+
+        if (version.metadata !== undefined) {
+            normalized.metadata = cloneSerializable(version.metadata);
+        }
+
+        return normalized;
+    }
+
+    function getActiveVersionIndex(message) {
+        const alternativeCount = Array.isArray(message?.alternatives) ? message.alternatives.length : 0;
+        if (!Number.isInteger(message?.activeVersionIndex)) {
+            return alternativeCount;
+        }
+        return Math.min(Math.max(message.activeVersionIndex, 0), alternativeCount);
+    }
+
+    function getAllMessageVersions(message) {
+        const alternatives = Array.isArray(message?.alternatives)
+            ? message.alternatives.map(normalizeMessageVersion)
+            : [];
+        const activeVersion = normalizeMessageVersion(message);
+        const activeIndex = getActiveVersionIndex(message);
+        const versions = alternatives.slice();
+        versions.splice(activeIndex, 0, activeVersion);
+        return versions;
+    }
+
+    function applyMessageVersionState(message, versions, activeIndex) {
+        const normalizedVersions = Array.isArray(versions)
+            ? versions.map(normalizeMessageVersion)
+            : [normalizeMessageVersion(message)];
+        if (!normalizedVersions.length) return;
+
+        const safeActiveIndex = Math.min(Math.max(activeIndex, 0), normalizedVersions.length - 1);
+        const activeVersion = normalizedVersions[safeActiveIndex];
+        const alternatives = normalizedVersions.filter((_, index) => index !== safeActiveIndex);
+
+        message.content = activeVersion.content;
+
+        if (activeVersion.thinking !== undefined) {
+            message.thinking = activeVersion.thinking;
+        } else {
+            delete message.thinking;
+        }
+
+        if (activeVersion.metadata !== undefined) {
+            message.metadata = cloneSerializable(activeVersion.metadata);
+        } else {
+            delete message.metadata;
+        }
+
+        if (alternatives.length > 0) {
+            message.alternatives = alternatives.map(normalizeMessageVersion);
+            if (safeActiveIndex !== alternatives.length) {
+                message.activeVersionIndex = safeActiveIndex;
+            } else {
+                delete message.activeVersionIndex;
+            }
+        } else {
+            delete message.alternatives;
+            delete message.activeVersionIndex;
+        }
+    }
+
+    function buildMessageMetadataItems(metadata) {
+        if (!metadata) return [];
+
         const items = [];
 
         if (metadata.tokens) {
@@ -2560,7 +2633,67 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         }
 
-        items.forEach((item, index) => {
+        return items;
+    }
+
+    function renderMessageMetadata(messageDiv, message, messageIndex = -1) {
+        if (!messageDiv) return;
+
+        const existing = messageDiv.querySelector('.message-metadata');
+        if (existing) existing.remove();
+
+        const metadataItems = buildMessageMetadataItems(message?.metadata);
+        const hasAlternatives = Array.isArray(message?.alternatives) && message.alternatives.length > 0;
+
+        if (!hasAlternatives && metadataItems.length === 0) return;
+
+        const metadataDiv = document.createElement('div');
+        metadataDiv.className = 'message-metadata';
+
+        if (hasAlternatives) {
+            const versions = getAllMessageVersions(message);
+            const activeIndex = getActiveVersionIndex(message);
+
+            const navigator = document.createElement('div');
+            navigator.className = 'version-navigator';
+
+            const prevButton = document.createElement('button');
+            prevButton.className = 'version-nav-button';
+            prevButton.title = 'Show previous version';
+            prevButton.disabled = activeIndex <= 0;
+            prevButton.appendChild(createLucideIcon('arrow-left', 12));
+            prevButton.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                await swapAssistantMessageVersion(messageIndex, activeIndex - 1);
+            });
+
+            const counter = document.createElement('span');
+            counter.className = 'version-counter';
+            counter.textContent = `${activeIndex + 1} / ${versions.length}`;
+            counter.title = `Viewing version ${activeIndex + 1} of ${versions.length}`;
+
+            const nextButton = document.createElement('button');
+            nextButton.className = 'version-nav-button';
+            nextButton.title = 'Show next version';
+            nextButton.disabled = activeIndex >= versions.length - 1;
+            nextButton.appendChild(createLucideIcon('arrow-right', 12));
+            nextButton.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                await swapAssistantMessageVersion(messageIndex, activeIndex + 1);
+            });
+
+            navigator.append(prevButton, counter, nextButton);
+            metadataDiv.appendChild(navigator);
+
+            if (metadataItems.length > 0) {
+                const divider = document.createElement('span');
+                divider.className = 'metadata-divider';
+                divider.textContent = '·';
+                metadataDiv.appendChild(divider);
+            }
+        }
+
+        metadataItems.forEach((item, index) => {
             const itemSpan = document.createElement('span');
             itemSpan.className = 'metadata-item';
             itemSpan.title = item.title;
@@ -2570,8 +2703,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             itemSpan.appendChild(textSpan);
             metadataDiv.appendChild(itemSpan);
 
-            // Add divider between items
-            if (index < items.length - 1) {
+            if (index < metadataItems.length - 1) {
                 const divider = document.createElement('span');
                 divider.className = 'metadata-divider';
                 divider.textContent = '·';
@@ -2580,6 +2712,55 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         messageDiv.appendChild(metadataDiv);
+    }
+
+    function refreshAssistantMessageInUI(messageIndex, message) {
+        const messageDiv = chatContainer.querySelector(`.bot-message[data-message-index="${messageIndex}"]`);
+        if (!messageDiv) return false;
+
+        const textContentDiv = messageDiv.querySelector('.message-text-content');
+        if (!textContentDiv) return false;
+
+        const fullMessage = typeof message.content === 'string' ? message.content : '';
+        textContentDiv.innerHTML = '';
+        textContentDiv.appendChild(renderMarkdownWithThinking(fullMessage));
+        textContentDiv.dataset.fullMessage = fullMessage;
+        messageDiv.dataset.messageIndex = String(messageIndex);
+
+        renderMessageMetadata(messageDiv, message, messageIndex);
+
+        const existingMemoryCard = messageDiv.querySelector('.memory-used-card');
+        if (existingMemoryCard) existingMemoryCard.remove();
+        if (Array.isArray(message?.metadata?.memoryUsed) && message.metadata.memoryUsed.length) {
+            addMemoryUsageToMessage(messageDiv, message.metadata.memoryUsed);
+        }
+
+        return true;
+    }
+
+    async function swapAssistantMessageVersion(messageIndex, targetIndex) {
+        if (isStreaming || messageIndex < 0) return;
+
+        const modelData = await loadModelChatState(currentModelName);
+        const activeConvId = modelData.activeConversationId;
+        if (!activeConvId || !modelData.conversations[activeConvId]) return;
+
+        const conversation = modelData.conversations[activeConvId];
+        const message = conversation.messages[messageIndex];
+        if (!message || message.role !== 'assistant') return;
+
+        const versions = getAllMessageVersions(message);
+        if (targetIndex < 0 || targetIndex >= versions.length) return;
+
+        applyMessageVersionState(message, versions, targetIndex);
+
+        await saveModelChatState(currentModelName, modelData);
+
+        if (!refreshAssistantMessageInUI(messageIndex, message)) {
+            displayConversationMessages(modelData, activeConvId);
+        }
+
+        await updateContextIndicator(conversation.messages, modelData.systemPrompt, modelData);
     }
 
     async function displayConversationMessages(modelData, conversationId) {
@@ -2628,9 +2809,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 );
 
                 // Add metadata to existing bot messages that have it stored
-                if (msg.role === 'assistant' && msg.metadata && textContentDiv && textContentDiv.messageDiv) {
-                    addMetadataToMessage(textContentDiv.messageDiv, msg.metadata);
-                    if (Array.isArray(msg.metadata.memoryUsed) && msg.metadata.memoryUsed.length) {
+                if (msg.role === 'assistant' && textContentDiv && textContentDiv.messageDiv) {
+                    renderMessageMetadata(textContentDiv.messageDiv, msg, startIndex + i);
+                    if (Array.isArray(msg.metadata?.memoryUsed) && msg.metadata.memoryUsed.length) {
                         addMemoryUsageToMessage(textContentDiv.messageDiv, msg.metadata.memoryUsed);
                     }
                 }
@@ -4670,7 +4851,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         closeClearContextModal();
     }
 
-    async function triggerLLMCompletion(modelData) {
+    async function triggerLLMCompletion(modelData, responseVersionState = null) {
         const activeConvId = modelData.activeConversationId;
         const currentConversation = modelData.conversations[activeConvId];
 
@@ -4849,9 +5030,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (botMessageDiv) botMessageDiv.classList.remove('streaming');
 
                 const messageToSave = { role: 'assistant', content: finalText || '*(Agent response — see steps above)*' };
+                if (Array.isArray(responseVersionState?.alternatives) && responseVersionState.alternatives.length) {
+                    messageToSave.alternatives = responseVersionState.alternatives.map(normalizeMessageVersion);
+                }
                 currentConversation.messages.push(messageToSave);
                 currentConversation.summary = getConversationSummary(currentConversation.messages);
                 currentConversation.lastMessageTime = Date.now();
+                const savedMessageIndex = currentConversation.messages.length - 1;
+                botMessageDiv.dataset.messageIndex = String(savedMessageIndex);
+                renderMessageMetadata(botMessageDiv, messageToSave, savedMessageIndex);
 
                 // Auto-extract memories from agent exchange (fire-and-forget)
                 if ((memoryEnabled || memoryAutoExtract) && lastUserMsg && finalText) {
@@ -5059,14 +5246,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 botTextElement.dataset.fullMessage = displayText;
             }
 
-            // Add metadata display to the message
-            if (messageMetadata && botMessageDiv) {
-                addMetadataToMessage(botMessageDiv, messageMetadata);
-            }
-            if (memoryUsageMeta?.used?.length && botMessageDiv) {
-                addMemoryUsageToMessage(botMessageDiv, memoryUsageMeta.used);
-            }
-
             // Build final message with thinking if present
             let finalBotMessageToSave = '';
             if (hasThinking && accumulatedThinking) {
@@ -5081,6 +5260,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (messageMetadata) {
                 messageToSave.metadata = messageMetadata;
             }
+            if (Array.isArray(responseVersionState?.alternatives) && responseVersionState.alternatives.length) {
+                messageToSave.alternatives = responseVersionState.alternatives.map(normalizeMessageVersion);
+            }
             if (memoryUsageMeta?.used?.length) {
                 messageToSave.metadata = {
                     ...(messageToSave.metadata || {}),
@@ -5090,6 +5272,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentConversation.messages.push(messageToSave);
             currentConversation.summary = getConversationSummary(currentConversation.messages);
             currentConversation.lastMessageTime = Date.now();
+            const savedMessageIndex = currentConversation.messages.length - 1;
+            botMessageDiv.dataset.messageIndex = String(savedMessageIndex);
+            renderMessageMetadata(botMessageDiv, messageToSave, savedMessageIndex);
+            if (memoryUsageMeta?.used?.length && botMessageDiv) {
+                addMemoryUsageToMessage(botMessageDiv, memoryUsageMeta.used);
+            }
 
             // Auto-extract memories from this exchange (fire-and-forget)
             if ((memoryEnabled || memoryAutoExtract) && lastUserMsg) {
@@ -5105,9 +5293,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.log('Request aborted by user');
                 const partialContent = botTextElement ? (botTextElement.dataset.fullMessage || '').trim() : '';
                 if (partialContent) {
-                    currentConversation.messages.push({ role: 'assistant', content: partialContent });
+                    const partialMessage = { role: 'assistant', content: partialContent };
+                    if (Array.isArray(responseVersionState?.alternatives) && responseVersionState.alternatives.length) {
+                        partialMessage.alternatives = responseVersionState.alternatives.map(normalizeMessageVersion);
+                    }
+                    currentConversation.messages.push(partialMessage);
                     currentConversation.summary = getConversationSummary(currentConversation.messages);
                     currentConversation.lastMessageTime = Date.now();
+                    const savedMessageIndex = currentConversation.messages.length - 1;
+                    botMessageDiv.dataset.messageIndex = String(savedMessageIndex);
+                    renderMessageMetadata(botMessageDiv, partialMessage, savedMessageIndex);
                 }
             } else {
                 console.error('Error in triggerLLMCompletion:', error);
@@ -5129,8 +5324,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 updateBotMessageInUI(botTextElement, `\n\n[Error: ${errorMessage}]`);
                 const currentBotContent = botTextElement.dataset.fullMessage || botTextElement.textContent || '';
-                currentConversation.messages.push({ role: 'assistant', content: currentBotContent });
+                const errorMessageToSave = { role: 'assistant', content: currentBotContent };
+                if (Array.isArray(responseVersionState?.alternatives) && responseVersionState.alternatives.length) {
+                    errorMessageToSave.alternatives = responseVersionState.alternatives.map(normalizeMessageVersion);
+                }
+                currentConversation.messages.push(errorMessageToSave);
                 currentConversation.lastMessageTime = Date.now();
+                const savedMessageIndex = currentConversation.messages.length - 1;
+                botMessageDiv.dataset.messageIndex = String(savedMessageIndex);
+                renderMessageMetadata(botMessageDiv, errorMessageToSave, savedMessageIndex);
             }
         } finally {
             console.log('triggerLLMCompletion finally block completed');
@@ -5343,11 +5545,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const messages = conversation.messages;
         if (messages.length === 0 || messages[messages.length - 1].role !== 'assistant') return;
 
+        const previousVersions = getAllMessageVersions(messages[messages.length - 1]);
+
         conversation.messages = messages.slice(0, messages.length - 1);
         conversation.lastMessageTime = Date.now();
         await saveModelChatState(currentModelName, modelData);
         displayConversationMessages(modelData, activeConvId);
-        await triggerLLMCompletion(modelData);
+        await triggerLLMCompletion(modelData, { alternatives: previousVersions });
     }
 
     function updateRegenerateButton() {

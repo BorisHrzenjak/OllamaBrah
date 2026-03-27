@@ -2576,6 +2576,7 @@
         .message-metadata {
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: var(--space-sm);
             margin-top: var(--space-sm);
             padding-top: var(--space-sm);
@@ -2608,6 +2609,51 @@
 
         .metadata-divider {
             color: var(--border);
+        }
+
+        .version-navigator {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .version-nav-button {
+            width: 20px;
+            height: 20px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .version-nav-button:hover:not(:disabled) {
+            color: var(--text-primary);
+            border-color: var(--accent);
+            background: var(--accent-subtle);
+        }
+
+        .version-nav-button:disabled {
+            opacity: 0.35;
+            cursor: default;
+        }
+
+        .version-nav-button .lucide,
+        .version-nav-button svg {
+            width: 12px;
+            height: 12px;
+        }
+
+        .version-counter {
+            min-width: 38px;
+            text-align: center;
+            color: var(--text-secondary);
+            font-variant-numeric: tabular-nums;
         }
 
         /* Scrollbar */

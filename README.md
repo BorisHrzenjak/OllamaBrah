@@ -8,10 +8,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.3.0
+## What's New — v1.4.0
 
-- **Scanned and image-first PDFs are now OCR-readable** — OllamaBrah first tries native PDF extraction, then falls back to screenshot-based OCR for scan-heavy PDFs that used to come through empty
-- **Plain image uploads can now feed text-only models too** — screenshots, photos, and other image attachments are OCR-processed into chunked document context so non-vision models can still use their text
+- **Regenerate is now non-destructive** — previous assistant drafts are preserved as response versions instead of being discarded, so you can compare and revisit earlier replies
+- **Assistant messages can be version-swapped later** — versioned replies get inline arrows in the metadata bar, and the selected version persists across app restarts
 
 ---
 
@@ -34,6 +34,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ### Chat
 - Full streaming responses with stop button
+- Non-destructive regenerate with per-message response version history
 - Thinking/reasoning model support — collapsible reasoning blocks (DeepSeek, QwQ, etc.)
 - Multiple conversations per model with search and tag filtering
 - Message history navigation with `↑` / `↓`
