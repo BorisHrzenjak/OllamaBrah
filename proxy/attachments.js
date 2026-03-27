@@ -1,6 +1,6 @@
 'use strict';
 
-const pdfParse = require('pdf-parse');
+const { parseImageBuffer, parsePdfBuffer } = require('./document-parser');
 
 const MAX_CHUNK_CHARS = 1200;
 const CHUNK_OVERLAP_CHARS = 180;
@@ -81,12 +81,31 @@ function chunkText(text) {
     return chunks;
 }
 
-async function extractPdfText(base64) {
+async function extractPdfText(base64, fileName) {
     const buffer = Buffer.from(base64, 'base64');
-    const data = await pdfParse(buffer, { max: 0 });
+    const data = await parsePdfBuffer(buffer, {
+        fileName,
+        source: 'attachment',
+    });
     return {
         text: data.text || '',
-        pageCount: data.numpages || null,
+        pageCount: data.pageCount || null,
+        parser: data.parser || 'unknown',
+        truncated: !!data.truncated,
+    };
+}
+
+async function extractImageText(base64, fileName) {
+    const buffer = Buffer.from(base64, 'base64');
+    const data = await parseImageBuffer(buffer, {
+        fileName,
+        source: 'image-attachment',
+    });
+    return {
+        text: data.text || '',
+        pageCount: data.pageCount || 1,
+        parser: data.parser || 'unknown',
+        truncated: false,
     };
 }
 
@@ -94,21 +113,30 @@ async function processAttachment(attachment) {
     const mimeType = attachment.mimeType || '';
     let text = attachment.textContent || '';
     let pageCount = null;
+    let parser = null;
+    let truncated = false;
 
     if (mimeType === 'application/pdf' || /\.pdf$/i.test(attachment.fileName || '')) {
         if (!attachment.base64) {
             throw new Error('PDF processing requires base64 content.');
         }
-        const pdf = await extractPdfText(attachment.base64);
+        const pdf = await extractPdfText(attachment.base64, attachment.fileName);
         text = pdf.text;
         pageCount = pdf.pageCount;
+        parser = pdf.parser;
+        truncated = pdf.truncated;
+    } else if (mimeType.startsWith('image/') || /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i.test(attachment.fileName || '')) {
+        if (!attachment.base64) {
+            throw new Error('Image OCR requires base64 content.');
+        }
+        const image = await extractImageText(attachment.base64, attachment.fileName);
+        text = image.text;
+        pageCount = image.pageCount;
+        parser = image.parser;
     }
 
     const cleaned = cleanText(text);
     if (!cleaned) {
-        if (mimeType === 'application/pdf' || /\.pdf$/i.test(attachment.fileName || '')) {
-            throw new Error('No readable text could be extracted from this PDF. It is likely a scanned or image-only PDF, and OCR is not supported yet.');
-        }
         throw new Error('No readable text could be extracted from this document.');
     }
 
@@ -123,6 +151,8 @@ async function processAttachment(attachment) {
         extractedCharCount: cleaned.length,
         chunkCount: chunks.length,
         pageCount,
+        parser,
+        truncated,
         chunks,
     };
 }

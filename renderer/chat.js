@@ -2109,7 +2109,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             };
 
             if (isImage) {
-                // Compress if the image is large
                 let processedFile = file;
                 if (file.size > 2 * 1024 * 1024) {
                     processedFile = await compressImage(file);
@@ -2118,6 +2117,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 result.base64 = await fileToBase64(processedFile);
                 result.previewUrl = URL.createObjectURL(processedFile);
                 result.fileSize = processedFile.size;
+                try {
+                    result = await processDocumentAttachment(processedFile, result);
+                    result.base64 = result.base64 || await fileToBase64(processedFile);
+                    result.previewUrl = result.previewUrl || URL.createObjectURL(processedFile);
+                    result.fileSize = processedFile.size;
+                    result.fileType = 'image';
+                } catch (ocrError) {
+                    console.warn('Image OCR unavailable for upload:', ocrError);
+                }
             } else if (isText || isPdf) {
                 result = await processDocumentAttachment(file, result);
             }
@@ -2295,7 +2303,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             // Separate images and documents
             const images = attachments.filter(a => a.type === 'image' || (a.base64 && a.mimeType?.startsWith('image/')));
-            const documents = attachments.filter(a => a.type === 'document' || (a.textContent && !a.base64));
+            const documents = attachments.filter(a => a.type === 'document' || a.summary || a.chunkCount || a.textContent);
 
             // Render images
             if (images.length > 0) {
@@ -2333,6 +2341,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (doc.pageCount) docMeta.push(`${doc.pageCount} pages`);
                     if (doc.chunkCount) docMeta.push(`${doc.chunkCount} chunks`);
                     if (doc.extractedCharCount) docMeta.push(`${Math.round(doc.extractedCharCount / 100) / 10}k chars`);
+                    const processingHint = getAttachmentProcessingHint(doc);
+                    if (processingHint) docMeta.push(processingHint);
+                    if (doc.truncated) docMeta.push('truncated');
                     if (docMeta.length) {
                         const metaSpan = document.createElement('span');
                         metaSpan.className = 'document-filename';
@@ -4729,7 +4740,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (isNewFormat) {
                             const isLatestUserMessage = message === latestUserMessage;
                             const imageAttachments = message.attachments.filter(a => a.type === 'image' || a.base64);
-                            const docAttachments = message.attachments.filter(a => a.type === 'document' || a.textContent);
+                            const docAttachments = message.attachments.filter(a => a.type === 'document' || a.summary || a.chunkCount || a.textContent);
 
                             // Add images to API message
                             if (imageAttachments.length > 0 && currentModelBackend !== 'llamacpp') {
@@ -5212,6 +5223,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 extractedCharCount: file.extractedCharCount || null,
                 chunkCount: file.chunkCount || null,
                 pageCount: file.pageCount || null,
+                parser: file.parser || null,
+                truncated: !!file.truncated,
                 chunks: file.chunks || null
             }));
         }
@@ -7496,6 +7509,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (isPdfFile(file)) {
             payload.base64 = await fileToBase64(file);
+        } else if (isImageFile(file)) {
+            payload.base64 = seed.base64 || await fileToBase64(file);
         } else {
             payload.textContent = await extractTextContent(file);
         }
@@ -7540,6 +7555,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         return score;
     }
 
+    function getAttachmentProcessingHint(doc) {
+        const parser = String(doc?.parser || '').toLowerCase();
+        if (!parser) return null;
+        if (parser.includes('ocr')) return 'OCR processed';
+        if (parser.includes('liteparse')) return 'Parsed text';
+        if (parser.includes('pdf-parse')) return 'Fallback parser';
+        return null;
+    }
+
     function buildDocumentContextBlock(doc, query, options = {}) {
         const chunks = Array.isArray(doc.chunks) ? doc.chunks : [];
         const queryTokens = tokenizeAttachmentQuery(query);
@@ -7567,8 +7591,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const headerParts = [`Document: ${doc.fileName}`];
         if (doc.pageCount) headerParts.push(`${doc.pageCount} pages`);
         if (doc.chunkCount) headerParts.push(`${doc.chunkCount} chunks indexed`);
+        const processingHint = getAttachmentProcessingHint(doc);
+        if (processingHint) headerParts.push(processingHint);
 
         const lines = [`[${headerParts.join(' | ')}]`];
+        if (processingHint === 'OCR processed') {
+            lines.push('Note: This content comes from OCR extracted from an uploaded image or image-based document. It may contain recognition errors or miss visual details outside the extracted text.');
+        }
         if (doc.summary) lines.push(`Summary: ${doc.summary}`);
         if (selected.length) {
             lines.push('Relevant excerpts:');
