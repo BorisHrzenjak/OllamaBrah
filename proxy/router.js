@@ -9,6 +9,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 const memory = require('./memory');
 const { handleProcessAttachments } = require('./attachments');
+const { fetchOllama } = require('./ollama');
 
 const {
     handleSkillsList,
@@ -54,7 +55,6 @@ const {
 } = require('./llm');
 
 const PORT = 3456;
-const OLLAMA_API_BASE_URL = 'http://localhost:11434';
 const extensionOrigin = 'chrome-extension://gkpfpdekobmonacdgjgbfehilnloaacm';
 
 function normalizeFactText(text) {
@@ -247,7 +247,7 @@ async function getOllamaDiagnostics() {
     };
 
     try {
-        const resp = await fetch(`${OLLAMA_API_BASE_URL}/api/tags`, {
+        const resp = await fetchOllama('/api/tags', {
             signal: AbortSignal.timeout(4000)
         });
 
@@ -755,22 +755,18 @@ app.post('/api/memory/extract', async (req, res) => {
                 stream: false,
                 options: { temperature: 0 }
             });
-            const req2 = http.request({
-                hostname: 'localhost', port: 11434, path: '/api/chat', method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-            }, (r) => {
-                let raw = '';
-                r.on('data', d => { raw += d; });
-                r.on('end', () => {
-                    try { resolve(JSON.parse(raw).message?.content || ''); }
-                    catch { reject(new Error('Bad Ollama response')); }
-                });
-                r.on('error', reject);
+            fetchOllama('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                signal: AbortSignal.timeout(30000)
+            }).then(async (r) => {
+                const raw = await r.text();
+                try { resolve(JSON.parse(raw).message?.content || ''); }
+                catch { reject(new Error('Bad Ollama response')); }
+            }).catch(err => {
+                reject(err.name === 'TimeoutError' ? new Error('Extraction timed out') : err);
             });
-            req2.setTimeout(30000, () => { req2.destroy(); reject(new Error('Extraction timed out')); });
-            req2.on('error', reject);
-            req2.write(payload);
-            req2.end();
         });
 
         // Pull out the first JSON array from the response

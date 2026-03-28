@@ -24,6 +24,7 @@ const {
     getEnabledTools,
     getAgentMaxSteps,
 } = require('./tools');
+const { fetchOllama, resolveOllamaBaseUrl } = require('./ollama');
 
 // Resolve paths that may live in app.asar.unpacked when packaged
 function unpackedPath(...segments) {
@@ -34,8 +35,6 @@ function unpackedPath(...segments) {
 }
 
 const PORT = 3456;
-const OLLAMA_API_BASE_URL = 'http://localhost:11434';
-
 // --- llama.cpp state ---
 let llamaProcess = null;
 let llamaCurrentModel = null;
@@ -548,21 +547,13 @@ async function getModelContextLimit(model) {
     if (modelContextLimitCache.has(model)) return modelContextLimitCache.get(model);
     try {
         const body = JSON.stringify({ model });
-        const info = await new Promise((resolve, reject) => {
-            const req = http.request({
-                hostname: 'localhost', port: 11434, path: '/api/show', method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-            }, (r) => {
-                let raw = '';
-                r.on('data', d => raw += d);
-                r.on('end', () => { try { resolve(JSON.parse(raw)); } catch { reject(new Error('Bad response')); } });
-                r.on('error', reject);
-            });
-            req.setTimeout(5000, () => { req.destroy(); reject(new Error('Timeout')); });
-            req.on('error', reject);
-            req.write(body);
-            req.end();
+        const resp = await fetchOllama('/api/show', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            signal: AbortSignal.timeout(5000)
         });
+        const info = await resp.json();
         // Ollama 0.1.40+ exposes context_length in model_info under an architecture-specific key
         // (e.g. llama.context_length, qwen2.context_length, phi3.context_length, gemma.context_length)
         const arch = info.model_info?.['general.architecture'];
@@ -586,23 +577,18 @@ async function callOllamaSync(model, userPrompt, timeoutMs = 30000) {
         stream: false,
         options: { temperature: 0 }
     });
-    return new Promise((resolve, reject) => {
-        const req = http.request({
-            hostname: 'localhost', port: 11434, path: '/api/chat', method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-        }, (r) => {
-            let raw = '';
-            r.on('data', d => raw += d);
-            r.on('end', () => {
-                try { resolve(JSON.parse(raw).message?.content || ''); }
-                catch { reject(new Error('Bad Ollama response')); }
-            });
-            r.on('error', reject);
-        });
-        const timer = setTimeout(() => { req.destroy(); reject(new Error('Sync call timed out')); }, timeoutMs);
-        req.on('error', (err) => { clearTimeout(timer); reject(err); });
-        req.write(body);
-        req.end();
+    return fetchOllama('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: AbortSignal.timeout(timeoutMs)
+    }).then(async (r) => {
+        const raw = await r.text();
+        try { return JSON.parse(raw).message?.content || ''; }
+        catch { throw new Error('Bad Ollama response'); }
+    }).catch(err => {
+        if (err.name === 'TimeoutError') throw new Error('Sync call timed out');
+        throw err;
     });
 }
 
@@ -644,26 +630,18 @@ const AGENT_TOOL_CALL_TIMEOUT_MS = 120000; // 2 min timeout for backend tool cal
 // Call Ollama with tools, collect full response (streaming internally, return complete message)
 async function callOllamaWithTools(messages, tools, model) {
     const body = JSON.stringify({ model, messages, tools, stream: false });
-    return new Promise((resolve, reject) => {
-        const req = http.request({
-            hostname: 'localhost', port: 11434, path: '/api/chat', method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-        }, (res2) => {
-            clearTimeout(timer);
-            let raw = '';
-            res2.on('data', d => { raw += d; });
-            res2.on('end', () => {
-                try { resolve(JSON.parse(raw)); } catch { reject(new Error('Bad Ollama response')); }
-            });
-            res2.on('error', reject);
-        });
-        const timer = setTimeout(() => {
-            req.destroy();
-            reject(new Error('Ollama tool call timed out after 30s'));
-        }, AGENT_TOOL_CALL_TIMEOUT_MS);
-        req.on('error', (err) => { clearTimeout(timer); reject(err); });
-        req.write(body);
-        req.end();
+    return fetchOllama('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: AbortSignal.timeout(AGENT_TOOL_CALL_TIMEOUT_MS)
+    }).then(async (res2) => {
+        const raw = await res2.text();
+        try { return JSON.parse(raw); }
+        catch { throw new Error('Bad Ollama response'); }
+    }).catch(err => {
+        if (err.name === 'TimeoutError') throw new Error('Ollama tool call timed out after 30s');
+        throw err;
     });
 }
 
@@ -742,21 +720,13 @@ async function handleDetectContextLimit(req, res) {
         }
 
         const body = JSON.stringify({ model });
-        const info = await new Promise((resolve, reject) => {
-            const req = http.request({
-                hostname: 'localhost', port: 11434, path: '/api/show', method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-            }, (r) => {
-                let raw = '';
-                r.on('data', d => raw += d);
-                r.on('end', () => { try { resolve(JSON.parse(raw)); } catch { reject(new Error('Bad response')); } });
-                r.on('error', reject);
-            });
-            req.setTimeout(5000, () => { req.destroy(); reject(new Error('Timeout')); });
-            req.on('error', reject);
-            req.write(body);
-            req.end();
+        const resp = await fetchOllama('/api/show', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            signal: AbortSignal.timeout(5000)
         });
+        const info = await resp.json();
 
         const arch = info.model_info?.['general.architecture'];
         const limit =
@@ -1070,10 +1040,7 @@ async function handleAgentChat(req, res) {
 async function handleOllamaProxy(req, res) {
     const originalPath = req.params[0];
     const ollamaPath = '/' + originalPath;
-    const targetUrlString = OLLAMA_API_BASE_URL + ollamaPath;
     const ALLOWED_OLLAMA_PATHS = ['/api/tags', '/api/chat', '/api/generate', '/api/show', '/api/pull', '/api/delete'];
-
-    console.log(`Proxying request: ${req.method} ${req.originalUrl} -> ${targetUrlString}`);
 
     if (!ALLOWED_OLLAMA_PATHS.some(allowedPath => ollamaPath.startsWith(allowedPath))) {
         console.warn(`Forbidden: Path '${ollamaPath}' not allowed.`);
@@ -1081,6 +1048,9 @@ async function handleOllamaProxy(req, res) {
     }
 
     try {
+        const ollamaBaseUrl = await resolveOllamaBaseUrl('/api/tags');
+        const targetUrlString = ollamaBaseUrl + ollamaPath;
+        console.log(`Proxying request: ${req.method} ${req.originalUrl} -> ${targetUrlString}`);
         const targetUrl = new URL(targetUrlString);
 
         if (targetUrl.hostname !== 'localhost' && targetUrl.hostname !== '127.0.0.1') {

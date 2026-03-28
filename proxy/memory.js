@@ -4,13 +4,14 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { LocalDocumentIndex } = require('vectra/lib/LocalDocumentIndex');
+const { fetchOllama, getConfiguredOllamaBaseUrl } = require('./ollama');
 
 const MEMORY_DIR = process.env.MEMORY_DIR
     || path.join(os.homedir(), '.ollamabar', 'memory');
 const EMBED_MODEL = process.env.MEMORY_EMBED_MODEL || 'nomic-embed-text';
 
 function getOllamaBaseUrl() {
-    return (process.env.OLLAMA_API_BASE_URL || 'http://localhost:11434').trim().replace(/\/$/, '');
+    return getConfiguredOllamaBaseUrl();
 }
 
 function formatOllamaConnectionError(err) {
@@ -44,7 +45,7 @@ function normalizeMemoryRecord(id, meta = {}, score = null) {
 }
 
 async function embedTexts(inputs) {
-    const resp = await fetch(`${getOllamaBaseUrl()}/api/embed`, {
+    const resp = await fetchOllama('/api/embed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: EMBED_MODEL, input: inputs })
@@ -418,7 +419,7 @@ async function cleanupJunkMemories() {
 
 async function getStatus() {
     try {
-        const resp = await fetch(`${getOllamaBaseUrl()}/api/tags`);
+        const resp = await fetchOllama('/api/tags');
         if (!resp.ok) return { available: false, reason: 'Ollama not reachable', count: 0 };
         const data = await resp.json();
         const models = data.models || [];

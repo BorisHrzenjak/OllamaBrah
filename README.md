@@ -8,10 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.5.0
+## What's New — v1.5.2
 
-- **Conversations can now fork from any message** — user and assistant messages now expose a fork action so you can branch from any point in a thread without overwriting the original
-- **Forks can jump across models instantly** — pick the current model, another Ollama model, or a `llama.cpp` model from the inline popover and continue from the copied checkpoint
+- **Ollama detection is more reliable on Windows** — the app now retries both `localhost` and `127.0.0.1` so loopback hostname quirks do not leave Ollama falsely offline
+- **Custom Ollama server URLs now work everywhere** — `OLLAMA_API_BASE_URL` is honored across diagnostics, chat, memory, and proxy requests instead of only part of the app
+- **This release is the recommended installer for new users** — it is the follow-up build meant to avoid first-run false negatives when Ollama is already running
 
 ---
 
@@ -92,6 +93,9 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ## Installation
 
+**Download the installer**
+- Grab the latest Windows installer from [GitHub Releases](https://github.com/BorisHrzenjak/OllamaBrah/releases)
+
 **Prerequisites**
 - [Node.js](https://nodejs.org) v18+
 - [Ollama](https://ollama.com) installed and running
@@ -114,11 +118,19 @@ npm run build
 ```
 Produces a Windows installer in `/dist`.
 
+**Publish a release**
+```bash
+git tag -a v1.5.2 -m "Your version notes here"
+git push origin v1.5.2
+```
+The GitHub Actions release workflow builds the installer and uploads it to the matching GitHub Release automatically.
+
 ---
 
 ## Notes
 
 - Ollama must be running before launching the app (`ollama serve`)
+- If Ollama is running on a custom address, set `OLLAMA_API_BASE_URL` in `.env` to match it
 - Pull at least one model first: `ollama pull <model-name>`
 - The internal proxy runs on `localhost:3456` — make sure that port is free
 - Memory feature requires the `nomic-embed-text` model: `ollama pull nomic-embed-text`

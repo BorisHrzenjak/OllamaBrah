@@ -21,6 +21,7 @@ const {
     getWhisperPort,
     getWhisperModel,
 } = require('./stt');
+const { getConfiguredOllamaBaseUrl } = require('./ollama');
 
 // Resolve paths that may live in app.asar.unpacked when packaged
 function unpackedPath(...segments) {
@@ -54,12 +55,10 @@ reloadSkills();
 })();
 
 const extensionOrigin = 'chrome-extension://gkpfpdekobmonacdgjgbfehilnloaacm';
-const OLLAMA_API_BASE_URL = 'http://localhost:11434';
-
 const serverInstance = app.listen(PORT, '127.0.0.1', () => {
     console.log(`OllamaBro CORS Proxy server running on http://localhost:${PORT}`);
     console.log(`Allowing CORS origin: ${extensionOrigin}`);
-    console.log(`Proxying requests from /proxy/* to ${OLLAMA_API_BASE_URL}`);
+    console.log(`Proxying requests from /proxy/* to ${getConfiguredOllamaBaseUrl()}`);
 
 
     // Pre-warm Whisper in the background so mic is ready instantly on first use

@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Validate tag matches package version
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tagVersion = "${env:GITHUB_REF_NAME}".TrimStart('v')
+
+          if ($packageVersion -ne $tagVersion) {
+            throw "Tag version '$tagVersion' does not match package.json version '$packageVersion'."
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installer
+        run: npm run build
+
+      - name: Prepare release notes
+        id: notes
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}".TrimStart('v')
+          $tagNotes = (git for-each-ref "refs/tags/$env:GITHUB_REF_NAME" --format='%(contents)')
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+
+          if ([string]::IsNullOrWhiteSpace($tagNotes)) {
+            $body = @"
+## What's New
+- Release $version for OllamaBrah.
+
+## Installation
+- Download `Ollama Brah Setup $version.exe` from the assets below.
+"@
+          } else {
+            $body = @"
+## What's New
+$($tagNotes.Trim())
+
+## Installation
+- Download `Ollama Brah Setup $version.exe` from the assets below.
+"@
+          }
+
+          Set-Content -Path $notesPath -Value $body
+          "path=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ steps.notes.outputs.path }}
+          files: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest*.yml
