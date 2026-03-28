@@ -49,21 +49,21 @@ jobs:
           $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
 
           if ([string]::IsNullOrWhiteSpace($tagNotes)) {
-            $body = @"
-## What's New
-- Release $version for OllamaBrah.
-
-## Installation
-- Download `Ollama Brah Setup $version.exe` from the assets below.
-"@
+            $body = @(
+              "## What's New"
+              "- Release $version for OllamaBrah."
+              ""
+              "## Installation"
+              "- Download `Ollama Brah Setup $version.exe` from the assets below."
+            ) -join "`n"
           } else {
-            $body = @"
-## What's New
-$($tagNotes.Trim())
-
-## Installation
-- Download `Ollama Brah Setup $version.exe` from the assets below.
-"@
+            $body = @(
+              "## What's New"
+              $tagNotes.Trim()
+              ""
+              "## Installation"
+              "- Download `Ollama Brah Setup $version.exe` from the assets below."
+            ) -join "`n"
           }
 
           Set-Content -Path $notesPath -Value $body
