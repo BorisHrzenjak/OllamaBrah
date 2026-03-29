@@ -31,6 +31,12 @@ function configureAppPaths() {
 
 configureAppPaths();
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+    app.quit();
+}
+
 // ─── Database ────────────────────────────────────────────────────────────────
 
 function initDatabase() {
@@ -409,34 +415,47 @@ function registerIpcHandlers() {
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
-app.whenReady().then(async () => {
-    initDatabase();
-    initStore();
-    await startProxy();
-    registerIpcHandlers();
+if (gotSingleInstanceLock) {
+    app.on('second-instance', () => {
+        if (win && !win.isDestroyed()) {
+            if (win.isMinimized()) win.restore();
+            if (!win.isVisible()) win.show();
+            win.focus();
+            return;
+        }
 
-    // Grant microphone permission for voice input
-    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-        callback(permission === 'microphone' || permission === 'media');
-    });
-    session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-        if (permission === 'microphone') return true;
-        return null;
+        if (app.isReady()) createWindow();
     });
 
-    createWindow();
+    app.whenReady().then(async () => {
+        initDatabase();
+        initStore();
+        await startProxy();
+        registerIpcHandlers();
 
-    app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+        // Grant microphone permission for voice input
+        session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+            callback(permission === 'microphone' || permission === 'media');
+        });
+        session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+            if (permission === 'microphone') return true;
+            return null;
+        });
+
+        createWindow();
+
+        app.on('activate', () => {
+            if (BrowserWindow.getAllWindows().length === 0) createWindow();
+        });
     });
-});
 
-app.on('before-quit', (event) => {
-    if (isCleaningUp) return;
-    event.preventDefault();
-    cleanupAppResources().finally(() => app.exit(0));
-});
+    app.on('before-quit', (event) => {
+        if (isCleaningUp) return;
+        event.preventDefault();
+        cleanupAppResources().finally(() => app.exit(0));
+    });
 
-app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
-});
+    app.on('window-all-closed', () => {
+        if (process.platform !== 'darwin') app.quit();
+    });
+}

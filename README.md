@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.5.2
+## What's New — v1.5.3
 
-- **Ollama detection is more reliable on Windows** — the app now retries both `localhost` and `127.0.0.1` so loopback hostname quirks do not leave Ollama falsely offline
-- **Custom Ollama server URLs now work everywhere** — `OLLAMA_API_BASE_URL` is honored across diagnostics, chat, memory, and proxy requests instead of only part of the app
-- **This release is the recommended installer for new users** — it is the follow-up build meant to avoid first-run false negatives when Ollama is already running
+- **Relaunching now focuses the existing window** — OllamaBrah now enforces a single app instance so accidental second launches do not leave duplicate Electron process groups running in Task Manager
+- **Startup resource usage is more predictable** — only the primary app instance initializes the proxy, database, and other background services instead of each relaunch spinning up another full app process tree
+- **Windows behavior is easier to verify** — a normal launch should now appear as one OllamaBrah app group with Electron helper processes, not multiple separate OllamaBrah groups
 
 ---
 
@@ -37,6 +37,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Full streaming responses with stop button
 - Non-destructive regenerate with per-message response version history
 - Fork conversations from any message, including into a different model
+- Relaunching the app focuses the existing window instead of opening a duplicate app instance
 - Thinking/reasoning model support — collapsible reasoning blocks (DeepSeek, QwQ, etc.)
 - Multiple conversations per model with search and tag filtering
 - Message history navigation with `↑` / `↓`
