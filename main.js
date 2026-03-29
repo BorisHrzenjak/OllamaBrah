@@ -9,6 +9,7 @@ let win;
 let db;
 let store;
 let isCleaningUp = false;
+let pendingSecondInstanceFocus = false;
 
 function configureAppPaths() {
     if (app.isPackaged) return;
@@ -34,7 +35,7 @@ configureAppPaths();
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!gotSingleInstanceLock) {
-    app.quit();
+    app.exit(0);
 }
 
 // ─── Database ────────────────────────────────────────────────────────────────
@@ -229,10 +230,28 @@ function createWindow() {
 
     win.loadFile(path.join(__dirname, 'renderer', 'chat.html'));
 
+    win.once('ready-to-show', () => {
+        if (pendingSecondInstanceFocus) {
+            pendingSecondInstanceFocus = false;
+            if (win && !win.isDestroyed()) {
+                win.show();
+                win.focus();
+            }
+        }
+    });
+
     win.webContents.setWindowOpenHandler(({ url }) => {
         shell.openExternal(url);
         return { action: 'deny' };
     });
+}
+
+function focusMainWindow() {
+    if (!win || win.isDestroyed()) return false;
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
+    win.focus();
+    return true;
 }
 
 // ─── IPC Handlers ────────────────────────────────────────────────────────────
@@ -417,13 +436,11 @@ function registerIpcHandlers() {
 
 if (gotSingleInstanceLock) {
     app.on('second-instance', () => {
-        if (win && !win.isDestroyed()) {
-            if (win.isMinimized()) win.restore();
-            if (!win.isVisible()) win.show();
-            win.focus();
+        if (focusMainWindow()) {
             return;
         }
 
+        pendingSecondInstanceFocus = true;
         if (app.isReady()) createWindow();
     });
 

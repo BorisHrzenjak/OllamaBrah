@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.5.3
+## What's New — v1.5.4
 
-- **Relaunching now focuses the existing window** — OllamaBrah now enforces a single app instance so accidental second launches do not leave duplicate Electron process groups running in Task Manager
-- **Startup resource usage is more predictable** — only the primary app instance initializes the proxy, database, and other background services instead of each relaunch spinning up another full app process tree
-- **Windows behavior is easier to verify** — a normal launch should now appear as one OllamaBrah app group with Electron helper processes, not multiple separate OllamaBrah groups
+- **Startup is more reliable after the single-instance fix** — duplicate launches now exit immediately without looking like a first-launch crash while the primary window keeps opening normally
+- **Relaunch focus handling is safer during startup** — if a second launch happens before the main window is ready, OllamaBrah now focuses it once the window finishes initializing
+- **Single-instance behavior stays intact** — repeated launches should still resolve to one app instance and one Task Manager app group during normal use
 
 ---
 
