@@ -38,7 +38,7 @@ jobs:
         run: npm ci
 
       - name: Build Windows installer
-        run: npm run build
+        run: npm run build -- --publish never
 
       - name: Prepare release notes
         id: notes
