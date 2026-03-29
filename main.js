@@ -10,6 +10,7 @@ let db;
 let store;
 let isCleaningUp = false;
 let pendingSecondInstanceFocus = false;
+let shouldRelaunchAfterQuit = false;
 
 function configureAppPaths() {
     if (app.isPackaged) return;
@@ -439,7 +440,10 @@ function registerIpcHandlers() {
 
 if (gotSingleInstanceLock) {
     app.on('second-instance', () => {
-        if (isCleaningUp) return;
+        if (isCleaningUp) {
+            shouldRelaunchAfterQuit = true;
+            return;
+        }
 
         if (focusMainWindow()) {
             return;
@@ -475,7 +479,13 @@ if (gotSingleInstanceLock) {
         if (isCleaningUp) return;
         event.preventDefault();
         const forceExitTimer = setTimeout(() => app.exit(0), 5000);
-        cleanupAppResources().finally(() => { clearTimeout(forceExitTimer); app.exit(0); });
+        cleanupAppResources().finally(() => {
+            clearTimeout(forceExitTimer);
+            if (shouldRelaunchAfterQuit) {
+                app.relaunch();
+            }
+            app.exit(0);
+        });
     });
 
     app.on('window-all-closed', () => {
