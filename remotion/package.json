@@ -1,0 +1,21 @@
+{
+  "name": "ollama-brah-video",
+  "version": "1.0.0",
+  "description": "OllamaBrah product demo video",
+  "scripts": {
+    "start": "remotion studio",
+    "render": "remotion render OllamaBrahDemo out/demo.mp4",
+    "build": "remotion render OllamaBrahDemo out/demo.mp4 --codec h264"
+  },
+  "dependencies": {
+    "@remotion/transitions": "4.0.291",
+    "remotion": "4.0.291",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@remotion/cli": "4.0.291",
+    "@types/react": "18.3.1",
+    "typescript": "5.4.5"
+  }
+}

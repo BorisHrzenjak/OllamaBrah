@@ -195,7 +195,10 @@ async function cleanupAppResources() {
             try { whisperProcess.kill(); } catch (err) {}
         }
         if (server) {
-            await new Promise(resolve => server.close(() => resolve()));
+            await new Promise(resolve => {
+                const timeout = setTimeout(resolve, 3000);
+                server.close(() => { clearTimeout(timeout); resolve(); });
+            });
         }
     } catch (err) {
         console.warn('[main] Cleanup warning:', err.message);
@@ -436,6 +439,8 @@ function registerIpcHandlers() {
 
 if (gotSingleInstanceLock) {
     app.on('second-instance', () => {
+        if (isCleaningUp) return;
+
         if (focusMainWindow()) {
             return;
         }
@@ -469,7 +474,8 @@ if (gotSingleInstanceLock) {
     app.on('before-quit', (event) => {
         if (isCleaningUp) return;
         event.preventDefault();
-        cleanupAppResources().finally(() => app.exit(0));
+        const forceExitTimer = setTimeout(() => app.exit(0), 5000);
+        cleanupAppResources().finally(() => { clearTimeout(forceExitTimer); app.exit(0); });
     });
 
     app.on('window-all-closed', () => {

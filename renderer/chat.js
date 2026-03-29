@@ -960,6 +960,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             'arrow-right': '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
             'message-square': '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
             'clock': '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+            'bot': '<path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
             'zap': '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
             'activity': '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
             'flame': '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
@@ -5609,9 +5610,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!prompt.trim()) { pendingSkillName = null; return; }
             if (!agentModeEnabled) {
                 const md = await loadModelChatState(currentModelName);
-                addMessageToChatUI('System',
-                    `The "${pendingSkillName}" skill requires Agent Mode. Enable it with the ⚡ button in the toolbar, then resend your message.`,
+                const warningMessage = addMessageToChatUI('System',
+                    `The "${pendingSkillName}" skill requires Agent Mode. Enable it with the Agent Mode button in the toolbar, then resend your message.`,
                     'error-message', md);
+                warningMessage.textContent = '';
+                warningMessage.style.display = 'inline-flex';
+                warningMessage.style.alignItems = 'center';
+                warningMessage.style.justifyContent = 'center';
+                warningMessage.style.gap = '6px';
+                const agentModeIcon = createLucideIcon('bot', 15);
+                agentModeIcon.style.flexShrink = '0';
+                warningMessage.append(
+                    document.createTextNode(`The "${pendingSkillName}" skill requires Agent Mode. Enable it with the `),
+                    agentModeIcon,
+                    document.createTextNode(' button in the toolbar, then resend your message.')
+                );
                 pendingSkillName = null;
                 return;
             }
