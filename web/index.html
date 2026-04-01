@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OllamaBrah — Desktop AI Workbench for Ollama and llama.cpp</title>
+  <meta name="description" content="A native Windows desktop app for Ollama and llama.cpp users. Chat with local models, understand PDFs and screenshots, use voice, memory, and safe local agents. Private by default.">
+  <meta name="keywords" content="Ollama desktop app, llama.cpp desktop UI, local AI app Windows, AnythingLLM alternative, OpenWebUI alternative for desktop, GGUF desktop client">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- NAV -->
+  <nav id="nav">
+    <div class="nav-inner">
+      <a href="#" class="nav-logo">OllamaBrah</a>
+      <div class="nav-links">
+        <a href="#features">FEATURES</a>
+        <a href="#screenshots">SCREENSHOTS</a>
+        <a href="#why">WHY</a>
+        <a href="#install">INSTALL</a>
+        <a href="https://github.com/BorisHrzenjak/OllamaBrah" target="_blank" rel="noopener">GITHUB ↗</a>
+      </div>
+      <button class="nav-mobile-toggle" id="navToggle" aria-label="Toggle menu">☰</button>
+    </div>
+    <div class="nav-mobile-menu" id="navMobile">
+      <a href="#features">FEATURES</a>
+      <a href="#screenshots">SCREENSHOTS</a>
+      <a href="#why">WHY</a>
+      <a href="#install">INSTALL</a>
+      <a href="https://github.com/BorisHrzenjak/OllamaBrah" target="_blank" rel="noopener">GITHUB ↗</a>
+    </div>
+  </nav>
+
+  <!-- 1. HERO -->
+  <section id="hero">
+    <div class="dot-grid" aria-hidden="true"></div>
+    <div class="hero-inner">
+      <div class="hero-content">
+        <p class="eyebrow"><span id="eyebrow-text"></span><span class="cursor" aria-hidden="true">▋</span></p>
+        <h1 class="hero-headline">The desktop AI&nbsp;workbench for Ollama and&nbsp;llama.cpp users.</h1>
+        <p class="hero-sub">Chat with local models, understand PDFs and screenshots, use voice, memory, and safe local agents — all in a native desktop app without Docker or browser-tab sprawl.</p>
+        <div class="hero-ctas">
+          <a href="https://github.com/BorisHrzenjak/OllamaBrah/releases" class="btn-primary">
+            <span class="btn-arrow">›</span> Download for Windows
+          </a>
+          <a href="https://github.com/BorisHrzenjak/OllamaBrah" target="_blank" rel="noopener" class="btn-secondary">View on GitHub</a>
+        </div>
+        <p class="hero-trust"><code>v1.8.0</code> · <code>Windows</code> · <code>MIT</code> · <code>no telemetry</code> · <code>no account</code></p>
+      </div>
+      <div class="hero-visual">
+        <div class="app-window">
+          <div class="app-screen">
+            <img src="../ollama_brah-screenshots/Screenshot_1.jpg" alt="OllamaBrah main chat interface" loading="eager">
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. VALUE STRIP -->
+  <div class="value-strip" aria-label="Key features">
+    <div class="value-strip-inner">
+      <span>Ollama + llama.cpp</span>
+      <span class="pipe" aria-hidden="true">|</span>
+      <span>OCR + file chat</span>
+      <span class="pipe" aria-hidden="true">|</span>
+      <span>Voice + memory</span>
+      <span class="pipe" aria-hidden="true">|</span>
+      <span>Safe local agents</span>
+      <span class="pipe" aria-hidden="true">|</span>
+      <span>No Docker&nbsp;·&nbsp;No account&nbsp;·&nbsp;No cloud</span>
+    </div>
+  </div>
+
+  <!-- 3. WHY IT EXISTS -->
+  <section id="why" class="section">
+    <div class="section-marker" aria-hidden="true">/* 03 — why it exists */</div>
+    <div class="why-inner">
+      <div class="why-text">
+        <p>People want local AI. The problem is that most options feel like self-hosted platforms — you end up managing Docker containers, configuring reverse proxies, and maintaining a mini cloud stack just to chat with a model on your own hardware.</p>
+        <p>OllamaBrah is for people who want a serious local AI assistant as a desktop app. Install it. Open it. Pick a model. That's it.</p>
+        <blockquote class="pull-quote"><em>An app, not a stack.</em></blockquote>
+        <p>Local-model control without infrastructure overhead. Built for one person at one machine. No team admin. No telemetry. No subscription. Just your models, your files, your machine.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. CORE DIFFERENTIATORS -->
+  <section id="features" class="section">
+    <div class="section-marker" aria-hidden="true">/* 04 — core differentiators */</div>
+    <div class="diff-grid">
+
+      <div class="diff-card reveal">
+        <span class="diff-tag">[runtime]</span>
+        <h3>Native Desktop Workflow</h3>
+        <p>Use a real app instead of managing a browser-based AI platform. No tabs, no extension popups, no ports to remember after every reboot.</p>
+      </div>
+
+      <div class="diff-card reveal">
+        <span class="diff-tag">[backend]</span>
+        <h3>Direct Local Model Control</h3>
+        <p>Built around Ollama and direct llama.cpp / GGUF workflows. GPU layers, context size, per-model profiles, and mmproj pairing — all configurable.</p>
+      </div>
+
+      <div class="diff-card reveal">
+        <span class="diff-tag">[files]</span>
+        <h3>Real File Understanding</h3>
+        <p>Chat with PDFs, screenshots, scanned documents, and code files using OCR and chunked context injection. Attachments that actually work.</p>
+      </div>
+
+      <div class="diff-card reveal">
+        <span class="diff-tag">[agents]</span>
+        <h3>Safe Local Agent Mode</h3>
+        <p>Tool permissions, allowed directories, and blocked paths keep local automation controlled. Agents that do what you expect, and nothing else.</p>
+      </div>
+
+      <div class="diff-card reveal">
+        <span class="diff-tag">[memory]</span>
+        <h3>Persistent Memory and Voice</h3>
+        <p>Semantic memory across sessions. Voice input via local Whisper. Kokoro TTS with sentence-streaming playback. Your assistant that actually remembers.</p>
+      </div>
+
+      <div class="diff-card reveal">
+        <span class="diff-tag">[design]</span>
+        <h3>Focused Solo-User Design</h3>
+        <p>No team-admin clutter. No multi-tenant overhead. No enterprise feature creep. Just your models, your files, your machine, working your way.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- 5. FEATURE SHOWCASE -->
+  <section class="section" id="feature-showcase">
+    <div class="section-marker" aria-hidden="true">/* 05 — feature showcase */</div>
+    <div class="tabs">
+      <div class="tab-bar" role="tablist" aria-label="Feature categories">
+        <button class="tab active" data-tab="models" role="tab" aria-selected="true">[Models]</button>
+        <button class="tab" data-tab="chat" role="tab" aria-selected="false">[Chat]</button>
+        <button class="tab" data-tab="files" role="tab" aria-selected="false">[Files]</button>
+        <button class="tab" data-tab="agents" role="tab" aria-selected="false">[Agents]</button>
+        <button class="tab" data-tab="memory" role="tab" aria-selected="false">[Memory]</button>
+        <button class="tab" data-tab="custom" role="tab" aria-selected="false">[Custom]</button>
+      </div>
+
+      <div class="tab-content">
+        <div class="tab-panel active" id="tab-models" role="tabpanel">
+          <div class="feature-list">
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Ollama and llama.cpp backend support</strong> — switch between them from the model switcher without leaving the app</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>GGUF manifest with per-model runtime profiles</strong> — inferred capabilities, GPU layer configs, and context presets per model</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Automatic mmproj pairing</strong> — multimodal setups detected and configured without manual wiring</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Session persistence and background warm-up</strong> — the app remembers your last active GGUF and restores it on startup</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Hardware recommendations browser</strong> — browse 530+ models filtered by your VRAM and quant preference</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Live availability checking</strong> — model status indicators across local, cloud, and llama.cpp sections</div></div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-chat" role="tabpanel">
+          <div class="feature-list">
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Streaming responses with real-time token output</strong> — see the model think, not just the final answer</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Regenerate, fork, and branch conversations</strong> — explore alternate responses without losing history</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Tags, pinned messages, and conversation search</strong> — find anything across all your chats instantly</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Web search and deep research mode</strong> — multi-step research with local model synthesis</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Usage dashboard</strong> — tokens generated, messages sent, most-used models, avg speed per model</div></div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-files" role="tabpanel">
+          <div class="feature-list">
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>PDF, image, and scanned document attachment</strong> — drag in files, get intelligent context</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>OCR extraction with chunked context injection</strong> — long documents handled with relevant chunk selection</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Code file understanding</strong> — paste or attach source files with language-aware formatting</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Works with llama.cpp</strong> — document attachments work even when image support is unavailable</div></div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-agents" role="tabpanel">
+          <div class="feature-list">
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Safe agent mode with tool permissions</strong> — per-tool settings: auto, confirm, or disabled</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Allowed directories and blocked path configuration</strong> — agents can only touch what you explicitly permit</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Web search, deep research, file read/write via agent</strong> — full local automation loop under your control</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Max steps limiter</strong> — cap agentic loops before they run away</div></div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-memory" role="tabpanel">
+          <div class="feature-list">
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Persistent semantic memory across sessions</strong> — requires nomic-embed-text via Ollama</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Auto-extract memories after each response</strong> — the model identifies facts worth keeping</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Memory manager view</strong> — review, edit, or delete stored facts at any time</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Voice input via local Whisper transcription</strong> — speak your messages, no cloud API required</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Kokoro TTS with sentence-streaming playback</strong> — responses read aloud as they stream in</div></div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-custom" role="tabpanel">
+          <div class="feature-list">
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Persona presets</strong> — Code Reviewer, Translator, Tutor, Storyteller, or build your own</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Prompt templates with slash triggers</strong> — <code>!translate</code>, <code>!summarize</code>, <code>!fix-code</code> and more</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Multiple themes</strong> — Dracula, Tokyo Night, Catppuccin, Nord, Kanagawa, and others</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Per-model parameter overrides</strong> — temperature, top-p, top-k, repeat penalty, seed</div></div>
+            <div class="fi"><span class="fi-arrow">›</span><div><strong>Context window control</strong> — override auto-detection or cap it per model</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. SCREENSHOTS -->
+  <section id="screenshots" class="section">
+    <div class="section-marker" aria-hidden="true">/* 06 — screenshots */</div>
+    <div class="screenshots-grid">
+
+      <div class="ss-card reveal">
+        <div class="ss-frame">
+          <img src="../ollama_brah-screenshots/Screenshot_1.jpg" alt="Main chat interface showing streaming code output" loading="lazy">
+        </div>
+        <p class="ss-caption">chat.jpg · stream responses, fork history, search across all conversations</p>
+      </div>
+
+      <div class="ss-card reveal">
+        <div class="ss-frame">
+          <img src="../ollama_brah-screenshots/Screenshot_5.jpg" alt="Usage dashboard with token stats" loading="lazy">
+        </div>
+        <p class="ss-caption">dashboard.jpg · tokens generated, messages sent, avg speed per model</p>
+      </div>
+
+      <div class="ss-card reveal">
+        <div class="ss-frame">
+          <img src="../ollama_brah-screenshots/Screenshot_13.jpg" alt="Hardware-aware model recommendations browser" loading="lazy">
+        </div>
+        <p class="ss-caption">hardware-recs.jpg · browse 530+ models filtered by your VRAM and quant preference</p>
+      </div>
+
+      <div class="ss-card reveal">
+        <div class="ss-frame">
+          <img src="../ollama_brah-screenshots/Screenshot_15.jpg" alt="llama.cpp configuration panel" loading="lazy">
+        </div>
+        <p class="ss-caption">llama-cpp.jpg · configure binary path, GPU layers, context size, and server port</p>
+      </div>
+
+      <div class="ss-card reveal">
+        <div class="ss-frame">
+          <img src="../ollama_brah-screenshots/Screenshot_16.jpg" alt="Agent mode tool permissions panel" loading="lazy">
+        </div>
+        <p class="ss-caption">agent-mode.jpg · per-tool permissions — auto, confirm before use, or disabled</p>
+      </div>
+
+      <div class="ss-card reveal">
+        <div class="ss-frame">
+          <img src="../ollama_brah-screenshots/Screenshot_17.jpg" alt="Semantic memory settings" loading="lazy">
+        </div>
+        <p class="ss-caption">memory.jpg · persistent semantic memory with auto-extraction after each reply</p>
+      </div>
+
+      <div class="ss-card reveal">
+        <div class="ss-frame">
+          <img src="../ollama_brah-screenshots/Screenshot_18.jpg" alt="Kokoro TTS text-to-speech settings" loading="lazy">
+        </div>
+        <p class="ss-caption">tts.jpg · Kokoro local TTS with sentence-streaming playback, no cloud required</p>
+      </div>
+
+      <div class="ss-card reveal">
+        <div class="ss-frame">
+          <img src="../ollama_brah-screenshots/Screenshot_6.jpg" alt="Theme selection panel" loading="lazy">
+        </div>
+        <p class="ss-caption">themes.jpg · Dracula, Tokyo Night, Catppuccin, Nord, Kanagawa, and more</p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- 7. COMPARISON -->
+  <section id="comparison" class="section">
+    <div class="section-marker" aria-hidden="true">/* 07 — how it fits */</div>
+    <div class="comparison-wrap">
+      <div class="table-scroll">
+        <table class="comparison-table" aria-label="Product comparison">
+          <thead>
+            <tr>
+              <th scope="col"></th>
+              <th scope="col" class="col-ours">OllamaBrah</th>
+              <th scope="col">AnythingLLM</th>
+              <th scope="col">OpenWebUI</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="row-label">Product shape</td>
+              <td class="col-ours">Desktop app (.exe)</td>
+              <td>Web platform</td>
+              <td>Web platform</td>
+            </tr>
+            <tr>
+              <td class="row-label">Best fit</td>
+              <td class="col-ours">Solo local AI users</td>
+              <td>Small teams</td>
+              <td>Teams, API users</td>
+            </tr>
+            <tr>
+              <td class="row-label">Installation</td>
+              <td class="col-ours">Run .exe installer</td>
+              <td>Docker or Node</td>
+              <td>Docker</td>
+            </tr>
+            <tr>
+              <td class="row-label">Team features</td>
+              <td class="col-ours val-dim">—</td>
+              <td>Multi-user, roles</td>
+              <td>Multi-user, admin</td>
+            </tr>
+            <tr>
+              <td class="row-label">Desktop-native</td>
+              <td class="col-ours val-yes">✓</td>
+              <td class="val-dim">—</td>
+              <td class="val-dim">—</td>
+            </tr>
+            <tr>
+              <td class="row-label">llama.cpp + GGUF focus</td>
+              <td class="col-ours val-yes">✓</td>
+              <td class="val-dim">—</td>
+              <td class="val-dim">partial</td>
+            </tr>
+            <tr>
+              <td class="row-label">File + OCR workflows</td>
+              <td class="col-ours val-yes">✓</td>
+              <td class="val-dim">limited</td>
+              <td class="val-dim">limited</td>
+            </tr>
+            <tr>
+              <td class="row-label">Personal use simplicity</td>
+              <td class="col-ours val-yes">High</td>
+              <td>Medium</td>
+              <td>Medium</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <p class="comparison-note">AnythingLLM and OpenWebUI are solid platforms for teams. OllamaBrah is not trying to be a platform — it's a focused desktop app for the solo local AI user.</p>
+  </section>
+
+  <!-- 8. WHO IT'S FOR -->
+  <section id="who" class="section">
+    <div class="section-marker" aria-hidden="true">/* 08 — who it's for */</div>
+    <div class="who-grid">
+      <div class="who-col">
+        <h3 class="who-heading">Good fit</h3>
+        <ul class="who-list">
+          <li><span class="who-marker" aria-hidden="true">›</span> Local LLM power users</li>
+          <li><span class="who-marker" aria-hidden="true">›</span> Developers working with code and docs</li>
+          <li><span class="who-marker" aria-hidden="true">›</span> Privacy-sensitive solo professionals</li>
+          <li><span class="who-marker" aria-hidden="true">›</span> Researchers with PDFs, screenshots, and notes</li>
+          <li><span class="who-marker" aria-hidden="true">›</span> GGUF and llama.cpp tinkerers</li>
+          <li><span class="who-marker" aria-hidden="true">›</span> Windows users who want a real app, not a web UI</li>
+        </ul>
+      </div>
+      <div class="who-col who-col-not">
+        <h3 class="who-heading dim">Not ideal for</h3>
+        <ul class="who-list dim">
+          <li><span class="who-marker dim" aria-hidden="true">—</span> Multi-user teams needing shared workspaces</li>
+          <li><span class="who-marker dim" aria-hidden="true">—</span> Enterprise admin and permission workflows</li>
+          <li><span class="who-marker dim" aria-hidden="true">—</span> Browser or mobile-first deployments</li>
+          <li><span class="who-marker dim" aria-hidden="true">—</span> Anyone who needs cloud or SaaS AI</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9. PRIVACY -->
+  <section id="privacy" class="section">
+    <div class="section-marker" aria-hidden="true">/* 09 — privacy and open source */</div>
+    <div class="privacy-inner">
+      <h2 class="section-title">Private by default.</h2>
+      <div class="config-block" aria-label="Privacy configuration">
+        <div class="config-line"><span class="ck">local_first</span><span class="ceq">      =</span><span class="cv green">true</span></div>
+        <div class="config-line"><span class="ck">requires_account</span><span class="ceq"> =</span><span class="cv green">false</span></div>
+        <div class="config-line"><span class="ck">telemetry</span><span class="ceq">        =</span><span class="cv green">none</span></div>
+        <div class="config-line"><span class="ck">source_available</span><span class="ceq"> =</span><span class="cv green">true</span></div>
+        <div class="config-line"><span class="ck">files_leave_device</span><span class="ceq">=</span><span class="cv green">false</span></div>
+        <div class="config-line"><span class="ck">license</span><span class="ceq">          =</span><span class="cv str">"MIT"</span></div>
+        <div class="config-line config-comment"><span class="cc"># web search uses an external API — all other features stay local</span></div>
+      </div>
+      <p class="privacy-note">Your conversations, files, and model outputs never leave your machine. Web search is opt-in and clearly labeled. Everything else runs entirely on your hardware.</p>
+    </div>
+  </section>
+
+  <!-- 10. INSTALL -->
+  <section id="install" class="section">
+    <div class="section-marker" aria-hidden="true">/* 10 — install */</div>
+    <h2 class="section-title">Up in four steps.</h2>
+    <div class="install-steps">
+
+      <div class="install-step reveal">
+        <span class="step-num">01</span>
+        <div class="step-body">
+          <span class="step-cmd">$ download installer</span>
+          <span class="step-desc">Grab the latest <code>.exe</code> from GitHub Releases — no winget or package manager needed</span>
+        </div>
+      </div>
+
+      <div class="install-step reveal">
+        <span class="step-num">02</span>
+        <div class="step-body">
+          <span class="step-cmd">$ install ollama</span>
+          <span class="step-desc">Get Ollama from <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a> — or configure llama.cpp instead if you prefer direct GGUF control</span>
+        </div>
+      </div>
+
+      <div class="install-step reveal">
+        <span class="step-num">03</span>
+        <div class="step-body">
+          <span class="step-cmd">$ launch OllamaBrah</span>
+          <span class="step-desc">Pick your backend in the setup screen — Ollama or llama.cpp, switch at any time</span>
+        </div>
+      </div>
+
+      <div class="install-step reveal">
+        <span class="step-num">04</span>
+        <div class="step-body">
+          <span class="step-cmd">$ start chatting</span>
+          <span class="step-desc">No account. No config file. No cloud setup. Private by default from the first message.</span>
+        </div>
+      </div>
+
+    </div>
+    <a href="https://github.com/BorisHrzenjak/OllamaBrah/releases" class="btn-primary install-cta">
+      <span class="btn-arrow">›</span> Download for Windows — v1.8.0
+    </a>
+  </section>
+
+  <!-- 11. FINAL CTA -->
+  <section id="cta" class="section">
+    <div class="cta-inner">
+      <p class="cta-pre" aria-hidden="true">/* ready */</p>
+      <h2 class="cta-headline">Run private local AI like&nbsp;an&nbsp;app, not&nbsp;a&nbsp;deployment&nbsp;project.</h2>
+      <div class="cta-buttons">
+        <a href="https://github.com/BorisHrzenjak/OllamaBrah/releases" class="btn-primary btn-large">
+          <span class="btn-arrow">›</span> Download for Windows
+        </a>
+        <a href="https://github.com/BorisHrzenjak/OllamaBrah" target="_blank" rel="noopener" class="btn-secondary">Star on GitHub</a>
+      </div>
+      <p class="cta-note">Built for Ollama and llama.cpp users who want real desktop workflows.</p>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="footer-inner">
+      <span class="footer-logo">OllamaBrah</span>
+      <nav class="footer-links" aria-label="Footer navigation">
+        <a href="#features">Features</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/BorisHrzenjak/OllamaBrah" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/BorisHrzenjak/OllamaBrah/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/BorisHrzenjak/OllamaBrah/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+      </nav>
+      <span class="footer-meta">MIT · v1.8.0 · Windows · Open Source</span>
+    </div>
+  </footer>
+
+  <script src="main.js"></script>
+</body>
+</html>

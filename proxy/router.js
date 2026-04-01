@@ -41,6 +41,7 @@ const {
     handleLlamacppStatus,
     handleLlamacppConfig,
     handleLlamacppModels,
+    handleLlamacppModelProfile,
     handleLlamacppLoad,
     handleLlamacppStop,
     handleLlamacppDelete,
@@ -550,6 +551,7 @@ app.post('/api/stt/transcribe', handleSttTranscribe);
 app.get('/api/llamacpp/status', handleLlamacppStatus);
 app.post('/api/llamacpp/config', handleLlamacppConfig);
 app.get('/api/llamacpp/models', handleLlamacppModels);
+app.post('/api/llamacpp/model-profile', handleLlamacppModelProfile);
 app.post('/api/llamacpp/load', handleLlamacppLoad);
 app.post('/api/llamacpp/stop', handleLlamacppStop);
 app.delete('/api/llamacpp/delete', handleLlamacppDelete);
