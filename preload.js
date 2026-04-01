@@ -4,6 +4,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
     getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+    checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
+    openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 
     store: {
         get:    (key, def) => ipcRenderer.invoke('store:get', key, def),
@@ -32,6 +34,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         clearMessages:      (convId) =>              ipcRenderer.invoke('db:clearMessages', convId),
         loadModelState:     (tabId, model) =>        ipcRenderer.invoke('db:loadModelState', tabId, model),
         saveModelState:     (tabId, model, s) =>     ipcRenderer.invoke('db:saveModelState', tabId, model, s),
+        getDetectedContextLimit: (model) =>          ipcRenderer.invoke('db:getDetectedContextLimit', model),
+        saveDetectedContextLimit: (model, limit) =>  ipcRenderer.invoke('db:saveDetectedContextLimit', model, limit),
+        getAllDetectedContextLimits: () =>           ipcRenderer.invoke('db:getAllDetectedContextLimits'),
         getDashboardStats:  () =>                    ipcRenderer.invoke('db:getDashboardStats'),
     },
 

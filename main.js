@@ -12,6 +12,11 @@ let isCleaningUp = false;
 let pendingSecondInstanceFocus = false;
 let shouldRelaunchAfterQuit = false;
 
+const GITHUB_RELEASES_OWNER = 'BorisHrzenjak';
+const GITHUB_RELEASES_REPO = 'OllamaBrah';
+const GITHUB_RELEASES_LATEST_API = `https://api.github.com/repos/${GITHUB_RELEASES_OWNER}/${GITHUB_RELEASES_REPO}/releases/latest`;
+const GITHUB_RELEASES_PAGE = `https://github.com/${GITHUB_RELEASES_OWNER}/${GITHUB_RELEASES_REPO}/releases/latest`;
+
 function configureAppPaths() {
     if (app.isPackaged) return;
 
@@ -127,6 +132,7 @@ function initStore() {
             deepResearchEnabled: false,
             agentModeEnabled: false,
             memoryEnabled: false,
+            updateNotificationsEnabled: true,
             memoryAutoInject: false,
             memoryAutoExtract: false,
             slashCommands: [],
@@ -268,6 +274,15 @@ function registerIpcHandlers() {
 
     // App
     ipcMain.handle('app:getVersion', () => app.getVersion());
+    ipcMain.handle('app:checkForUpdates', async () => {
+        return checkForAppUpdate();
+    });
+    ipcMain.handle('app:openExternal', async (_e, url) => {
+        if (typeof url !== 'string' || !/^https:\/\//i.test(url)) {
+            throw new Error('Invalid external URL');
+        }
+        await shell.openExternal(url);
+    });
 
     // Store
     ipcMain.handle('store:get', (_e, key, def) => {
@@ -434,6 +449,78 @@ function registerIpcHandlers() {
         const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
         return result.canceled ? null : result.filePaths[0];
     });
+}
+
+function normalizeVersionPart(part) {
+    const match = String(part || '').match(/^(\d+)/);
+    return match ? Number(match[1]) : 0;
+}
+
+function compareVersions(a, b) {
+    const aParts = String(a || '').split('.').map(normalizeVersionPart);
+    const bParts = String(b || '').split('.').map(normalizeVersionPart);
+    const length = Math.max(aParts.length, bParts.length);
+
+    for (let i = 0; i < length; i += 1) {
+        const left = aParts[i] || 0;
+        const right = bParts[i] || 0;
+        if (left > right) return 1;
+        if (left < right) return -1;
+    }
+
+    return 0;
+}
+
+async function checkForAppUpdate() {
+    const currentVersion = app.getVersion();
+
+    try {
+        const response = await fetch(GITHUB_RELEASES_LATEST_API, {
+            headers: {
+                'Accept': 'application/vnd.github+json',
+                'User-Agent': `OllamaBrah/${currentVersion}`,
+            },
+            signal: AbortSignal.timeout(10000),
+        });
+
+        if (!response.ok) {
+            throw new Error(`GitHub responded with ${response.status}`);
+        }
+
+        const release = await response.json();
+        const latestVersion = String(release.tag_name || '').replace(/^v/i, '').trim();
+        const releaseUrl = release.html_url || GITHUB_RELEASES_PAGE;
+
+        if (!latestVersion) {
+            throw new Error('Latest release tag is missing');
+        }
+
+        if (compareVersions(latestVersion, currentVersion) <= 0) {
+            return {
+                status: 'up-to-date',
+                currentVersion,
+                latestVersion,
+                releaseUrl,
+            };
+        }
+
+        return {
+            status: 'update-available',
+            currentVersion,
+            latestVersion,
+            releaseUrl,
+            publishedAt: release.published_at || null,
+            releaseName: release.name || null,
+            body: typeof release.body === 'string' ? release.body : '',
+        };
+    } catch (error) {
+        return {
+            status: 'error',
+            currentVersion,
+            releaseUrl: GITHUB_RELEASES_PAGE,
+            error: error.message || 'Unable to check for updates',
+        };
+    }
 }
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────

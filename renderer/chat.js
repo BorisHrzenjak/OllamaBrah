@@ -99,6 +99,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     const inputTokenCount = document.getElementById('inputTokenCount');
     const contextLimitInput = document.getElementById('contextLimitInput');
     const contextLimitInfo = document.getElementById('contextLimitInfo');
+    const updateNotificationsToggle = document.getElementById('updateNotificationsToggle');
+    const checkForUpdatesButton = document.getElementById('checkForUpdatesButton');
+    const checkForUpdatesStatus = document.getElementById('checkForUpdatesStatus');
+    const updateNotice = document.getElementById('updateNotice');
+    const updateNoticeBody = document.getElementById('updateNoticeBody');
+    const updateNoticeDate = document.getElementById('updateNoticeDate');
+    const openUpdateReleaseButton = document.getElementById('openUpdateReleaseButton');
+    const dismissUpdateNoticeButton = document.getElementById('dismissUpdateNoticeButton');
+    const closeUpdateNoticeButton = document.getElementById('closeUpdateNoticeButton');
+
+    const UPDATE_NOTIFICATIONS_KEY = 'updateNotificationsEnabled';
+    let activeUpdateReleaseUrl = null;
+    let activeUpdateNoticeVersion = null;
 
     // Clear context modal elements
     const clearContextModal = document.getElementById('clearContextModal');
@@ -1261,15 +1274,47 @@ document.addEventListener('DOMContentLoaded', async () => {
         return Number.isFinite(numericSize) && numericSize === 0;
     }
 
+    function getContextCacheKey(modelName, backend = currentModelBackend, modelPath = currentLlamaCppPath) {
+        if (backend === 'llamacpp') return `llamacpp:${modelPath || modelName}`;
+        return `${backend || 'ollama'}:${modelName}`;
+    }
+
+    function getLlamaCppModelMetaByPath(modelPath) {
+        if (!modelPath) return null;
+        return availableModels.find(m => m._backend === 'llamacpp' && m._path === modelPath)
+            || llamaCppModels.find(m => m.path === modelPath)
+            || null;
+    }
+
+    function getCurrentLlamaCppModelMeta() {
+        if (currentModelBackend !== 'llamacpp') return null;
+        return getLlamaCppModelMetaByPath(currentLlamaCppPath)
+            || availableModels.find(m => m._backend === 'llamacpp' && m.name === currentModelName)
+            || null;
+    }
+
+    function modelSupportsImageAttachments(modelMeta) {
+        if (!modelMeta) return false;
+        return !!(modelMeta._capabilities?.vision || modelMeta.capabilities?.vision);
+    }
+
+    async function persistActiveBackendState({ backend, ollamaModel = null, llamaPath = null, llamaName = null }) {
+        const update = { lastActiveBackend: backend || 'ollama' };
+        if (ollamaModel) update.lastUsedOllamaModel = ollamaModel;
+        if (llamaPath) update.lastUsedLlamaCppPath = llamaPath;
+        if (llamaName) update.lastUsedLlamaCppModel = llamaName;
+        await chrome.storage.local.set(update);
+    }
+
     // Get effective context limit for current model
-    function getEffectiveContextLimit(modelName, modelData) {
+    function getEffectiveContextLimit(modelName, modelData, backend = currentModelBackend, modelPath = currentLlamaCppPath) {
         // Check for user override first
         if (modelData && modelData.contextLimitOverride && modelData.contextLimitOverride > 0) {
             return modelData.contextLimitOverride;
         }
 
         // Check detected cache
-        const cacheKey = `${currentModelBackend || 'ollama'}:${modelName}`;
+        const cacheKey = getContextCacheKey(modelName, backend, modelPath);
         if (detectedContextLimitsCache[cacheKey] !== undefined) {
             return detectedContextLimitsCache[cacheKey];
         }
@@ -1523,10 +1568,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function tryRecoverStartupModel(report) {
-        if (currentModelName || report?.checks?.ollama?.status !== 'ready') return false;
+        if (currentModelName) return false;
 
         const models = await fetchAvailableModels();
-        const stored = await chrome.storage.local.get('lastUsedOllamaModel');
+        const stored = await chrome.storage.local.get(['lastUsedOllamaModel', 'lastUsedLlamaCppPath', 'lastActiveBackend']);
+        if (stored.lastActiveBackend === 'llamacpp') {
+            const cppMatch = stored.lastUsedLlamaCppPath && models.find(m => m._backend === 'llamacpp' && m._path === stored.lastUsedLlamaCppPath);
+            if (cppMatch && report?.checks?.llamacpp?.canUse) {
+                await switchToLlamaCpp(cppMatch);
+                return true;
+            }
+        }
+
+        if (report?.checks?.ollama?.status !== 'ready') return false;
         const lastUsed = stored.lastUsedOllamaModel;
         const ollamaModels = models.filter(m => m._backend !== 'llamacpp');
         const match = lastUsed && ollamaModels.find(m => m.name === lastUsed);
@@ -1536,6 +1590,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentModelBackend = 'ollama';
         currentLlamaCppPath = null;
         currentModelName = selected.name;
+        await persistActiveBackendState({ backend: 'ollama', ollamaModel: selected.name });
         await initializeActiveModelSession();
         return true;
     }
@@ -2029,8 +2084,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const isText = isTextFile(file);
         const isPdf = isPdfFile(file);
 
-        if (currentModelBackend === 'llamacpp' && isImage) {
-            throw new Error('llama.cpp currently supports document uploads only. Choose a PDF or text document.');
+        if (currentModelBackend === 'llamacpp' && isImage && !modelSupportsImageAttachments(getCurrentLlamaCppModelMeta())) {
+            throw new Error('This llama.cpp model does not advertise vision support yet. Choose a PDF/text document or switch to a vision-capable GGUF.');
         }
 
         if (!isImage && !isText && !isPdf) {
@@ -3765,6 +3820,100 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    function makeLlamaCapabilityBadge(label, title = '') {
+        const badge = document.createElement('span');
+        badge.textContent = label;
+        badge.title = title || label;
+        badge.style.cssText = 'display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--text-muted);font-size:11px;line-height:1.4';
+        return badge;
+    }
+
+    async function saveLlamaCppModelProfile(model, controls, statusEl) {
+        const ctxSize = Math.max(512, parseInt(controls.ctxInput.value, 10) || 32768);
+        const gpuLayers = parseInt(controls.gpuInput.value, 10);
+        const mmprojPath = (controls.mmprojInput.value || '').trim();
+        const visionEnabled = !!controls.visionInput.checked || !!mmprojPath;
+        const cacheKey = getContextCacheKey(model.name, 'llamacpp', model.path);
+
+        controls.saveBtn.disabled = true;
+        controls.deleteBtn.disabled = true;
+        statusEl.textContent = 'Saving...';
+        statusEl.style.color = 'var(--text-muted)';
+
+        try {
+            const resp = await fetch(`${PROXY_BASE}/api/llamacpp/model-profile`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    modelPath: model.path,
+                    runtimeProfile: {
+                        ctxSize,
+                        gpuLayers: Number.isFinite(gpuLayers) ? String(gpuLayers) : '-1'
+                    },
+                    capabilities: {
+                        vision: visionEnabled
+                    },
+                    mmprojPath: mmprojPath || null
+                })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${resp.status}`);
+            }
+
+            model.runtimeProfile = {
+                ...(model.runtimeProfile || {}),
+                ctxSize,
+                gpuLayers: Number.isFinite(gpuLayers) ? String(gpuLayers) : '-1'
+            };
+            model.mmprojPath = mmprojPath || null;
+            model.capabilities = {
+                ...(model.capabilities || {}),
+                vision: visionEnabled
+            };
+
+            delete detectedContextLimitsCache[cacheKey];
+            contextLimitRefreshedThisSession.delete(cacheKey);
+
+            if (currentModelBackend === 'llamacpp' && currentLlamaCppPath === model.path) {
+                statusEl.textContent = 'Saved. Reloading active model...';
+                const reloadResp = await fetch(`${PROXY_BASE}/api/llamacpp/load`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ modelPath: model.path })
+                });
+                if (!reloadResp.ok) {
+                    const err = await reloadResp.json().catch(() => ({}));
+                    throw new Error(`Saved profile, but reload failed: ${err.error || `HTTP ${reloadResp.status}`}`);
+                }
+                await getOrFetchContextLimit(currentModelName, 'llamacpp', model.path);
+                const currentModelData = await loadModelChatState(currentModelName);
+                if (!(currentModelData?.contextLimitOverride > 0)) {
+                    const contextLimitInput = document.getElementById('contextLimit');
+                    if (contextLimitInput) contextLimitInput.value = String(ctxSize);
+                    updateContextLimitInfo();
+                }
+                statusEl.textContent = 'Saved and reloaded.';
+            } else {
+                statusEl.textContent = 'Saved.';
+            }
+
+            statusEl.style.color = 'var(--success)';
+            await fetchAvailableModels();
+            populateModelDropdown(availableModels, currentModelName);
+        } catch (err) {
+            statusEl.textContent = err.message;
+            statusEl.style.color = 'var(--error-text)';
+        } finally {
+            controls.saveBtn.disabled = false;
+            controls.deleteBtn.disabled = dataCurrentModelPath() === model.path;
+        }
+    }
+
+    function dataCurrentModelPath() {
+        return currentModelBackend === 'llamacpp' ? currentLlamaCppPath : null;
+    }
+
     async function populateLlamaCppModelList() {
         const listEl = document.getElementById('llamaCppModelList');
         if (!listEl) return;
@@ -3780,19 +3929,45 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             listEl.innerHTML = '';
             for (const model of models) {
-                const row = document.createElement('div');
-                row.className = 'mgmt-model-row';
+                const card = document.createElement('div');
+                card.className = 'mgmt-model-row';
+                card.style.cssText = 'display:block;padding:12px;border:1px solid var(--border-color);border-radius:12px;margin-bottom:10px';
 
-                const nameSpan = document.createElement('span');
+                const header = document.createElement('div');
+                header.style.cssText = 'display:flex;align-items:flex-start;justify-content:space-between;gap:12px';
+
+                const titleWrap = document.createElement('div');
+                titleWrap.style.cssText = 'min-width:0;flex:1';
+
+                const nameSpan = document.createElement('div');
                 nameSpan.className = 'mgmt-model-name';
                 nameSpan.textContent = model.name;
                 nameSpan.title = model.path;
-                row.appendChild(nameSpan);
+                titleWrap.appendChild(nameSpan);
 
-                const sizeSpan = document.createElement('span');
-                sizeSpan.className = 'mgmt-model-size';
-                if (model.size > 0) sizeSpan.textContent = (model.size / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
-                row.appendChild(sizeSpan);
+                const pathMeta = document.createElement('div');
+                pathMeta.textContent = model.path;
+                pathMeta.style.cssText = 'margin-top:4px;color:var(--text-muted);font-size:12px;word-break:break-all';
+                titleWrap.appendChild(pathMeta);
+
+                const badgeRow = document.createElement('div');
+                badgeRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:8px';
+                if (model.size > 0) {
+                    badgeRow.appendChild(makeLlamaCapabilityBadge(`${(model.size / (1024 * 1024 * 1024)).toFixed(1)} GB`, 'Model file size'));
+                }
+                badgeRow.appendChild(makeLlamaCapabilityBadge(`ctx ${model.runtimeProfile?.ctxSize || 32768}`, 'Per-model context size used for llama-server'));
+                badgeRow.appendChild(makeLlamaCapabilityBadge(`gpu ${model.runtimeProfile?.gpuLayers ?? '-1'}`, 'Per-model GPU layers override'));
+                if (model.capabilities?.vision || model.mmprojPath) {
+                    badgeRow.appendChild(makeLlamaCapabilityBadge('vision', model.mmprojPath ? `mmproj: ${model.mmprojPath}` : 'Vision enabled for this GGUF'));
+                }
+                if (model.capabilities?.reasoningLikely) {
+                    badgeRow.appendChild(makeLlamaCapabilityBadge('reasoning', 'Filename heuristic suggests a reasoning model'));
+                }
+                titleWrap.appendChild(badgeRow);
+                header.appendChild(titleWrap);
+
+                const actions = document.createElement('div');
+                actions.style.cssText = 'display:flex;align-items:center;gap:8px;flex-shrink:0';
 
                 const isRunning = data.currentModel && data.currentModel === model.path;
                 const delBtn = document.createElement('button');
@@ -3823,8 +3998,79 @@ document.addEventListener('DOMContentLoaded', async () => {
                         delBtn.disabled = false;
                     }
                 });
-                row.appendChild(delBtn);
-                listEl.appendChild(row);
+
+                const saveBtn = document.createElement('button');
+                saveBtn.type = 'button';
+                saveBtn.className = 'modal-button primary';
+                saveBtn.textContent = 'Save Profile';
+                saveBtn.style.padding = '8px 10px';
+
+                actions.appendChild(saveBtn);
+                actions.appendChild(delBtn);
+                header.appendChild(actions);
+                card.appendChild(header);
+
+                const form = document.createElement('div');
+                form.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px';
+
+                const makeField = (labelText, inputEl) => {
+                    const field = document.createElement('label');
+                    field.className = 'llamacpp-field';
+                    field.style.marginBottom = '0';
+                    const label = document.createElement('div');
+                    label.className = 'llamacpp-field-label';
+                    label.textContent = labelText;
+                    field.appendChild(label);
+                    field.appendChild(inputEl);
+                    return field;
+                };
+
+                const ctxInput = document.createElement('input');
+                ctxInput.type = 'number';
+                ctxInput.className = 'llamacpp-input';
+                ctxInput.min = '512';
+                ctxInput.step = '512';
+                ctxInput.value = String(model.runtimeProfile?.ctxSize || 32768);
+
+                const gpuInput = document.createElement('input');
+                gpuInput.type = 'number';
+                gpuInput.className = 'llamacpp-input';
+                gpuInput.min = '-1';
+                gpuInput.value = String(model.runtimeProfile?.gpuLayers ?? '-1');
+
+                const mmprojInput = document.createElement('input');
+                mmprojInput.type = 'text';
+                mmprojInput.className = 'llamacpp-input';
+                mmprojInput.placeholder = 'Optional mmproj path';
+                mmprojInput.value = model.mmprojPath || '';
+                mmprojInput.style.gridColumn = '1 / -1';
+
+                const visionWrap = document.createElement('label');
+                visionWrap.style.cssText = 'display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12px';
+                const visionInput = document.createElement('input');
+                visionInput.type = 'checkbox';
+                visionInput.checked = !!(model.capabilities?.vision || model.mmprojPath);
+                const visionText = document.createElement('span');
+                visionText.textContent = 'Allow image uploads for this model';
+                visionWrap.appendChild(visionInput);
+                visionWrap.appendChild(visionText);
+
+                form.appendChild(makeField('Context size (tokens)', ctxInput));
+                form.appendChild(makeField('GPU layers', gpuInput));
+                form.appendChild(makeField('mmproj path override', mmprojInput));
+                form.appendChild(visionWrap);
+                card.appendChild(form);
+
+                const statusEl = document.createElement('div');
+                statusEl.style.cssText = 'margin-top:10px;font-size:12px;color:var(--text-muted)';
+                statusEl.textContent = isRunning ? 'Active model. Saving will reload llama.cpp with the new profile.' : 'Profile changes apply next time this GGUF is loaded.';
+                card.appendChild(statusEl);
+
+                saveBtn.addEventListener('click', async () => {
+                    await saveLlamaCppModelProfile(model, { ctxInput, gpuInput, mmprojInput, visionInput, saveBtn, deleteBtn: delBtn }, statusEl);
+                });
+
+                listEl.appendChild(card);
             }
             if (typeof lucide !== 'undefined') lucide.createIcons({ el: listEl });
         } catch (err) {
@@ -4134,7 +4380,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 contextLimitInput.value = contextLimit;
             } else {
                 // Try to get detected value
-                const detected = await getOrFetchContextLimit(currentModelName, currentModelBackend);
+                const detected = await getOrFetchContextLimit(currentModelName, currentModelBackend, currentModelBackend === 'llamacpp' ? currentLlamaCppPath : null);
                 if (detected) {
                     contextLimitInput.value = detected;
                 } else {
@@ -4225,6 +4471,138 @@ document.addEventListener('DOMContentLoaded', async () => {
     function updateSystemPromptTokenCount() {
         const tokens = estimateTokens(systemPromptInput.value);
         systemPromptTokenCount.textContent = `${tokens} tokens`;
+    }
+
+    function setCheckForUpdatesStatus(message, isError = false) {
+        if (!checkForUpdatesStatus) return;
+        checkForUpdatesStatus.textContent = message || '';
+        checkForUpdatesStatus.style.color = isError ? 'var(--error-text)' : 'var(--text-muted)';
+    }
+
+    function hideUpdateNotice() {
+        if (!updateNotice) return;
+        updateNotice.classList.remove('visible');
+    }
+
+    function formatReleaseDate(publishedAt) {
+        if (!publishedAt) return '';
+
+        const date = new Date(publishedAt);
+        if (Number.isNaN(date.getTime())) return '';
+
+        return new Intl.DateTimeFormat(undefined, {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+        }).format(date);
+    }
+
+    function showUpdateNotice(updateInfo) {
+        if (!updateNotice || !updateNoticeBody || !updateInfo?.latestVersion) return;
+        if (activeUpdateNoticeVersion === updateInfo.latestVersion && updateNotice.classList.contains('visible')) return;
+
+        activeUpdateNoticeVersion = updateInfo.latestVersion;
+        activeUpdateReleaseUrl = updateInfo.releaseUrl || null;
+        updateNoticeBody.textContent = `A new version of OllamaBrah (v${updateInfo.latestVersion}) is available. You are currently on v${updateInfo.currentVersion}.`;
+
+        const releaseDate = formatReleaseDate(updateInfo.publishedAt);
+        if (updateNoticeDate) {
+            if (releaseDate) {
+                updateNoticeDate.textContent = `Published ${releaseDate}`;
+                updateNoticeDate.style.display = 'block';
+            } else {
+                updateNoticeDate.textContent = '';
+                updateNoticeDate.style.display = 'none';
+            }
+        }
+
+        updateNotice.classList.add('visible');
+    }
+
+    async function openUpdateReleasePage() {
+        if (!activeUpdateReleaseUrl || !window.electronAPI?.openExternal) return;
+        await window.electronAPI.openExternal(activeUpdateReleaseUrl);
+    }
+
+    async function runUpdateCheck({ manual = false } = {}) {
+        if (!isElectron || !window.electronAPI?.checkForUpdates) return null;
+
+        if (manual) {
+            setCheckForUpdatesStatus('Checking GitHub Releases...');
+            if (checkForUpdatesButton) checkForUpdatesButton.disabled = true;
+        }
+
+        try {
+            const result = await window.electronAPI.checkForUpdates();
+
+            if (result?.status === 'update-available') {
+                showUpdateNotice(result);
+                if (manual) {
+                    setCheckForUpdatesStatus(`v${result.latestVersion} is available.`);
+                }
+                return result;
+            }
+
+            if (result?.status === 'up-to-date') {
+                if (manual) {
+                    setCheckForUpdatesStatus(`You are up to date on v${result.currentVersion}.`);
+                }
+                return result;
+            }
+
+            if (manual) {
+                setCheckForUpdatesStatus(result?.error || 'Unable to check for updates right now.', true);
+            }
+            return result;
+        } finally {
+            if (manual && checkForUpdatesButton) {
+                checkForUpdatesButton.disabled = false;
+            }
+        }
+    }
+
+    async function initializeUpdateSettings() {
+        if (!isElectron) return;
+
+        const stored = await chrome.storage.local.get([UPDATE_NOTIFICATIONS_KEY]);
+        const notificationsEnabled = stored[UPDATE_NOTIFICATIONS_KEY] !== false;
+
+        if (updateNotificationsToggle) {
+            updateNotificationsToggle.checked = notificationsEnabled;
+            updateNotificationsToggle.addEventListener('change', async () => {
+                await chrome.storage.local.set({ [UPDATE_NOTIFICATIONS_KEY]: updateNotificationsToggle.checked });
+                if (!updateNotificationsToggle.checked) {
+                    hideUpdateNotice();
+                }
+            });
+        }
+
+        if (checkForUpdatesButton) {
+            checkForUpdatesButton.addEventListener('click', () => {
+                runUpdateCheck({ manual: true }).catch(err => {
+                    setCheckForUpdatesStatus(err.message || 'Unable to check for updates right now.', true);
+                    if (checkForUpdatesButton) checkForUpdatesButton.disabled = false;
+                });
+            });
+        }
+
+        if (openUpdateReleaseButton) {
+            openUpdateReleaseButton.addEventListener('click', () => {
+                openUpdateReleasePage().catch(err => console.warn('[updates] Could not open release page:', err));
+            });
+        }
+
+        if (dismissUpdateNoticeButton) {
+            dismissUpdateNoticeButton.addEventListener('click', hideUpdateNotice);
+        }
+
+        if (closeUpdateNoticeButton) {
+            closeUpdateNoticeButton.addEventListener('click', hideUpdateNotice);
+        }
+
+        if (notificationsEnabled) {
+            runUpdateCheck().catch(err => console.warn('[updates] Startup check failed:', err));
+        }
     }
 
     function updateInputTokenCount() {
@@ -5199,6 +5577,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 messages: apiMessages,
                 stream: true
             };
+            if (currentModelBackend === 'llamacpp' && currentLlamaCppPath) {
+                requestBody._path = currentLlamaCppPath;
+            }
 
             if (webSearchEnabled) requestBody._webSearch = true;
             if (deepResearchEnabled) requestBody._deepResearch = true;
@@ -5839,7 +6220,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         currentModelName = newModelName;
-        chrome.storage.local.set({ lastUsedOllamaModel: newModelName });
+        await persistActiveBackendState({ backend: 'ollama', ollamaModel: newModelName });
         sidebarSearchQuery = '';
         sidebarTagFilter = '';
         conversationSearchInput.value = '';
@@ -5847,7 +6228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateModelDisplay(currentModelName);
 
         // Fetch and cache context limit for the new model
-        await getOrFetchContextLimit(currentModelName, currentModelBackend);
+        await getOrFetchContextLimit(currentModelName, currentModelBackend, currentModelBackend === 'llamacpp' ? currentLlamaCppPath : null);
 
         // Clear any selected images when switching models
         clearSelectedFiles();
@@ -5878,18 +6259,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             await saveDraft(oldModelData.activeConversationId, messageInput.value);
         }
 
-        // Disable web search / deep research (Ollama-only features)
-        if (webSearchEnabled) {
-            webSearchEnabled = false;
-            webSearchButton.classList.remove('active');
-            webSearchButton.title = 'Web Search: OFF';
-        }
-        if (deepResearchEnabled) {
-            deepResearchEnabled = false;
-            deepResearchButton.classList.remove('active');
-            deepResearchButton.title = 'Deep Research: OFF';
-        }
-
         // Show loading state
         messageInput.disabled = true;
         sendButton.disabled = true;
@@ -5912,6 +6281,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentModelBackend = 'llamacpp';
             currentLlamaCppPath = cppModel._path;
             currentModelName = cppModel.name;
+            await persistActiveBackendState({ backend: 'llamacpp', llamaPath: cppModel._path, llamaName: cppModel.name });
             sidebarSearchQuery = '';
             sidebarTagFilter = '';
             conversationSearchInput.value = '';
@@ -5919,10 +6289,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateModelDisplay(currentModelName);
             
             // Fetch and cache context limit for llama.cpp model
-            await getOrFetchContextLimit(currentModelName, 'llamacpp');
+            await getOrFetchContextLimit(currentModelName, 'llamacpp', cppModel._path);
             
             clearSelectedFiles();
-            toggleFileUploadUI(true); // llama.cpp supports document attachments even without vision
+            toggleFileUploadUI(true);
             checkServerStatus();
 
             let modelData = await loadModelChatState(currentModelName);
@@ -5974,7 +6344,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     name: m.name,
                     size: m.size,
                     _backend: 'llamacpp',
-                    _path: m.path
+                    _path: m.path,
+                    _capabilities: m.capabilities || {},
+                    _runtimeProfile: m.runtimeProfile || {},
+                    _mmprojPath: m.mmprojPath || null,
+                    modifiedAt: m.modifiedAt || null
                 }));
                 availableModels = availableModels.concat(cppEntries);
             }
@@ -5991,7 +6365,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateModelDisplay(currentModelName);
 
         await loadDetectedContextLimits();
-        await getOrFetchContextLimit(currentModelName, currentModelBackend);
+        await getOrFetchContextLimit(currentModelName, currentModelBackend, currentModelBackend === 'llamacpp' ? currentLlamaCppPath : null);
 
         toggleFileUploadUI(true);
 
@@ -6023,11 +6397,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    async function getOrFetchContextLimit(model, backend) {
+    async function getOrFetchContextLimit(model, backend, modelPath = null) {
         // Cloud models: Ollama stores a conservative local value, not the real cloud context
         if (isCloudModel(model)) return CLOUD_CONTEXT_LIMIT;
 
-        const cacheKey = `${backend}:${model}`;
+        const cacheKey = getContextCacheKey(model, backend, modelPath);
         const cached = detectedContextLimitsCache[cacheKey];
         // Skip cache only if the value is the fallback default AND we haven't refreshed it
         // this session yet — avoids re-fetching on every settings open for models that
@@ -6038,7 +6412,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         contextLimitRefreshedThisSession.add(cacheKey);
         try {
-            const resp = await fetch(`${PROXY_BASE}/api/model/detect-context-limit?model=${encodeURIComponent(model)}&backend=${encodeURIComponent(backend)}`);
+            const query = new URLSearchParams({ model, backend });
+            if (backend === 'llamacpp' && modelPath) query.set('modelPath', modelPath);
+            const resp = await fetch(`${PROXY_BASE}/api/model/detect-context-limit?${query.toString()}`);
             if (resp.ok) {
                 const data = await resp.json();
                 const limit = data.contextLimit;
@@ -6048,7 +6424,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (data.source !== 'fallback') {
                     await window.electronAPI.db.saveDetectedContextLimit(cacheKey, limit);
                 }
-                console.log(`[OllamaBro] Detected context limit for ${model} (${backend}): ${limit} (${data.source})`);
+                console.log(`[OllamaBro] Detected context limit for ${model} (${backend}${modelPath ? ` @ ${modelPath}` : ''}): ${limit} (${data.source})`);
                 return limit;
             }
         } catch (e) {
@@ -6163,13 +6539,28 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         let urlModel = new URLSearchParams(window.location.search).get('model');
         if (!urlModel) {
-            // No model in URL — pick last used Ollama model, or fall back to first available
+            // No model in URL — restore the last active backend if possible
             const models = await fetchAvailableModels();
+            const storedBackend = await chrome.storage.local.get(['lastUsedOllamaModel', 'lastUsedLlamaCppPath', 'lastActiveBackend']);
+            if (storedBackend.lastActiveBackend === 'llamacpp' && storedBackend.lastUsedLlamaCppPath) {
+                const cppMatch = models.find(m => m._backend === 'llamacpp' && m._path === storedBackend.lastUsedLlamaCppPath);
+                if (cppMatch && readiness?.checks?.llamacpp?.canUse) {
+                    currentModelBackend = 'llamacpp';
+                    currentLlamaCppPath = cppMatch._path;
+                    urlModel = cppMatch.name;
+                }
+            }
+
             const ollamaModels = models.filter(m => m._backend !== 'llamacpp');
-            const stored = await chrome.storage.local.get('lastUsedOllamaModel');
-            const lastUsed = stored.lastUsedOllamaModel;
-            const match = lastUsed && ollamaModels.find(m => m.name === lastUsed);
-            urlModel = match ? lastUsed : (ollamaModels[0] ? ollamaModels[0].name : null);
+            if (!urlModel) {
+                const lastUsed = storedBackend.lastUsedOllamaModel;
+                const match = lastUsed && ollamaModels.find(m => m.name === lastUsed);
+                urlModel = match ? lastUsed : (ollamaModels[0] ? ollamaModels[0].name : null);
+                if (urlModel) {
+                    currentModelBackend = 'ollama';
+                    currentLlamaCppPath = null;
+                }
+            }
             if (!urlModel) {
                 if (readiness?.primaryBackend === 'llamacpp' && readiness?.checks?.llamacpp?.canUse) {
                     modelNameDisplay.textContent = 'llama.cpp fallback available';
@@ -6410,6 +6801,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         appearanceSectionToggle.addEventListener('click', () => toggleSection('appearanceSectionToggle', 'appearanceSectionBody'));
     }
 
+    const updatesSectionToggle = document.getElementById('updatesSectionToggle');
+    if (updatesSectionToggle) {
+        updatesSectionToggle.addEventListener('click', () => toggleSection('updatesSectionToggle', 'updatesSectionBody'));
+    }
+
     const modelMgmtSectionToggle = document.getElementById('modelMgmtSectionToggle');
     if (modelMgmtSectionToggle) {
         modelMgmtSectionToggle.addEventListener('click', () => toggleSection('modelMgmtSectionToggle', 'modelMgmtSectionBody'));
@@ -6499,9 +6895,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const stopLlamaCppBtn = document.getElementById('stopLlamaCppServer');
     if (stopLlamaCppBtn) {
         stopLlamaCppBtn.addEventListener('click', async () => {
+            const fallbackOllamaModel = currentModelBackend === 'ollama' ? currentModelName : null;
             await fetch(`${PROXY_BASE}/api/llamacpp/stop`, { method: 'POST' }).catch(() => {});
             currentModelBackend = 'ollama';
             currentLlamaCppPath = null;
+            await persistActiveBackendState({ backend: 'ollama', ollamaModel: fallbackOllamaModel });
             loadLlamaCppSettings();
         });
     }
@@ -8197,6 +8595,31 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ─── llama.cpp Settings ───────────────────────────────────────────────────
 
+    function formatLlamaCppStatusText(status) {
+        if (!status) return 'Server: unknown';
+
+        const parts = [`Server: ${status.status || 'unknown'}`];
+        const activeName = status.model || (status.modelPath ? status.modelPath.split(/[/\\]/).pop() : '');
+        const desiredName = status.desiredModelPath ? status.desiredModelPath.split(/[/\\]/).pop() : '';
+
+        if (activeName) {
+            parts.push(`active ${activeName}`);
+        }
+        if (status.isLoading && desiredName && desiredName !== activeName) {
+            parts.push(`target ${desiredName}`);
+        } else if ((status.status === 'warming' || status.status === 'loading') && desiredName) {
+            parts.push(`target ${desiredName}`);
+        }
+        if (typeof status.modelCount === 'number') {
+            parts.push(`${status.modelCount} GGUF`);
+        }
+        if (status.port) {
+            parts.push(`port ${status.port}`);
+        }
+
+        return parts.join(' | ');
+    }
+
     async function loadLlamaCppSettings() {
         const stored = await chrome.storage.local.get('llamaCppConfig');
         const config = stored.llamaCppConfig || {};
@@ -8219,13 +8642,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (portInput) portInput.value = config.port || status.port || '8080';
 
                 if (statusEl) {
-                    const modelName = status.model ? ` — ${status.model}` : '';
-                    statusEl.textContent = `Server: ${status.status}${modelName}`;
+                    statusEl.textContent = formatLlamaCppStatusText(status);
+                    statusEl.title = [
+                        `State: ${status.status || 'unknown'}`,
+                        status.modelPath ? `Active model: ${status.modelPath}` : null,
+                        status.desiredModelPath ? `Desired model: ${status.desiredModelPath}` : null,
+                        status.message || null,
+                    ].filter(Boolean).join('\n');
                 }
             }
         } catch (e) {
             const statusEl = document.getElementById('llamaCppServerStatus');
-            if (statusEl) statusEl.textContent = 'Server: proxy not running';
+            if (statusEl) {
+                statusEl.textContent = 'Server: proxy not running';
+                statusEl.title = 'The local proxy could not be reached.';
+            }
         }
 
         populateLlamaCppModelList();
@@ -8835,6 +9266,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     await loadSavedTheme();
+    await initializeUpdateSettings();
 
     // Sync saved llama.cpp config to proxy so settings survive extension reload
     chrome.storage.local.get('llamaCppConfig').then(stored => {
@@ -8879,6 +9311,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (typeof state.currentModelBackend !== 'undefined') {
                 if (typeof currentModelBackend !== 'undefined') currentModelBackend = state.currentModelBackend;
+            }
+            if (typeof state.currentLlamaCppPath !== 'undefined') {
+                if (typeof currentLlamaCppPath !== 'undefined') currentLlamaCppPath = state.currentLlamaCppPath;
             }
         }
 

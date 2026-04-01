@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New — v1.5.4
+## What's New - v1.9.5
 
-- **Startup is more reliable after the single-instance fix** — duplicate launches now exit immediately without looking like a first-launch crash while the primary window keeps opening normally
-- **Relaunch focus handling is safer during startup** — if a second launch happens before the main window is ready, OllamaBrah now focuses it once the window finishes initializing
-- **Single-instance behavior stays intact** — repeated launches should still resolve to one app instance and one Task Manager app group during normal use
+- **OllamaBrah now has lightweight app update notifications** - the app can check GitHub Releases, show a compact update notice with version/date details, and open the release page directly
+- **Users can control update checks from Settings** - startup notifications can be disabled completely, while manual checks remain available on demand
+- **The update flow stays simple and notify-only** - there is no auto-installer plumbing, just a direct path to the latest GitHub release when a newer version exists
 
 ---
 
@@ -21,6 +21,9 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 ### Models & Backends
 - **Ollama** — chat with any locally installed Ollama model
 - **llama.cpp** — run GGUF models directly via `llama-server`; configure binary path, models directory, GPU layers, context size, and server port
+- `llama.cpp` scans GGUFs into a manifest with per-model runtime profiles, inferred capabilities, and automatic `mmproj` pairing for multimodal setups
+- `llama.cpp` now supports the same app-side web search, deep research, memory injection, and explicit memory-save automation used by the Ollama backend
+- `llama.cpp` session state is persisted so the app can recover the last active GGUF runtime and reuse in-flight loads instead of treating every startup like a cold manual launch
 - Document attachments work with `llama.cpp` even when image attachments are unavailable
 - Model switcher, model management, and dashboard views with live availability checking plus separate local, cloud, and `llama.cpp` sections
 - Dot-safe model history storage with legacy migration so dashboard and usage stats stay accurate for future model names
@@ -43,6 +46,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Message history navigation with `↑` / `↓`
 - Pin messages to preserve them in context
 - Per-message actions: copy, read aloud, download as TXT or Markdown, remove
+- GitHub Releases update checks with optional startup notifications, a manual check button in Settings, and a compact update popup with version/date info
 - Drag & drop file attachments
 - Supported file types: images, PDF, TXT, Markdown, Python, JS, TS, JSON, HTML, CSS, SQL, Shell, YAML, XML, CSV, logs
 - Document attachments are chunked and summarized automatically, with only the most relevant excerpts injected into context on each turn
