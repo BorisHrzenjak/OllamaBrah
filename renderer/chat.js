@@ -1601,7 +1601,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const summary = summarizeReadiness(report);
             updateServerStatusDot(summary.state, summary.label);
 
-            if (forceRender || report.overallState !== 'ready' || (report.blockingIssues && report.blockingIssues.length > 0)) {
+            const hasBlockingIssues = !!(report.blockingIssues && report.blockingIssues.length > 0);
+            const shouldRenderCard = forceRender
+                || hasBlockingIssues
+                || (!currentModelName && report.overallState !== 'ready');
+
+            if (shouldRenderCard) {
                 renderReadinessCard(report);
             } else {
                 clearReadinessCard();
@@ -6207,6 +6212,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const oldModelName = currentModelName;
         if (newModelName === oldModelName) return;
         const wasLlamaCpp = currentModelBackend === 'llamacpp';
+        if (wasLlamaCpp) {
+            try {
+                await fetch(`${PROXY_BASE}/api/llamacpp/stop`, { method: 'POST' });
+            } catch (err) {
+                console.warn('[llama.cpp] Could not stop server while switching to Ollama:', err);
+            }
+        }
         currentModelBackend = 'ollama';
         currentLlamaCppPath = null;
         if (wasLlamaCpp) checkServerStatus();
@@ -8616,6 +8628,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (status.port) {
             parts.push(`port ${status.port}`);
         }
+        parts.push(status.autoRecover ? 'startup keep-alive on' : 'startup keep-alive off');
 
         return parts.join(' | ');
     }
@@ -8633,6 +8646,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const gpuInput = document.getElementById('llamaCppGpuLayers');
                 const ctxInput = document.getElementById('llamaCppCtxSize');
                 const portInput = document.getElementById('llamaCppPort');
+                const autoRecoverInput = document.getElementById('llamaCppAutoRecover');
                 const statusEl = document.getElementById('llamaCppServerStatus');
 
                 if (exeInput) exeInput.value = config.executable || status.executable || 'C:\\llama.cpp\\llama-server.exe';
@@ -8640,6 +8654,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (gpuInput) gpuInput.value = config.gpuLayers ?? status.gpuLayers ?? '-1';
                 if (ctxInput) ctxInput.value = config.ctxSize ?? status.ctxSize ?? '32768';
                 if (portInput) portInput.value = config.port || status.port || '8080';
+                if (autoRecoverInput) autoRecoverInput.checked = config.autoRecover ?? status.autoRecover ?? false;
 
                 if (statusEl) {
                     statusEl.textContent = formatLlamaCppStatusText(status);
@@ -8668,7 +8683,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             modelsDir: (document.getElementById('llamaCppModelsDir')?.value || '').trim(),
             gpuLayers: document.getElementById('llamaCppGpuLayers')?.value || '-1',
             ctxSize: document.getElementById('llamaCppCtxSize')?.value || '32768',
-            port: document.getElementById('llamaCppPort')?.value || '8080'
+            port: document.getElementById('llamaCppPort')?.value || '8080',
+            autoRecover: document.getElementById('llamaCppAutoRecover')?.checked === true
         };
 
         await chrome.storage.local.set({ llamaCppConfig: config });

@@ -5866,6 +5866,10 @@ body {
                                     max="65535">
                             </div>
                         </div>
+                        <label class="llamacpp-field-label" for="llamaCppAutoRecover" style="display:flex;align-items:flex-start;gap:10px;margin-top:var(--space-sm);cursor:pointer">
+                            <input type="checkbox" id="llamaCppAutoRecover" style="margin-top:2px">
+                            <span>Keep the last llama.cpp model loaded on startup. Leave this off to free RAM when using Ollama or other local models.</span>
+                        </label>
                         <div style="display:flex;align-items:center;gap:var(--space-md);margin-top:var(--space-sm)">
                             <button id="saveLlamaCppConfig" class="modal-button primary">Save</button>
                             <button id="stopLlamaCppServer" class="modal-button secondary" title="Kill the running llama-server process">Stop server</button>

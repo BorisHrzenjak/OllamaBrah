@@ -97,7 +97,7 @@ function persistLlamaSessionState(overrides = {}) {
     const current = loadLlamaSessionFile();
     const next = {
         backend: 'llamacpp',
-        autoRecover: true,
+        autoRecover: false,
         desiredModelPath: llamaDesiredModel,
         activeModelPath: llamaCurrentModel,
         status: llamaStatus,
@@ -442,6 +442,7 @@ function getLlamacppDiagnostics() {
         status: llamaStatus,
         configured,
         canUse,
+        autoRecover: loadLlamaSessionFile().autoRecover === true,
         model: llamaCurrentModel ? path.basename(llamaCurrentModel) : null,
         modelPath: llamaCurrentModel,
         desiredModelPath: llamaDesiredModel,
@@ -482,12 +483,13 @@ function handleLlamacppStatus(req, res) {
 }
 
 function handleLlamacppConfig(req, res) {
-    const { executable, modelsDir, gpuLayers, port, ctxSize } = req.body || {};
+    const { executable, modelsDir, gpuLayers, port, ctxSize, autoRecover } = req.body || {};
     if (executable) llamaExecutable = executable;
     if (modelsDir) llamaModelsDir = modelsDir;
     if (gpuLayers !== undefined && gpuLayers !== null) llamaGpuLayers = String(gpuLayers);
     if (port) llamaPort = parseInt(port, 10);
     if (ctxSize) llamaCtxSize = parseInt(ctxSize, 10);
+    if (typeof autoRecover === 'boolean') persistLlamaSessionState({ autoRecover });
     scanLlamaCppManifest();
     const savedSession = loadLlamaSessionFile();
     const desiredModelPath = savedSession.desiredModelPath || savedSession.activeModelPath;
@@ -538,7 +540,7 @@ async function handleLlamacppStop(req, res) {
     llamaStatus = 'idle';
     llamaDesiredModel = null;
     llamaCurrentModel = null;
-    persistLlamaSessionState({ desiredModelPath: null, activeModelPath: null, status: llamaStatus, autoRecover: false });
+    persistLlamaSessionState({ desiredModelPath: null, activeModelPath: null, status: llamaStatus });
     res.json({ ok: true });
 }
 
