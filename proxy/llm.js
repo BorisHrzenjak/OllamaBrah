@@ -606,6 +606,114 @@ function buildMemoryMeta(memHits) {
     };
 }
 
+function normalizeResearchPolicy(value, fallback = 'auto') {
+    if (value === 'web' || value === 'deep' || value === 'auto' || value === 'off') return value;
+    return fallback;
+}
+
+function normalizeMemoryPolicy(value, fallback = 'off') {
+    if (value === 'off' || value === 'inject' || value === 'inject_and_extract') return value;
+    return fallback;
+}
+
+function normalizeSkillsPolicy(value, fallback = 'auto') {
+    if (value === 'auto' || value === 'manual') return value;
+    return fallback;
+}
+
+function tokenizeSkillText(text) {
+    return new Set(String(text || '').toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length >= 3));
+}
+
+function buildAgentSkillBlock(messageContent, { skillsPolicy = 'auto', skillHint = '' } = {}) {
+    const loadedSkills = Array.isArray(skillsModule.loadedSkills) ? skillsModule.loadedSkills : [];
+    if (loadedSkills.length === 0 && !skillHint) return '';
+
+    const sections = [];
+    if (loadedSkills.length > 0) {
+        const skillLines = loadedSkills.map(s => `- ${s.name}: ${s.description}`).join('\n');
+        sections.push(`Available Skills:\n${skillLines}\nUse the loadSkill tool to load a skill's full instructions before using it when one is relevant.`);
+    }
+
+    if (skillHint) {
+        sections.push(skillHint);
+    } else if (skillsPolicy === 'auto' && loadedSkills.length > 0) {
+        const lowerContent = String(messageContent || '').toLowerCase();
+        const queryTokens = tokenizeSkillText(lowerContent);
+        const matches = loadedSkills
+            .map(skill => {
+                const nameLower = String(skill.name || '').toLowerCase();
+                const descLower = String(skill.description || '').toLowerCase();
+                let score = 0;
+
+                if (nameLower && lowerContent.includes(nameLower)) score += 8;
+                nameLower.split(/[^a-z0-9]+/).filter(token => token.length >= 3).forEach(token => {
+                    if (queryTokens.has(token)) score += 3;
+                });
+                descLower.split(/[^a-z0-9]+/).filter(token => token.length >= 5).forEach(token => {
+                    if (queryTokens.has(token)) score += 1;
+                });
+
+                return { skill, score };
+            })
+            .filter(entry => entry.score >= 3)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 3);
+
+        if (matches.length > 0) {
+            sections.push(
+                'Potentially relevant skills for this request:\n' +
+                matches.map(({ skill }) => `- ${skill.name}: ${skill.description}`).join('\n') +
+                '\nIf one of these would help, call loadSkill("<name>") before continuing.'
+            );
+        }
+    }
+
+    return sections.join('\n\n').trim();
+}
+
+function buildAgentCapabilityConfig(body = {}) {
+    const researchFallback = body._deepResearch === true
+        ? 'deep'
+        : body._webSearch === true
+            ? 'web'
+            : 'auto';
+    const memoryFallback = body._memory === true
+        ? (body._memoryAutoExtract === true ? 'inject_and_extract' : 'inject')
+        : 'off';
+
+    return {
+        researchPolicy: normalizeResearchPolicy(body._researchPolicy, researchFallback),
+        memoryPolicy: normalizeMemoryPolicy(body._memoryPolicy, memoryFallback),
+        skillsPolicy: normalizeSkillsPolicy(body._skillsPolicy, 'auto'),
+        skillHint: String(body._skillHint || '').trim(),
+        saveToMemory: body._saveToMemory,
+    };
+}
+
+async function prepareAgentMessages(messages, capabilityConfig = {}, logPrefix = 'Agent') {
+    const lastUserMsg = [...(messages || [])].reverse().find(m => m.role === 'user');
+    const augmentation = await augmentChatMessages(messages, {
+        webSearchRequested: capabilityConfig.researchPolicy === 'web',
+        deepResearchRequested: capabilityConfig.researchPolicy === 'deep',
+        allowHeuristicSearch: capabilityConfig.researchPolicy !== 'off',
+        memoryRequested: capabilityConfig.memoryPolicy === 'inject' || capabilityConfig.memoryPolicy === 'inject_and_extract',
+        saveToMemory: capabilityConfig.saveToMemory,
+    }, logPrefix);
+
+    let finalMessages = augmentation.messages;
+    const skillBlock = buildAgentSkillBlock(lastUserMsg?.content || '', capabilityConfig);
+    if (skillBlock) {
+        finalMessages = prependSystemBlock(finalMessages, skillBlock);
+    }
+
+    return {
+        ...augmentation,
+        messages: finalMessages,
+        contextBreakdown: buildContextBreakdown(finalMessages, augmentation.searchMeta)
+    };
+}
+
 async function autoSaveExplicitMemory(messages, saveValue) {
     const toSave = String(saveValue || '').trim();
     if (!toSave) return false;
@@ -649,6 +757,8 @@ async function augmentChatMessages(messages, flags = {}, logPrefix = 'Chat') {
         const urls = extractUrls(messageContent);
         let searchWasAttempted = false;
         let heuristicTriggered = false;
+        const allowHeuristicSearch = flags.allowHeuristicSearch !== false;
+        const heuristicNeedsWebSearch = allowHeuristicSearch && heuristicNeedsSearch(messageContent);
 
         const urlsPromise = Promise.allSettled(
             urls.slice(0, 2).map(url => {
@@ -671,9 +781,9 @@ async function augmentChatMessages(messages, flags = {}, logPrefix = 'Chat') {
                     });
                     return data ? { _tavilyFallback: true, results: data.results } : null;
                 });
-        } else if (flags.webSearchRequested || heuristicNeedsSearch(messageContent)) {
+        } else if (flags.webSearchRequested || heuristicNeedsWebSearch) {
             searchWasAttempted = true;
-            heuristicTriggered = !flags.webSearchRequested && heuristicNeedsSearch(messageContent);
+            heuristicTriggered = !flags.webSearchRequested && heuristicNeedsWebSearch;
             const query = messageContent.slice(0, 300);
             const isNews = heuristicNeedsNewsSearch(messageContent);
             const range = heuristicTimeRange(messageContent);
@@ -1227,13 +1337,14 @@ async function handleAgentChat(req, res) {
     const tools = getEnabledTools();
     // Session-scoped permission grants — cleared when this request ends (not global)
     const sessionPermissions = new Map();
+    let previousStepUsedTools = false;
 
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('Cache-Control', 'no-cache');
 
     // Use continueFrom if resuming; directive is already embedded in those messages
-    const messages = continueFrom ? [...continueFrom] : [...(initialMessages || [])];
+    let messages = continueFrom ? [...continueFrom] : [...(initialMessages || [])];
 
     if (!continueFrom) {
         // Inject agent directive so the model knows to call tools instead of refusing
@@ -1267,49 +1378,18 @@ async function handleAgentChat(req, res) {
             messages.unshift({ role: 'system', content: AGENT_DIRECTIVE });
         }
 
-        // Append loaded skill list to system message
-        const loadedSkills = skillsModule.loadedSkills;
-        if (loadedSkills.length > 0) {
-            const skillLines = loadedSkills.map(s => `- ${s.name}: ${s.description}`).join('\n');
-            const sysMsg = messages.find(m => m.role === 'system');
-            if (sysMsg) {
-                sysMsg.content += `\n\nAvailable Skills:\n${skillLines}\nUse the loadSkill tool to load a skill's full instructions before using it.`;
-            }
-        }
+        const capabilityConfig = buildAgentCapabilityConfig({ ...(req.body || {}), _skillHint });
+        const capabilityContext = await prepareAgentMessages(messages, capabilityConfig, 'Agent');
+        messages = capabilityContext.messages;
 
-        // Inject skill hint if the user activated a skill via slash popup
-        if (_skillHint) {
-            const sysMsg = messages.find(m => m.role === 'system');
-            if (sysMsg) sysMsg.content += '\n\n' + _skillHint;
+        if (capabilityContext.searchMeta) {
+            res.write(JSON.stringify({ _searchEvent: capabilityContext.searchMeta }) + '\n');
         }
-
-        // Heuristic pre-search: if the last user message looks time-sensitive, run Tavily
-        // immediately and inject the results into context — mirrors the regular chat path.
-        // This guarantees real data reaches the model even if it doesn't call webSearch itself.
-        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
-        if (lastUserMsg && heuristicNeedsSearch(lastUserMsg.content || '')) {
-            const query = (lastUserMsg.content || '').slice(0, 300);
-            const isNews = heuristicNeedsNewsSearch(lastUserMsg.content || '');
-            const range = heuristicTimeRange(lastUserMsg.content || '');
-            console.log(`[Agent/Search] Heuristic triggered — pre-fetching results for: "${query.slice(0, 80)}" (time_range=${range})`);
-            try {
-                const searchData = await fetchTavilyResults(query, isNews ? { topic: 'news', time_range: range } : { time_range: range });
-                const sysMsg = messages.find(m => m.role === 'system');
-                if (sysMsg) {
-                    if (searchData && !searchData._configError && searchData.results?.length > 0) {
-                        const snippet = searchData.results
-                            .map((r, i) => `[${i + 1}] ${r.title} — ${r.url}\n${r.content || ''}`)
-                            .join('\n\n')
-                            .slice(0, 3000);
-                        sysMsg.content += `\n\n[Live web search results — ${new Date().toDateString()}]:\n${snippet}`;
-                        console.log(`[Agent/Search] Injected ${searchData.results.length} result(s) into context`);
-                    } else {
-                        sysMsg.content += '\n\n[IMPORTANT: This question involves real-time information. Call webSearch before answering.]';
-                    }
-                }
-            } catch (e) {
-                console.warn('[Agent/Search] Pre-search failed:', e.message);
-            }
+        if (capabilityContext.memoryMeta) {
+            res.write(JSON.stringify({ _memoryEvent: capabilityContext.memoryMeta }) + '\n');
+        }
+        if (capabilityContext.contextBreakdown) {
+            res.write(JSON.stringify({ _contextBreakdown: capabilityContext.contextBreakdown }) + '\n');
         }
     }
 
@@ -1320,6 +1400,14 @@ async function handleAgentChat(req, res) {
 
         for (let step = 1; step <= steps; step++) {
             if (clientGone || res.destroyed || res.writableEnded) break;
+
+            const phase = previousStepUsedTools ? 'post_tools' : (step === 1 ? 'planning' : 'thinking');
+            const statusText = previousStepUsedTools
+                ? 'Reviewing tool results and preparing the next step or final response...'
+                : (step === 1
+                    ? 'Analyzing your request and planning the first step...'
+                    : 'Thinking through the next step...');
+            res.write(JSON.stringify({ type: 'status', phase, text: statusText, step, maxSteps: steps }) + '\n');
 
             // Call model — heartbeat keeps the SSE connection alive during long inference
             let response;
@@ -1349,9 +1437,18 @@ async function handleAgentChat(req, res) {
 
             // If no tool calls, we're done
             if (!toolCalls || toolCalls.length === 0) {
+                previousStepUsedTools = false;
                 res.write(JSON.stringify({ type: 'step_done', step, maxSteps: steps }) + '\n');
                 break;
             }
+
+            res.write(JSON.stringify({
+                type: 'status',
+                phase: 'executing_tools',
+                text: `Running ${toolCalls.length} tool${toolCalls.length === 1 ? '' : 's'}...`,
+                step,
+                maxSteps: steps,
+            }) + '\n');
 
             // Stream all tool_call events upfront, then dispatch all tools in parallel
             for (const tc of toolCalls) {
@@ -1437,6 +1534,8 @@ async function handleAgentChat(req, res) {
             }
 
             if (clientGone || res.destroyed || res.writableEnded) break;
+
+            previousStepUsedTools = true;
 
             res.write(JSON.stringify({ type: 'step_done', step, maxSteps: steps }) + '\n');
 

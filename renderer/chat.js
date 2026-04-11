@@ -148,12 +148,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             deepResearchButton.classList.remove('active');
             deepResearchButton.title = 'Deep Research: OFF';
         }
-        // Disable agent mode when web search is enabled (mutually exclusive)
-        if (webSearchEnabled && agentModeEnabled) {
-            agentModeEnabled = false;
-            agentModeButton.classList.remove('active');
-            agentModeButton.title = 'Agent Mode: OFF';
-        }
     });
 
     // Slash command state
@@ -190,12 +184,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             webSearchButton.classList.remove('active');
             webSearchButton.title = 'Web Search: OFF';
         }
-        // Disable agent mode when deep research is enabled (mutually exclusive)
-        if (deepResearchEnabled && agentModeEnabled) {
-            agentModeEnabled = false;
-            agentModeButton.classList.remove('active');
-            agentModeButton.title = 'Agent Mode: OFF';
-        }
     });
 
     // Agent mode state
@@ -206,18 +194,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         agentModeEnabled = !agentModeEnabled;
         agentModeButton.classList.toggle('active', agentModeEnabled);
         agentModeButton.title = agentModeEnabled ? 'Agent Mode: ON' : 'Agent Mode: OFF';
-        if (agentModeEnabled) {
-            if (webSearchEnabled) {
-                webSearchEnabled = false;
-                webSearchButton.classList.remove('active');
-                webSearchButton.title = 'Web Search: OFF';
-            }
-            if (deepResearchEnabled) {
-                deepResearchEnabled = false;
-                deepResearchButton.classList.remove('active');
-                deepResearchButton.title = 'Deep Research: OFF';
-            }
-        }
     });
 
     // Memory state
@@ -469,19 +445,45 @@ document.addEventListener('DOMContentLoaded', async () => {
         return card;
     }
 
-    async function handleAgentStream(botTextElement, botMessageDiv, reader) {
+    async function handleAgentStream(botTextElement, botMessageDiv, reader, handlers = {}) {
         const decoder = new TextDecoder();
         let buf = '';
         let currentContentDiv = null;
         let currentContentText = '';
         let lastToolCallBlock = {}; // toolName → last block element
         let savedMessagesForContinue = null;
+        let memoryUsageMeta = null;
+        let contextBreakdown = null;
+        let pendingToolCalls = 0;
+        let lastStatusText = '';
+        const onSearchEvent = typeof handlers.onSearchEvent === 'function' ? handlers.onSearchEvent : null;
+        const onMemoryEvent = typeof handlers.onMemoryEvent === 'function' ? handlers.onMemoryEvent : null;
+        const onContextBreakdown = typeof handlers.onContextBreakdown === 'function' ? handlers.onContextBreakdown : null;
 
         // Step counter line
         const counterEl = document.createElement('span');
         counterEl.className = 'agent-step-counter';
         counterEl.textContent = 'Agent running…';
         botTextElement.appendChild(counterEl);
+
+        const liveStatusEl = document.createElement('div');
+        liveStatusEl.className = 'agent-live-status';
+        botTextElement.appendChild(liveStatusEl);
+
+        const setLiveStatus = (text, mode = 'working') => {
+            lastStatusText = text || '';
+            if (!lastStatusText) {
+                liveStatusEl.classList.remove('visible', 'waiting', 'streaming');
+                liveStatusEl.textContent = '';
+                return;
+            }
+            liveStatusEl.textContent = lastStatusText;
+            liveStatusEl.classList.add('visible');
+            liveStatusEl.classList.toggle('waiting', mode === 'waiting');
+            liveStatusEl.classList.toggle('streaming', mode === 'streaming');
+        };
+
+        setLiveStatus('Analyzing your request and planning the first step...');
 
         function renderContinueButtons(savedMessages) {
             const row = document.createElement('div');
@@ -507,8 +509,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                         });
                         if (!resp.ok) throw new Error(`Agent API Error: ${resp.status}`);
                         const contReader = resp.body.getReader();
-                        const contText = await handleAgentStream(botTextElement, botMessageDiv, contReader);
-                        if (contText) currentContentText = contText;
+                        const contResult = await handleAgentStream(botTextElement, botMessageDiv, contReader, handlers);
+                        if (contResult?.text) currentContentText = contResult.text;
                     } catch (e) {
                         const errDiv = document.createElement('div');
                         errDiv.className = 'agent-error';
@@ -522,9 +524,40 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         const processAgentChunk = (chunk) => {
+            if (chunk._searchEvent) {
+                if (onSearchEvent) onSearchEvent(chunk._searchEvent);
+                return false;
+            }
+
+            if (chunk._memoryEvent) {
+                memoryUsageMeta = chunk._memoryEvent;
+                if (onMemoryEvent) onMemoryEvent(chunk._memoryEvent);
+                return false;
+            }
+
+            if (chunk._contextBreakdown) {
+                contextBreakdown = chunk._contextBreakdown;
+                if (onContextBreakdown) onContextBreakdown(chunk._contextBreakdown);
+                return false;
+            }
+
+            if (chunk.type === 'status') {
+                setLiveStatus(chunk.text, chunk.phase === 'executing_tools' ? 'working' : 'working');
+                return false;
+            }
+
             if (chunk.type === 'keepalive') return;
 
+            if (chunk.type === 'heartbeat') {
+                if (lastStatusText) {
+                    liveStatusEl.classList.add('pulse');
+                    setTimeout(() => liveStatusEl.classList.remove('pulse'), 400);
+                }
+                return false;
+            }
+
             if (chunk.type === 'content' && chunk.text) {
+                setLiveStatus('Streaming response...', 'streaming');
                 if (!currentContentDiv) {
                     currentContentDiv = document.createElement('div');
                     currentContentDiv.className = 'agent-content-block';
@@ -538,6 +571,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (chunk.type === 'tool_call') {
                 currentContentDiv = null;
                 currentContentText = '';
+                pendingToolCalls += 1;
+                setLiveStatus(`Running ${pendingToolCalls} tool${pendingToolCalls === 1 ? '' : 's'}...`);
                 const block = createAgentStepBlock('tool_call', chunk.name, chunk.args);
                 block.dataset.toolName = chunk.name;
                 botTextElement.appendChild(block);
@@ -552,11 +587,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                     block.classList.remove('agent-step-tool_call');
                     block.classList.add('agent-step-tool_result');
                 }
+                pendingToolCalls = Math.max(0, pendingToolCalls - 1);
+                if (pendingToolCalls === 0) {
+                    setLiveStatus('Tool work finished. Reviewing results and drafting the next response...');
+                } else {
+                    setLiveStatus(`Waiting for ${pendingToolCalls} more tool result${pendingToolCalls === 1 ? '' : 's'}...`);
+                }
             }
 
             if (chunk.type === 'permission_request') {
                 currentContentDiv = null;
                 currentContentText = '';
+                setLiveStatus('Waiting for your permission to continue...', 'waiting');
                 const card = createPermissionCard(chunk);
                 botTextElement.appendChild(card);
             }
@@ -573,6 +615,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 `;
                 note.title = `${saved} tokens were summarized to free context space. Pinned messages are preserved.`;
                 botTextElement.appendChild(note);
+                setLiveStatus('Condensing earlier work to keep enough context for the next step...');
             }
 
             if (chunk.type === 'tool_running') {
@@ -581,10 +624,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const statusEl = block.querySelector('.agent-step-status');
                     if (statusEl) statusEl.textContent = 'Executing…';
                 }
+                setLiveStatus(`Executing ${chunk.name}...`);
             }
 
             if (chunk.type === 'step_done') {
                 counterEl.textContent = `Step ${chunk.step} / ${chunk.maxSteps}`;
+                if (pendingToolCalls === 0 && !currentContentText) {
+                    setLiveStatus('Step finished. Thinking through what to do next...');
+                }
             }
 
             if (chunk.type === 'max_steps_reached') {
@@ -592,6 +639,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             if (chunk.type === 'error') {
+                setLiveStatus('');
                 const errDiv = document.createElement('div');
                 errDiv.className = 'agent-error';
                 errDiv.textContent = 'Agent error: ' + chunk.text;
@@ -600,6 +648,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (chunk.type === 'done') {
                 counterEl.textContent = '';
+                setLiveStatus('');
                 if (savedMessagesForContinue) {
                     renderContinueButtons(savedMessagesForContinue);
                 }
@@ -635,7 +684,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             processAgentChunk(chunk);
         }
 
-        return currentContentText;
+        return {
+            text: currentContentText,
+            memoryUsageMeta,
+            contextBreakdown,
+        };
     }
 
     // Speech Recognition Setup (local Whisper via proxy)
@@ -3557,7 +3610,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- Model Update Functions ---
 
+    function normalizeOllamaModelSpecifier(value) {
+        return String(value || '').trim().replace(/^ollama\s+(?:pull|run)\s+/i, '').trim();
+    }
+
     async function pullModel(modelName, statusEl, buttonEl, barEl = null) {
+        const normalizedModelName = normalizeOllamaModelSpecifier(modelName);
+        if (!normalizedModelName) {
+            throw new Error('Enter a model name like gemma4:26b');
+        }
         const icon = buttonEl.querySelector('.lucide');
         buttonEl.disabled = true;
         buttonEl.classList.add('updating');
@@ -3569,7 +3630,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const response = await fetch(`${PROXY_BASE}/proxy/api/pull`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: modelName, stream: true })
+                body: JSON.stringify({ name: normalizedModelName, stream: true })
             });
 
             if (!response.ok) {
@@ -5617,12 +5678,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (agentModeEnabled) {
                 const configuredMaxSteps = Number.isInteger(agentConfig?.maxSteps) && agentConfig.maxSteps > 0
                     ? agentConfig.maxSteps : 15;
+                const researchPolicy = deepResearchEnabled ? 'deep' : webSearchEnabled ? 'web' : 'auto';
+                const memoryPolicy = memoryEnabled
+                    ? (memoryAutoExtract ? 'inject_and_extract' : 'inject')
+                    : 'off';
                 const agentBody = {
                     messages: apiMessages,
                     model: currentModelName,
                     backend: currentModelBackend,
-                    maxSteps: configuredMaxSteps
+                    maxSteps: configuredMaxSteps,
+                    _researchPolicy: researchPolicy,
+                    _memoryPolicy: memoryPolicy,
+                    _skillsPolicy: pendingSkillName ? 'manual' : 'auto'
                 };
+                if (webSearchEnabled) agentBody._webSearch = true;
+                if (deepResearchEnabled) agentBody._deepResearch = true;
+                if (memoryEnabled) agentBody._memory = true;
+                if (memoryAutoExtract) agentBody._memoryAutoExtract = true;
+                if (lastUserMsg && detectMemorySaveIntent(lastUserMsg.content || '')) {
+                    agentBody._saveToMemory = lastUserMsg.content;
+                }
                 if (pendingSkillName) {
                     agentBody._skillHint = `Use the ${pendingSkillName} skill — call loadSkill("${pendingSkillName}") first to get the full instructions, then proceed.`;
                     pendingSkillName = null;
@@ -5637,13 +5712,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (loadingIndicator) loadingIndicator.style.display = 'none';
                 contentHasStarted = true;
                 const agentReader = agentResponse.body.getReader();
-                const finalText = await handleAgentStream(botTextElement, botMessageDiv, agentReader);
+                const agentResult = await handleAgentStream(botTextElement, botMessageDiv, agentReader, {
+                    onSearchEvent: (searchEvent) => {
+                        if (searchStepEl) updateSearchStepWithResults(searchStepEl, searchEvent);
+                    },
+                    onContextBreakdown: (breakdown) => {
+                        lastContextBreakdown = breakdown;
+                    }
+                });
+                const finalText = agentResult?.text || '';
+                const agentMemoryMeta = agentResult?.memoryUsageMeta || null;
 
                 if (stopButton) { stopButton.style.display = 'none'; }
                 sendButton.style.display = 'flex';
                 if (botMessageDiv) botMessageDiv.classList.remove('streaming');
 
                 const messageToSave = { role: 'assistant', content: finalText || '*(Agent response — see steps above)*' };
+                if (agentMemoryMeta?.used?.length) {
+                    messageToSave.metadata = {
+                        ...(messageToSave.metadata || {}),
+                        memoryUsed: agentMemoryMeta.used,
+                    };
+                }
                 if (Array.isArray(responseVersionState?.alternatives) && responseVersionState.alternatives.length) {
                     messageToSave.alternatives = responseVersionState.alternatives.map(normalizeMessageVersion);
                 }
@@ -5653,9 +5743,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const savedMessageIndex = currentConversation.messages.length - 1;
                 botMessageDiv.dataset.messageIndex = String(savedMessageIndex);
                 renderMessageMetadata(botMessageDiv, messageToSave, savedMessageIndex);
+                if (agentMemoryMeta?.used?.length && botMessageDiv) {
+                    addMemoryUsageToMessage(botMessageDiv, agentMemoryMeta.used);
+                }
 
                 // Auto-extract memories from agent exchange (fire-and-forget)
-                if ((memoryEnabled || memoryAutoExtract) && lastUserMsg && finalText) {
+                if (memoryAutoExtract && lastUserMsg && finalText) {
                     triggerMemoryExtraction(lastUserMsg.content, finalText);
                 }
 
@@ -6836,8 +6929,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const pullNewModelStatus = document.getElementById('pullNewModelStatus');
     if (pullNewModelButton && pullNewModelInput) {
         pullNewModelButton.addEventListener('click', async () => {
-            const name = pullNewModelInput.value.trim();
+            const name = normalizeOllamaModelSpecifier(pullNewModelInput.value);
             if (!name) return;
+            pullNewModelInput.value = name;
             pullNewModelProgress.style.display = 'block';
             pullNewModelBar.style.width = '0%';
             await pullModel(name, pullNewModelStatus, pullNewModelButton, pullNewModelBar);

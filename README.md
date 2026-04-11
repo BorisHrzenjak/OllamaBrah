@@ -8,11 +8,10 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.9.6
+## What's New - v1.9.9
 
-- **llama.cpp startup persistence is now optional** - the last GGUF no longer has to auto-warm unless you explicitly enable keep-alive in Settings
-- **Switching away from llama.cpp now frees memory immediately** - moving back to an Ollama model stops the active `llama-server` process so RAM is available to other local models
-- **The llama.cpp settings panel now shows the keep-alive state clearly** - startup behavior is visible in the server status text alongside the normal runtime details
+- **Model Management now accepts pasted `ollama pull ...` and `ollama run ...` commands** - the app strips the CLI prefix and sends the actual model name to Ollama, avoiding the previous `400` failure
+- **Pulling models through the desktop UI is more forgiving** - you can paste from terminal docs or your shell history without manually editing the command first
 
 ---
 
@@ -33,6 +32,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Override context limit manually
 - Adjust model parameters per model: temperature, top-p, top-k, repeat penalty, max tokens, seed
 - Pull new models from the Ollama registry
+- Pull input accepts either a bare model name or pasted `ollama pull ...` / `ollama run ...` commands
 - Update individual models or bulk-update all at once
 - Hardware-based model recommendations via llmfit integration
 
@@ -58,7 +58,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 ### Input Modes
 - **Web search** — augment responses with live Tavily search results
 - **Deep research** — multi-step Exa research pipeline before answering
-- **Agent mode** — autonomous tool-use loop with step-by-step visualization; configure max steps, tool permissions, allowed directories, and blocked paths
+- **Agent mode** — autonomous tool-use loop with step-by-step visualization, live in-progress status feedback between tool phases, configurable max steps and permissions, and support for web search, deep research, memory injection, and skill hints in a single run
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
 - Semantic memory search in the memory manager, with provenance like source type, extraction mode, and linked conversation/message metadata
 - Auto-extracted memories save directly with provenance and deduplication, and replies can show which memories were used in context
