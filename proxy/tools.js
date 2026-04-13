@@ -464,7 +464,7 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
 
     // perm === 'confirm' — stream a permission card and wait
     const id = generatePermissionId();
-    res.write(JSON.stringify({ type: 'permission_request', id, tool, args, risk }) + '\n');
+    res.write(JSON.stringify({ type: 'permission_request', id, tool, args, risk, runId: res.runId || null }) + '\n');
 
     return new Promise((resolve) => {
         let keepaliveInterval;
@@ -472,7 +472,7 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
         const cleanup = (approved) => {
             clearTimeout(timeout);
             clearInterval(keepaliveInterval);
-            res.removeListener('close', onClose);
+            if (typeof res.removeListener === 'function') res.removeListener('close', onClose);
             pendingPermissions.delete(id);
             resolve(approved);
         };
@@ -485,9 +485,10 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
         const timeout = setTimeout(() => cleanup(false), 300000); // auto-deny after 5 min
 
         const onClose = () => cleanup(false); // client disconnected
-        res.once('close', onClose);
+        if (typeof res.once === 'function') res.once('close', onClose);
 
         pendingPermissions.set(id, {
+            runId: res.runId || null,
             resolve: (approved, scope) => {
                 if (approved) {
                     if (scope === 'session') {

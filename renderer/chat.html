@@ -3894,6 +3894,145 @@
             padding: var(--space-md);
             border-top: 1px solid var(--border);
             flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .sidebar-agent-runs {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+        }
+
+        .sidebar-agent-runs[hidden] {
+            display: none !important;
+        }
+
+        .sidebar-agent-runs-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .sidebar-agent-runs-title {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .sidebar-agent-runs-refresh {
+            width: 24px;
+            height: 24px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            border: 1px solid var(--border-subtle);
+            border-radius: 7px;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .sidebar-agent-runs-refresh:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .sidebar-agent-runs-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .sidebar-agent-run-empty {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .sidebar-agent-run-item {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 8px 9px;
+            border: 1px solid var(--border-subtle);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .sidebar-agent-run-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .sidebar-agent-run-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .sidebar-agent-run-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 999px;
+            flex-shrink: 0;
+            background: var(--text-muted);
+        }
+
+        .sidebar-agent-run-item.status-running .sidebar-agent-run-dot { background: var(--accent); }
+        .sidebar-agent-run-item.status-waiting_permission .sidebar-agent-run-dot { background: var(--warning); }
+        .sidebar-agent-run-item.status-completed .sidebar-agent-run-dot { background: var(--success); }
+        .sidebar-agent-run-item.status-failed .sidebar-agent-run-dot { background: var(--error-text); }
+        .sidebar-agent-run-item.status-cancelled .sidebar-agent-run-dot { background: var(--text-muted); }
+
+        .sidebar-agent-run-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .sidebar-agent-run-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .sidebar-agent-run-action {
+            min-height: 26px;
+            padding: 0 8px;
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .sidebar-agent-run-action:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .sidebar-agent-run-action.danger:hover {
+            color: #fff;
+            background: rgba(239, 68, 68, 0.2);
+            border-color: rgba(239, 68, 68, 0.35);
         }
 
         .sidebar-footer-button {
@@ -5463,6 +5602,15 @@ body {
             <div id="tagFilterBar"></div>
             <div id="conversationList"></div>
             <div id="sidebarFooter">
+                <div id="agentRunsPanel" class="sidebar-agent-runs">
+                    <div class="sidebar-agent-runs-header">
+                        <span class="sidebar-agent-runs-title">Agent Runs</span>
+                        <button id="refreshAgentRunsButton" class="sidebar-agent-runs-refresh" title="Refresh agent runs">
+                            <i data-lucide="refresh-cw"></i>
+                        </button>
+                    </div>
+                    <div id="agentRunsList" class="sidebar-agent-runs-list"></div>
+                </div>
                 <button id="dashboardButton" class="sidebar-footer-button" title="Usage Dashboard">
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"

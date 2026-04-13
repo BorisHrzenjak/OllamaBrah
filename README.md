@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.11.0
+## What's New - v1.13.0
 
-- **Agent Mode now has coding-oriented file tools** - the proxy can now read focused file ranges, search across files, glob for paths, replace text in place, and apply single-file patches for more precise repo work
-- **Agent file operations are broader and more practical** - directory creation plus file copy and move helpers make common coding and refactoring tasks possible without falling back to blunt full-file rewrites
-- **The new coding tools reuse the existing permission model** - Agent Mode gets more capable without dropping the current safety boundaries around allowed directories and tool approvals
+- **Agent Mode now reconnects to durable runs from the desktop UI** - the renderer creates agent runs through `/api/agent/runs`, streams them through the run endpoint, and can reconnect after reloads instead of depending on one fragile live request
+- **Recent Agent Runs are now visible in the sidebar** - you can see run status, reconnect to active work, replay recent runs, and cancel in-progress runs from a dedicated sidebar section
+- **Stop now cancels the agent run, not just the stream** - the UI now targets the durable run backend so long-running agent work behaves like a task instead of a disposable response stream
 
 ---
 
@@ -63,6 +63,8 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Agent mode** — autonomous tool-use loop with step-by-step visualization, live in-progress status feedback between tool phases, configurable max steps and permissions, and support for web search, deep research, memory injection, and skill hints in a single run
 - **Agent capabilities strip** — in Agent workflow, pick research mode (`Off / Web / Deep / Auto`), memory mode (`Off / Inject / Inject + Save`), and skills mode (`Auto / Manual`)
 - **Coding-oriented agent tools** — targeted file range reads, codebase search, globbing, in-file replace, single-file patch application, and file system helpers for repo work
+- **Durable agent run APIs** — persisted run metadata plus event log streaming, cancel, and resume endpoints for longer-lived agent workflows
+- **Renderer run recovery** — the desktop UI can reconnect to active runs, replay recent runs, and resume from max-step limits through the durable run API
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
 - Semantic memory search in the memory manager, with provenance like source type, extraction mode, and linked conversation/message metadata
 - Auto-extracted memories save directly with provenance and deduplication, and replies can show which memories were used in context

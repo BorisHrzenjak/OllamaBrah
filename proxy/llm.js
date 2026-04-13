@@ -25,6 +25,14 @@ const {
     getAgentMaxSteps,
 } = require('./tools');
 const { fetchOllama, resolveOllamaBaseUrl } = require('./ollama');
+const {
+    createRun,
+    getRun,
+    updateRun,
+    appendRunEvent,
+    listRuns,
+    readRunEvents,
+} = require('./agent-runs');
 
 // Resolve paths that may live in app.asar.unpacked when packaged
 function unpackedPath(...segments) {
@@ -50,6 +58,7 @@ let llamaModelManifest = new Map();
 let llamaDesiredModel = null;
 let llamaLoadPromise = null;
 let llamaAutoWarmStarted = false;
+const activeAgentRuns = new Map();
 
 function safeParseJson(raw, fallback) {
     try {
@@ -1553,6 +1562,294 @@ async function handleAgentChat(req, res) {
     res.end();
 }
 
+function writeNdjson(res, payload) {
+    if (!res || res.writableEnded || res.destroyed) return;
+    res.write(JSON.stringify(payload) + '\n');
+}
+
+function setRunStatus(runId, status, extra = {}) {
+    return updateRun(runId, { status, ...extra });
+}
+
+function emitRunEvent(runId, payload) {
+    appendRunEvent(runId, payload);
+    const active = activeAgentRuns.get(runId);
+    if (payload.type === 'permission_request') {
+        setRunStatus(runId, 'waiting_permission', {
+            pendingPermission: { id: payload.id, tool: payload.tool, args: payload.args, risk: payload.risk }
+        });
+    } else if (payload.type === 'tool_result') {
+        const current = getRun(runId);
+        if (current?.status === 'waiting_permission') {
+            setRunStatus(runId, 'running', { pendingPermission: null });
+        }
+    }
+    if (active) {
+        for (const subscriber of active.subscribers) {
+            writeNdjson(subscriber, payload);
+        }
+    }
+}
+
+function createRunWriter(runId) {
+    return {
+        runId,
+        writableEnded: false,
+        destroyed: false,
+        write(chunk) {
+            const text = String(chunk || '').trim();
+            if (!text) return true;
+            try {
+                emitRunEvent(runId, JSON.parse(text));
+            } catch (err) {
+                emitRunEvent(runId, { type: 'error', text: `Failed to stream event: ${err.message}` });
+            }
+            return true;
+        },
+        once() { },
+        removeListener() { },
+    };
+}
+
+function attachRunStream(runId, res) {
+    const run = getRun(runId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    for (const event of readRunEvents(runId)) {
+        const { timestamp, ...payload } = event;
+        writeNdjson(res, payload);
+    }
+
+    const active = activeAgentRuns.get(runId);
+    if (!active) return res.end();
+
+    active.subscribers.add(res);
+    res.once('close', () => {
+        activeAgentRuns.get(runId)?.subscribers.delete(res);
+    });
+}
+
+async function executeDurableAgentRun(runId, body = {}) {
+    const { messages: initialMessages, model, backend = 'ollama', maxSteps, continueFrom, _skillHint } = body;
+    const steps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || getAgentMaxSteps()));
+    const tools = getEnabledTools();
+    const sessionPermissions = new Map();
+    const writer = createRunWriter(runId);
+    let previousStepUsedTools = false;
+    let messages = continueFrom ? [...continueFrom] : [...(initialMessages || [])];
+
+    setRunStatus(runId, 'running', { maxSteps: steps, latestMessages: messages, pendingPermission: null, lastError: null });
+
+    if (!continueFrom) {
+        const _platform = os.platform();
+        const _isWin = _platform === 'win32';
+        const _pathSep = path.sep;
+        const _examplePath = _isWin
+            ? `C:\\Users\\${path.basename(os.homedir())}\\Documents\\file.txt`
+            : `${os.homedir()}/documents/file.txt`;
+        const _pathGuidance = _isWin
+            ? `Always use Windows-style absolute paths (e.g. ${_examplePath}), never Unix-style paths (e.g. /home/user/file).`
+            : `Always use Unix-style absolute paths (e.g. ${_examplePath}), never Windows-style paths (e.g. C:\\Users\\...).`;
+        const AGENT_DIRECTIVE = 'You are operating in AGENT MODE with real, functional tools available. ' +
+            'When the user asks you to do something that requires a tool (read a file, search the web, run code, etc.), ALWAYS call the appropriate tool — never say you cannot access the internet or file system. The tools are real. Use them.\n' +
+            `SYSTEM INFORMATION: OS=${_platform}, home directory="${os.homedir()}", path separator="${_pathSep}". ` +
+            _pathGuidance + '\n' +
+            'WEB SEARCH GUIDANCE: For any time-sensitive question, call webSearch before answering. Use fetchPage on relevant URLs before synthesizing the final answer.\n' +
+            'FILE TOOL GUIDANCE: Use findFiles to count or discover files by type, and prefer precise file tools over broad rewrites.';
+        const sysIdx = messages.findIndex(m => m.role === 'system');
+        if (sysIdx >= 0) messages[sysIdx] = { ...messages[sysIdx], content: messages[sysIdx].content + '\n\n' + AGENT_DIRECTIVE };
+        else messages.unshift({ role: 'system', content: AGENT_DIRECTIVE });
+
+        const capabilityConfig = buildAgentCapabilityConfig({ ...body, _skillHint });
+        const capabilityContext = await prepareAgentMessages(messages, capabilityConfig, 'Agent');
+        messages = capabilityContext.messages;
+        updateRun(runId, { latestMessages: messages });
+
+        if (capabilityContext.searchMeta) writer.write(JSON.stringify({ _searchEvent: capabilityContext.searchMeta }));
+        if (capabilityContext.memoryMeta) writer.write(JSON.stringify({ _memoryEvent: capabilityContext.memoryMeta }));
+        if (capabilityContext.contextBreakdown) writer.write(JSON.stringify({ _contextBreakdown: capabilityContext.contextBreakdown }));
+    }
+
+    try {
+        for (let step = 1; step <= steps; step++) {
+            if (activeAgentRuns.get(runId)?.cancelled) {
+                writer.write(JSON.stringify({ type: 'cancelled', step }));
+                setRunStatus(runId, 'cancelled', { latestMessages: messages });
+                break;
+            }
+
+            const phase = previousStepUsedTools ? 'post_tools' : (step === 1 ? 'planning' : 'thinking');
+            const statusText = previousStepUsedTools
+                ? 'Reviewing tool results and preparing the next step or final response...'
+                : (step === 1 ? 'Analyzing your request and planning the first step...' : 'Thinking through the next step...');
+            writer.write(JSON.stringify({ type: 'status', phase, text: statusText, step, maxSteps: steps }));
+
+            let response;
+            const heartbeat = setInterval(() => writer.write(JSON.stringify({ type: 'heartbeat' })), 15000);
+            try {
+                response = backend === 'llamacpp'
+                    ? await callLlamaCppWithTools(messages, tools, model || 'default')
+                    : await callOllamaWithTools(messages, tools, model || 'llama3.2');
+            } catch (err) {
+                clearInterval(heartbeat);
+                writer.write(JSON.stringify({ type: 'error', text: 'Model call failed: ' + err.message }));
+                setRunStatus(runId, 'failed', { lastError: err.message, latestMessages: messages });
+                break;
+            }
+            clearInterval(heartbeat);
+
+            const toolCalls = extractToolCalls(response, backend);
+            const content = extractContent(response, backend);
+            if (content && content.trim()) writer.write(JSON.stringify({ type: 'content', text: content }));
+
+            if (!toolCalls || toolCalls.length === 0) {
+                writer.write(JSON.stringify({ type: 'step_done', step, maxSteps: steps }));
+                setRunStatus(runId, 'completed', { latestMessages: messages, pendingPermission: null });
+                break;
+            }
+
+            writer.write(JSON.stringify({ type: 'status', phase: 'executing_tools', text: `Running ${toolCalls.length} tool${toolCalls.length === 1 ? '' : 's'}...`, step, maxSteps: steps }));
+            for (const tc of toolCalls) writer.write(JSON.stringify({ type: 'tool_call', name: tc.name, args: tc.args }));
+
+            const execResults = await Promise.all(toolCalls.map(async tc => {
+                const { result, error } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend);
+                writer.write(JSON.stringify({ type: 'tool_result', name: tc.name, result, error: !!error }));
+                return { tc, result, error };
+            }));
+
+            if (backend === 'llamacpp') {
+                messages.push({ role: 'assistant', content: '', tool_calls: execResults.map(({ tc }) => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.args) } })) });
+                for (const { tc, result } of execResults) messages.push({ role: 'tool', tool_call_id: tc.id, content: String(result) });
+            } else {
+                messages.push({ role: 'assistant', content: '', tool_calls: execResults.map(({ tc }) => ({ function: { name: tc.name, arguments: tc.args } })) });
+                for (const { result } of execResults) messages.push({ role: 'tool', content: String(result) });
+            }
+
+            updateRun(runId, { latestMessages: messages, pendingPermission: null });
+
+            const tokenEstimate = estimateTokens(messages);
+            const ctxLimit = backend === 'llamacpp' ? llamaCtxSize : await getModelContextLimit(model || 'llama3.2').catch(() => 32768);
+            const compressionThreshold = Math.floor(ctxLimit * 0.65);
+            if (tokenEstimate > compressionThreshold) {
+                const KEEP_HEAD = 3;
+                const KEEP_TAIL = 6;
+                const middleStart = KEEP_HEAD;
+                const middleEnd = Math.max(KEEP_HEAD, messages.length - KEEP_TAIL);
+                const middle = messages.slice(middleStart, middleEnd);
+                if (middle.length >= 2) {
+                    try {
+                        const workLog = middle.map(m => {
+                            const contentPart = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+                            const calls = m.tool_calls ? ' [called: ' + m.tool_calls.map(tc => tc.function?.name || tc.name || '?').join(', ') + ']' : '';
+                            return `[${m.role}${calls}]: ${contentPart.slice(0, 600)}`;
+                        }).join('\n---\n');
+                        const summary = await callModelSync(model || 'llama3.2', backend, 'Summarize the following agent work log. List: goals pursued, tools called, key findings, files read/written, current status, and any errors. Be concise but preserve all specific values (file paths, counts, errors):\n\n' + workLog, 30000);
+                        if (summary && summary.trim()) {
+                            const summaryMsg = { role: 'assistant', content: `[Progress summary — ${middle.length} messages compressed]\n${summary.trim()}` };
+                            messages.splice(middleStart, middle.length, summaryMsg);
+                            const tokensAfter = estimateTokens(messages);
+                            updateRun(runId, { latestMessages: messages });
+                            writer.write(JSON.stringify({ type: 'context_compressed', step, tokensBefore: tokenEstimate, tokensAfter }));
+                        }
+                    } catch (err) {
+                        console.warn('[Agent] Mid-run compression failed:', err.message);
+                    }
+                }
+            }
+
+            previousStepUsedTools = true;
+            writer.write(JSON.stringify({ type: 'step_done', step, maxSteps: steps }));
+            if (step === steps) {
+                writer.write(JSON.stringify({ type: 'content', text: '\n\n*Agent reached maximum steps.*' }));
+                writer.write(JSON.stringify({ type: 'max_steps_reached', messages: [...messages] }));
+                setRunStatus(runId, 'completed', { latestMessages: messages });
+            }
+        }
+    } catch (err) {
+        console.error('[Agent] Durable run error:', err);
+        writer.write(JSON.stringify({ type: 'error', text: err.message }));
+        setRunStatus(runId, 'failed', { lastError: err.message, latestMessages: messages });
+    }
+
+    writer.write(JSON.stringify({ type: 'done' }));
+    const current = getRun(runId);
+    if (current && current.status === 'running') setRunStatus(runId, 'completed', { latestMessages: messages });
+    activeAgentRuns.delete(runId);
+}
+
+function startAgentRun(body = {}) {
+    const run = createRun(body);
+    activeAgentRuns.set(run.id, { subscribers: new Set(), cancelled: false });
+    setImmediate(() => {
+        executeDurableAgentRun(run.id, body).catch(err => {
+            console.error('[AgentRun] Fatal durable run error:', err);
+            setRunStatus(run.id, 'failed', { lastError: err.message });
+            emitRunEvent(run.id, { type: 'error', text: err.message });
+            emitRunEvent(run.id, { type: 'done' });
+            activeAgentRuns.delete(run.id);
+        });
+    });
+    return getRun(run.id);
+}
+
+function handleAgentRunList(req, res) {
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 30));
+    res.json(listRuns(limit));
+}
+
+function handleAgentRunCreate(req, res) {
+    const run = startAgentRun(req.body || {});
+    res.status(202).json(run);
+}
+
+function handleAgentRunGet(req, res) {
+    const run = getRun(req.params.id);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+    res.json(run);
+}
+
+function handleAgentRunStream(req, res) {
+    attachRunStream(req.params.id, res);
+}
+
+function handleAgentRunCancel(req, res) {
+    const runId = req.params.id;
+    const active = activeAgentRuns.get(runId);
+    if (!active) {
+        const run = getRun(runId);
+        if (!run) return res.status(404).json({ error: 'Run not found' });
+        return res.json({ ok: true, run: setRunStatus(runId, 'cancelled') });
+    }
+    active.cancelled = true;
+    emitRunEvent(runId, { type: 'cancel_requested' });
+    res.json({ ok: true, run: setRunStatus(runId, 'cancelled') });
+}
+
+function handleAgentRunResume(req, res) {
+    const existing = getRun(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Run not found' });
+    if (activeAgentRuns.has(existing.id)) return res.json({ ok: true, run: existing, active: true });
+    const overrideMaxSteps = parseInt(req.body?.maxSteps, 10);
+    const run = startAgentRun({
+        ...(existing.requestBody || {}),
+        ...(Number.isFinite(overrideMaxSteps) ? { maxSteps: overrideMaxSteps } : {}),
+        continueFrom: existing.latestMessages || existing.requestBody?.messages || [],
+        parentRunId: existing.id,
+    });
+    res.status(202).json({ ok: true, run, resumedFrom: existing.id });
+}
+
+// Compatibility wrapper: legacy clients can still use /api/agent/chat,
+// but durable runs are now the underlying execution model.
+function handleAgentChat(req, res) {
+    const run = startAgentRun(req.body || {});
+    attachRunStream(run.id, res);
+}
+
 // --- Ollama Proxy handler ---
 
 async function handleOllamaProxy(req, res) {
@@ -1786,6 +2083,12 @@ module.exports = {
     handleLlmfitRecommend,
     handleResearch,
     handleAgentChat,
+    handleAgentRunList,
+    handleAgentRunCreate,
+    handleAgentRunGet,
+    handleAgentRunStream,
+    handleAgentRunCancel,
+    handleAgentRunResume,
     handleOllamaProxy,
     getLlamacppDiagnostics,
     getLlamaProcess,

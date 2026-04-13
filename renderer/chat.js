@@ -87,6 +87,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const conversationList = document.getElementById('conversationList');
     const conversationSearchInput = document.getElementById('conversationSearchInput');
     const clearSearchButton = document.getElementById('clearSearchButton');
+    const agentRunsPanel = document.getElementById('agentRunsPanel');
+    const agentRunsList = document.getElementById('agentRunsList');
+    const refreshAgentRunsButton = document.getElementById('refreshAgentRunsButton');
 
     // Settings modal elements
     const settingsButton = document.getElementById('settingsButton');
@@ -384,6 +387,120 @@ document.addEventListener('DOMContentLoaded', async () => {
         setWorkflowMode(stored[CHAT_WORKFLOW_MODE_KEY] || (stored.agentModeEnabled ? 'agent' : 'chat'), { persist: false });
     }
 
+    function formatAgentRunStatus(status) {
+        const labels = {
+            queued: 'Queued',
+            running: 'Running',
+            waiting_permission: 'Waiting',
+            paused: 'Paused',
+            completed: 'Completed',
+            failed: 'Failed',
+            cancelled: 'Cancelled',
+        };
+        return labels[status] || status || 'Unknown';
+    }
+
+    function formatRelativeTime(timestamp) {
+        if (!timestamp) return '';
+        const deltaMs = Date.now() - timestamp;
+        const mins = Math.floor(deltaMs / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return `${mins}m ago`;
+        const hours = Math.floor(mins / 60);
+        if (hours < 24) return `${hours}h ago`;
+        const days = Math.floor(hours / 24);
+        return `${days}d ago`;
+    }
+
+    function renderAgentRunsPanel() {
+        if (!agentRunsPanel || !agentRunsList) return;
+        agentRunsList.innerHTML = '';
+        const visibleRuns = recentAgentRuns.slice(0, 6);
+        if (!visibleRuns.length) {
+            const empty = document.createElement('div');
+            empty.className = 'sidebar-agent-run-empty';
+            empty.textContent = 'No recent agent runs yet.';
+            agentRunsList.appendChild(empty);
+            return;
+        }
+
+        visibleRuns.forEach(run => {
+            const item = document.createElement('div');
+            item.className = `sidebar-agent-run-item status-${run.status || 'unknown'}`;
+
+            const top = document.createElement('div');
+            top.className = 'sidebar-agent-run-top';
+
+            const status = document.createElement('div');
+            status.className = 'sidebar-agent-run-status';
+            status.innerHTML = `<span class="sidebar-agent-run-dot"></span><span>${formatAgentRunStatus(run.status)}</span>`;
+
+            const meta = document.createElement('div');
+            meta.className = 'sidebar-agent-run-meta';
+            meta.textContent = `${run.backend || 'ollama'} · ${formatRelativeTime(run.updatedAt)}`;
+
+            const actions = document.createElement('div');
+            actions.className = 'sidebar-agent-run-actions';
+
+            const openBtn = document.createElement('button');
+            openBtn.className = 'sidebar-agent-run-action';
+            openBtn.textContent = ['running', 'waiting_permission'].includes(run.status) ? 'Reconnect' : 'Replay';
+            openBtn.addEventListener('click', () => replayAgentRun(run));
+            actions.appendChild(openBtn);
+
+            if (['running', 'waiting_permission'].includes(run.status)) {
+                const cancelBtn = document.createElement('button');
+                cancelBtn.className = 'sidebar-agent-run-action danger';
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.addEventListener('click', async () => {
+                    await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(run.id)}/cancel`, { method: 'POST' }).catch(() => {});
+                    await refreshAgentRunsPanelData();
+                });
+                actions.appendChild(cancelBtn);
+            }
+
+            top.append(status, actions);
+            item.append(top, meta);
+            agentRunsList.appendChild(item);
+        });
+    }
+
+    async function refreshAgentRunsPanelData() {
+        if (!agentRunsPanel) return;
+        try {
+            const response = await fetch(`${PROXY_BASE}/api/agent/runs?limit=12`);
+            recentAgentRuns = response.ok ? await response.json() : [];
+        } catch {
+            recentAgentRuns = [];
+        }
+        renderAgentRunsPanel();
+    }
+
+    async function maybeReconnectActiveAgentRun() {
+        if (!currentModelName || isStreaming) return;
+        const modelData = await loadModelChatState(currentModelName).catch(() => null);
+        const convId = modelData?.activeConversationId;
+        const conversation = convId ? modelData?.conversations?.[convId] : null;
+        const runId = conversation?.activeAgentRunId;
+        if (!runId) return;
+
+        let run;
+        try {
+            const response = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}`);
+            if (!response.ok) return;
+            run = await response.json();
+        } catch {
+            return;
+        }
+
+        if (!['running', 'waiting_permission'].includes(run.status)) {
+            conversation.activeAgentRunId = null;
+            await saveModelChatState(currentModelName, modelData);
+            return;
+        }
+        await replayAgentRun(run, { persistResult: true });
+    }
+
     // Keyword patterns that trigger auto-save to memory
     const MEMORY_SAVE_PATTERNS = [
         /\b(remember (that|this|the fact that)|please remember|note that)\b/i,
@@ -470,7 +587,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     function createPermissionCard(chunk) {
         const riskColors = { low: '#22c55e', medium: '#f59e0b', high: '#ef4444', critical: '#dc2626' };
         const borderColor = riskColors[chunk.risk] || '#f59e0b';
-        const FILE_TOOLS = new Set(['readFile', 'writeFile', 'listDirectory', 'findFiles', 'deleteFile']);
+        const FILE_TOOLS = new Set(['readFile', 'readFileRange', 'writeFile', 'replaceInFile', 'applyPatch', 'listDirectory', 'findFiles', 'searchInFiles', 'globFiles', 'mkdir', 'copyFile', 'moveFile', 'deleteFile']);
         const isFileTool = FILE_TOOLS.has(chunk.tool);
 
         const card = document.createElement('div');
@@ -548,6 +665,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const label = !approved ? '✗ Denied' : scope === 'session' ? '✓ Allowed (session)' : scope === 'path' ? '✓ Allowed (folder)' : '✓ Allowed';
                     btnRow.innerHTML = `<span class="agent-perm-result">${label}</span>`;
                     countdownEl.remove();
+                    refreshAgentRunsPanelData();
                 } catch (e) {
                     console.warn('[Agent] Permission POST failed:', e);
                     [allowBtn, sessionBtn, pathBtn, denyBtn].forEach(b => b.disabled = false);
@@ -579,6 +697,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const label = !approved ? '✗ Denied' : scope === 'session' ? '✓ Allowed (session)' : '✓ Allowed';
                     btnRow.innerHTML = `<span class="agent-perm-result">${label}</span>`;
                     countdownEl.remove();
+                    refreshAgentRunsPanelData();
                 } catch (e) {
                     console.warn('[Agent] Permission POST failed:', e);
                     [allowBtn, sessionBtn, denyBtn].forEach(b => b.disabled = false);
@@ -629,11 +748,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         let currentContentDiv = null;
         let currentContentText = '';
         let lastToolCallBlock = {}; // toolName → last block element
-        let savedMessagesForContinue = null;
+        let continueRunId = handlers.runId || null;
         let memoryUsageMeta = null;
         let contextBreakdown = null;
         let pendingToolCalls = 0;
         let lastStatusText = '';
+        let finalState = 'completed';
         const onSearchEvent = typeof handlers.onSearchEvent === 'function' ? handlers.onSearchEvent : null;
         const onMemoryEvent = typeof handlers.onMemoryEvent === 'function' ? handlers.onMemoryEvent : null;
         const onContextBreakdown = typeof handlers.onContextBreakdown === 'function' ? handlers.onContextBreakdown : null;
@@ -663,7 +783,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         setLiveStatus('Analyzing your request and planning the first step...');
 
-        function renderContinueButtons(savedMessages) {
+        function renderContinueButtons(runId) {
             const row = document.createElement('div');
             row.className = 'agent-continue-row';
             for (const extraSteps of [5, 15]) {
@@ -675,20 +795,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     currentContentDiv = null;
                     currentContentText = '';
                     try {
-                        const resp = await fetch(`${PROXY_BASE}/api/agent/chat`, {
+                        const resp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}/resume`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                model: currentModelName,
-                                backend: currentModelBackend,
-                                maxSteps: extraSteps,
-                                continueFrom: savedMessages
-                            })
+                            body: JSON.stringify({ maxSteps: extraSteps })
                         });
                         if (!resp.ok) throw new Error(`Agent API Error: ${resp.status}`);
-                        const contReader = resp.body.getReader();
-                        const contResult = await handleAgentStream(botTextElement, botMessageDiv, contReader, handlers);
+                        const resumedRun = await resp.json();
+                        const resumedRunId = resumedRun?.run?.id;
+                        if (!resumedRunId) throw new Error('Resume did not return a run id');
+                        const streamResp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(resumedRunId)}/stream`);
+                        if (!streamResp.ok) throw new Error(`Run stream error: ${streamResp.status}`);
+                        const contReader = streamResp.body.getReader();
+                        const contResult = await handleAgentStream(botTextElement, botMessageDiv, contReader, { ...handlers, runId: resumedRunId });
                         if (contResult?.text) currentContentText = contResult.text;
+                        await refreshAgentRunsPanelData();
                     } catch (e) {
                         const errDiv = document.createElement('div');
                         errDiv.className = 'agent-error';
@@ -813,10 +934,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             if (chunk.type === 'max_steps_reached') {
-                savedMessagesForContinue = chunk.messages;
+                continueRunId = continueRunId || handlers.runId || currentAgentRunId;
             }
 
             if (chunk.type === 'error') {
+                finalState = 'failed';
                 setLiveStatus('');
                 const errDiv = document.createElement('div');
                 errDiv.className = 'agent-error';
@@ -824,11 +946,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                 botTextElement.appendChild(errDiv);
             }
 
+            if (chunk.type === 'cancel_requested') {
+                setLiveStatus('Cancelling agent run...', 'waiting');
+            }
+
+            if (chunk.type === 'cancelled') {
+                finalState = 'cancelled';
+                setLiveStatus('Agent run cancelled.');
+            }
+
             if (chunk.type === 'done') {
                 counterEl.textContent = '';
                 setLiveStatus('');
-                if (savedMessagesForContinue) {
-                    renderContinueButtons(savedMessagesForContinue);
+                if (continueRunId) {
+                    renderContinueButtons(continueRunId);
                 }
                 return true; // signal caller to stop
             }
@@ -866,7 +997,59 @@ document.addEventListener('DOMContentLoaded', async () => {
             text: currentContentText,
             memoryUsageMeta,
             contextBreakdown,
+            finalState,
         };
+    }
+
+    async function streamAgentRun(runId, botTextElement, botMessageDiv, handlers = {}) {
+        currentAgentRunId = runId;
+        currentAbortController = new AbortController();
+        const response = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}/stream`, {
+            signal: currentAbortController.signal
+        });
+        if (!response.ok) throw new Error(`Run stream error: ${response.status}`);
+        const reader = response.body.getReader();
+        return handleAgentStream(botTextElement, botMessageDiv, reader, { ...handlers, runId });
+    }
+
+    async function replayAgentRun(run, { persistResult = false } = {}) {
+        const modelData = await loadModelChatState(currentModelName);
+        const botTextElement = addMessageToChatUI(currentModelName, '', 'bot-message', modelData);
+        const botMessageDiv = botTextElement.parentElement;
+        botMessageDiv.classList.add('streaming');
+        if (stopButton) stopButton.style.display = ['running', 'waiting_permission'].includes(run.status) ? 'flex' : 'none';
+        sendButton.style.display = ['running', 'waiting_permission'].includes(run.status) ? 'none' : 'flex';
+        isStreaming = ['running', 'waiting_permission'].includes(run.status);
+
+        try {
+            const result = await streamAgentRun(run.id, botTextElement, botMessageDiv, {
+                onContextBreakdown: (breakdown) => { lastContextBreakdown = breakdown; }
+            });
+            if (persistResult && result?.text) {
+                const latest = await loadModelChatState(currentModelName);
+                const convId = latest.activeConversationId;
+                const conversation = latest.conversations[convId];
+                conversation.messages.push({ role: 'assistant', content: result.text });
+                conversation.activeAgentRunId = null;
+                conversation.summary = getConversationSummary(conversation.messages);
+                conversation.lastMessageTime = Date.now();
+                await saveModelChatState(currentModelName, latest);
+                populateConversationSidebar(currentModelName, latest);
+            }
+        } catch (error) {
+            const errDiv = document.createElement('div');
+            errDiv.className = 'agent-error';
+            errDiv.textContent = `Run replay failed: ${error.message}`;
+            botTextElement.appendChild(errDiv);
+        } finally {
+            botMessageDiv.classList.remove('streaming');
+            if (stopButton) stopButton.style.display = 'none';
+            sendButton.style.display = 'flex';
+            currentAbortController = null;
+            currentAgentRunId = null;
+            isStreaming = false;
+            refreshAgentRunsPanelData();
+        }
     }
 
     // Speech Recognition Setup (local Whisper via proxy)
@@ -1068,6 +1251,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentModelBackend = 'ollama'; // 'ollama' | 'llamacpp'
     let currentLlamaCppPath = null;
     let currentAbortController = null; // Track current request for aborting
+    let currentAgentRunId = null;
     let selectedFiles = []; // Store selected files (images and documents) for sending
     let latestReadinessReport = null;
     let readinessPollTimer = null;
@@ -1095,6 +1279,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let isUserScrolledUp = false;
     let scrollThreshold = 100; // pixels from bottom to consider "at bottom"
     let isStreaming = false;
+    let recentAgentRuns = [];
     let showFullHistory = false;
 
     // Smart scroll functions
@@ -5881,17 +6066,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                     agentBody._skillHint = `Use the ${pendingSkillName} skill — call loadSkill("${pendingSkillName}") first to get the full instructions, then proceed.`;
                     pendingSkillName = null;
                 }
-                const agentResponse = await fetch(`${PROXY_BASE}/api/agent/chat`, {
+                const runResponse = await fetch(`${PROXY_BASE}/api/agent/runs`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(agentBody),
-                    signal: currentAbortController.signal
                 });
-                if (!agentResponse.ok) throw new Error(`Agent API Error: ${agentResponse.status}`);
+                if (!runResponse.ok) throw new Error(`Agent API Error: ${runResponse.status}`);
+                const runRecord = await runResponse.json();
+                currentConversation.activeAgentRunId = runRecord.id;
+                await saveModelChatState(currentModelName, modelData);
+                await refreshAgentRunsPanelData();
                 if (loadingIndicator) loadingIndicator.style.display = 'none';
                 contentHasStarted = true;
-                const agentReader = agentResponse.body.getReader();
-                const agentResult = await handleAgentStream(botTextElement, botMessageDiv, agentReader, {
+                const agentResult = await streamAgentRun(runRecord.id, botTextElement, botMessageDiv, {
                     onSearchEvent: (searchEvent) => {
                         if (searchStepEl) updateSearchStepWithResults(searchStepEl, searchEvent);
                     },
@@ -5901,10 +6088,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
                 const finalText = agentResult?.text || '';
                 const agentMemoryMeta = agentResult?.memoryUsageMeta || null;
+                const agentFinalState = agentResult?.finalState || 'completed';
 
                 if (stopButton) { stopButton.style.display = 'none'; }
                 sendButton.style.display = 'flex';
                 if (botMessageDiv) botMessageDiv.classList.remove('streaming');
+
+                if (agentFinalState === 'cancelled') {
+                    currentConversation.activeAgentRunId = null;
+                    await saveModelChatState(currentModelName, modelData);
+                    await refreshAgentRunsPanelData();
+                    return;
+                }
 
                 const messageToSave = { role: 'assistant', content: finalText || '*(Agent response — see steps above)*' };
                 if (agentMemoryMeta?.used?.length) {
@@ -5931,7 +6126,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     triggerMemoryExtraction(lastUserMsg.content, finalText);
                 }
 
+                currentConversation.activeAgentRunId = null;
+
                 await updateContextIndicator(currentConversation.messages, modelData.systemPrompt, modelData);
+                await refreshAgentRunsPanelData();
                 return;
             }
             // --- End Agent Mode Branch ---
@@ -6235,6 +6433,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (stopButton) { stopButton.style.display = 'none'; }
             sendButton.style.display = 'flex';
             currentAbortController = null;
+            currentAgentRunId = null;
             if (botTextElement) botTextElement.dataset.fullMessage = '';
 
             // Remove streaming class from message
@@ -6252,6 +6451,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             await saveModelChatState(currentModelName, modelData);
             populateConversationSidebar(currentModelName, modelData);
+            await refreshAgentRunsPanelData();
             console.log('UI unlocked, state saved, sidebar repopulated in finally block.');
             updateRegenerateButton();
         }
@@ -6890,6 +7090,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Start persistent server status indicator
         startServerStatusPoll();
+        await refreshAgentRunsPanelData();
+        await maybeReconnectActiveAgentRun();
     }
 
     // Message history navigation (persistent via chrome.storage.local)
@@ -6973,8 +7175,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Event Listeners
     sendButton.addEventListener('click', () => { pushToHistory(messageInput.value); sendMessageToOllama(messageInput.value); });
+    refreshAgentRunsButton?.addEventListener('click', () => { refreshAgentRunsPanelData(); });
     if (stopButton) {
-        stopButton.addEventListener('click', () => {
+        stopButton.addEventListener('click', async () => {
+            if (currentAgentRunId) {
+                fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(currentAgentRunId)}/cancel`, { method: 'POST' }).catch(() => {});
+            }
             if (currentAbortController) currentAbortController.abort();
         });
     }
