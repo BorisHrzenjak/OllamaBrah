@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.10.0
+## What's New - v1.11.0
 
-- **New top-bar `Chat` / `Agent` switcher** - the app now makes the conversational workflow and the coding/automation workflow visually distinct instead of hiding Agent Mode as just another composer toggle
-- **Agent workflow now has a dedicated capabilities strip** - choose research, memory, and skills behavior for coding and automation tasks without cluttering the normal chat toolbar
-- **Agent Mode copy now better explains the coding workflow** - labels and settings text more clearly position Agent as the place for repo work, automation, and delegated tasks
+- **Agent Mode now has coding-oriented file tools** - the proxy can now read focused file ranges, search across files, glob for paths, replace text in place, and apply single-file patches for more precise repo work
+- **Agent file operations are broader and more practical** - directory creation plus file copy and move helpers make common coding and refactoring tasks possible without falling back to blunt full-file rewrites
+- **The new coding tools reuse the existing permission model** - Agent Mode gets more capable without dropping the current safety boundaries around allowed directories and tool approvals
 
 ---
 
@@ -62,6 +62,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Deep research** — multi-step Exa research pipeline before answering
 - **Agent mode** — autonomous tool-use loop with step-by-step visualization, live in-progress status feedback between tool phases, configurable max steps and permissions, and support for web search, deep research, memory injection, and skill hints in a single run
 - **Agent capabilities strip** — in Agent workflow, pick research mode (`Off / Web / Deep / Auto`), memory mode (`Off / Inject / Inject + Save`), and skills mode (`Auto / Manual`)
+- **Coding-oriented agent tools** — targeted file range reads, codebase search, globbing, in-file replace, single-file patch application, and file system helpers for repo work
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
 - Semantic memory search in the memory manager, with provenance like source type, extraction mode, and linked conversation/message metadata
 - Auto-extracted memories save directly with provenance and deduplication, and replies can show which memories were used in context

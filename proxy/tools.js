@@ -38,9 +38,17 @@ let agentToolPermissions = {
     math: 'auto',
     saveMemory: 'auto',
     readFile: 'auto',
+    readFileRange: 'auto',
     writeFile: 'confirm',
+    replaceInFile: 'confirm',
+    applyPatch: 'confirm',
     listDirectory: 'auto',
     findFiles: 'auto',
+    searchInFiles: 'auto',
+    globFiles: 'auto',
+    mkdir: 'confirm',
+    copyFile: 'confirm',
+    moveFile: 'confirm',
     deleteFile: 'confirm',
     runCode: 'confirm',
     runShell: 'confirm',
@@ -72,6 +80,66 @@ function isPathAllowed(targetPath) {
     if (agentBlockedPaths.some(b => matchesBoundary(b))) return false;
     if (agentAllowedDirs.length === 0) return true;
     return agentAllowedDirs.some(a => matchesBoundary(a));
+}
+
+function normalizeToolPath(targetPath) {
+    return path.resolve(String(targetPath || ''));
+}
+
+function ensureAllowedPath(targetPath) {
+    const resolved = normalizeToolPath(targetPath);
+    if (!isPathAllowed(resolved)) {
+        throw new Error('Path not allowed');
+    }
+    return resolved;
+}
+
+function walkDirectory(dir, { recursive = true, maxDepth = 20, onEntry }, depth = 0) {
+    if (depth > maxDepth) return;
+    let entries;
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return;
+    }
+    for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        onEntry(entry, fullPath, depth);
+        if (recursive && entry.isDirectory()) {
+            walkDirectory(fullPath, { recursive, maxDepth, onEntry }, depth + 1);
+        }
+    }
+}
+
+function globToRegExp(pattern) {
+    const normalized = String(pattern || '**/*').replace(/\\/g, '/');
+    let regex = '^';
+    for (let i = 0; i < normalized.length; i += 1) {
+        const char = normalized[i];
+        const next = normalized[i + 1];
+        if (char === '*') {
+            if (next === '*') {
+                regex += '.*';
+                i += 1;
+            } else {
+                regex += '[^/]*';
+            }
+        } else if (char === '?') {
+            regex += '.';
+        } else if ('[](){}.+^$|'.includes(char)) {
+            regex += `\\${char}`;
+        } else {
+            regex += char;
+        }
+    }
+    regex += '$';
+    return new RegExp(regex, 'i');
+}
+
+function formatLineRange(lines, startLine) {
+    return lines
+        .map((line, index) => `${startLine + index}: ${line}`)
+        .join('\n');
 }
 
 // Tier 1 tool definitions (for the model's tools array)
@@ -119,9 +187,57 @@ const AGENT_TOOLS = [
     {
         type: 'function',
         function: {
+            name: 'readFileRange',
+            description: 'Read a specific line range from a text file. Use this for large code files when you only need a focused section.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Absolute path to the file' },
+                    start: { type: 'integer', description: '1-based starting line number' },
+                    end: { type: 'integer', description: '1-based ending line number (inclusive)' }
+                },
+                required: ['path', 'start', 'end']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
             name: 'writeFile',
             description: 'Write or overwrite a file on disk.',
             parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the file' }, content: { type: 'string', description: 'Content to write' } }, required: ['path', 'content'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'replaceInFile',
+            description: 'Replace matching text inside a file without rewriting unrelated content. Best for targeted code edits.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Absolute path to the file' },
+                    search: { type: 'string', description: 'Exact text to search for' },
+                    replace: { type: 'string', description: 'Replacement text' },
+                    replaceAll: { type: 'boolean', description: 'Replace every match instead of only the first one' }
+                },
+                required: ['path', 'search', 'replace']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'applyPatch',
+            description: 'Apply a unified diff patch to a single file for a surgical code edit.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Absolute path to the file being patched' },
+                    diff: { type: 'string', description: 'Unified diff patch text for the target file' }
+                },
+                required: ['path', 'diff']
+            }
         }
     },
     {
@@ -151,9 +267,79 @@ const AGENT_TOOLS = [
     {
         type: 'function',
         function: {
+            name: 'searchInFiles',
+            description: 'Search for text across files in a directory tree. Use this to locate symbols, strings, TODOs, or code patterns.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Directory to search in (absolute Windows path)' },
+                    query: { type: 'string', description: 'Text or regex pattern to search for' },
+                    filePattern: { type: 'string', description: 'Optional glob pattern like "**/*.js" or "src/**/*.ts"' },
+                    regex: { type: 'boolean', description: 'Treat query as a regular expression' }
+                },
+                required: ['path', 'query']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'globFiles',
+            description: 'Find files by glob pattern such as "**/*.js" or "src/**/*.tsx".',
+            parameters: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Directory to search in (absolute Windows path)' },
+                    pattern: { type: 'string', description: 'Glob pattern to match files' }
+                },
+                required: ['path', 'pattern']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
             name: 'deleteFile',
             description: 'Delete a file from disk. This is irreversible.',
             parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the file to delete' } }, required: ['path'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'mkdir',
+            description: 'Create a directory, including parent folders if needed.',
+            parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the directory' } }, required: ['path'] }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'copyFile',
+            description: 'Copy a file from one path to another.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    source: { type: 'string', description: 'Absolute path to the source file' },
+                    destination: { type: 'string', description: 'Absolute path to the destination file' }
+                },
+                required: ['source', 'destination']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'moveFile',
+            description: 'Move or rename a file from one path to another.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    source: { type: 'string', description: 'Absolute path to the source file' },
+                    destination: { type: 'string', description: 'Absolute path to the destination file' }
+                },
+                required: ['source', 'destination']
+            }
         }
     },
     {
@@ -377,6 +563,18 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     return { result: content.slice(0, 8000) };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
+            case 'readFileRange': {
+                const approved = await requestPermission(res, 'readFileRange', args, 'low', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                try {
+                    const filePath = ensureAllowedPath(args.path);
+                    const start = Math.max(1, parseInt(args.start, 10) || 1);
+                    const end = Math.max(start, parseInt(args.end, 10) || start);
+                    const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+                    const slice = lines.slice(start - 1, end);
+                    return { result: formatLineRange(slice, start) || `(no content in lines ${start}-${end})` };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
             case 'writeFile': {
                 const approved = await requestPermission(res, 'writeFile', args, 'high', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
@@ -385,6 +583,36 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     fs.mkdirSync(path.dirname(args.path), { recursive: true });
                     fs.writeFileSync(args.path, args.content || '', 'utf8');
                     return { result: 'File written successfully' };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'replaceInFile': {
+                const approved = await requestPermission(res, 'replaceInFile', args, 'medium', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                try {
+                    const filePath = ensureAllowedPath(args.path);
+                    const search = String(args.search || '');
+                    if (!search) return { result: 'Search text was empty', error: true };
+                    const original = fs.readFileSync(filePath, 'utf8');
+                    const replaceAll = args.replaceAll === true;
+                    const matchCount = original.split(search).length - 1;
+                    if (matchCount === 0) return { result: 'No matches found', error: true };
+                    const updated = replaceAll
+                        ? original.split(search).join(String(args.replace || ''))
+                        : original.replace(search, String(args.replace || ''));
+                    fs.writeFileSync(filePath, updated, 'utf8');
+                    return { result: `Replaced ${replaceAll ? matchCount : 1} occurrence(s) in ${filePath}` };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'applyPatch': {
+                const approved = await requestPermission(res, 'applyPatch', args, 'high', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                try {
+                    const filePath = ensureAllowedPath(args.path);
+                    const original = fs.readFileSync(filePath, 'utf8');
+                    const patched = diffLib.applyPatch(original, String(args.diff || ''));
+                    if (patched === false) return { result: 'Patch could not be applied cleanly', error: true };
+                    fs.writeFileSync(filePath, patched, 'utf8');
+                    return { result: `Patch applied successfully to ${filePath}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'listDirectory': {
@@ -445,6 +673,59 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     return { result: `Found ${found.length} file(s) matching "${args.pattern}" in ${args.path}${recursive ? ' (recursive)' : ''}:\n${preview}${more}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
+            case 'searchInFiles': {
+                const approved = await requestPermission(res, 'searchInFiles', args, 'low', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                try {
+                    const root = ensureAllowedPath(args.path);
+                    const matcher = args.filePattern ? globToRegExp(args.filePattern) : null;
+                    const regex = args.regex ? new RegExp(String(args.query || ''), 'i') : null;
+                    const query = String(args.query || '');
+                    const hits = [];
+                    walkDirectory(root, {
+                        recursive: true,
+                        maxDepth: 20,
+                        onEntry: (entry, fullPath) => {
+                            if (!entry.isFile()) return;
+                            const relative = path.relative(root, fullPath).replace(/\\/g, '/');
+                            if (matcher && !matcher.test(relative)) return;
+                            let content;
+                            try { content = fs.readFileSync(fullPath, 'utf8'); } catch { return; }
+                            const lines = content.split(/\r?\n/);
+                            lines.forEach((line, index) => {
+                                const matched = regex ? regex.test(line) : line.toLowerCase().includes(query.toLowerCase());
+                                if (matched) {
+                                    hits.push(`${relative}:${index + 1}: ${line.trim()}`);
+                                }
+                            });
+                        }
+                    });
+                    const preview = hits.slice(0, 100).join('\n');
+                    const more = hits.length > 100 ? `\n... and ${hits.length - 100} more match(es)` : '';
+                    return { result: hits.length ? `Found ${hits.length} match(es):\n${preview}${more}` : 'No matches found' };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'globFiles': {
+                const approved = await requestPermission(res, 'globFiles', args, 'low', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                try {
+                    const root = ensureAllowedPath(args.path);
+                    const matcher = globToRegExp(args.pattern || '**/*');
+                    const found = [];
+                    walkDirectory(root, {
+                        recursive: true,
+                        maxDepth: 20,
+                        onEntry: (entry, fullPath) => {
+                            if (!entry.isFile()) return;
+                            const relative = path.relative(root, fullPath).replace(/\\/g, '/');
+                            if (matcher.test(relative)) found.push(relative);
+                        }
+                    });
+                    const preview = found.slice(0, 100).join('\n');
+                    const more = found.length > 100 ? `\n... and ${found.length - 100} more` : '';
+                    return { result: found.length ? `Matched ${found.length} file(s):\n${preview}${more}` : 'No files matched' };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
             case 'deleteFile': {
                 const approved = await requestPermission(res, 'deleteFile', args, 'high', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
@@ -452,6 +733,37 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 try {
                     fs.unlinkSync(args.path);
                     return { result: 'File deleted: ' + args.path };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'mkdir': {
+                const approved = await requestPermission(res, 'mkdir', args, 'medium', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                try {
+                    const dirPath = ensureAllowedPath(args.path);
+                    fs.mkdirSync(dirPath, { recursive: true });
+                    return { result: `Directory created: ${dirPath}` };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'copyFile': {
+                const approved = await requestPermission(res, 'copyFile', args, 'medium', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                try {
+                    const source = ensureAllowedPath(args.source);
+                    const destination = ensureAllowedPath(args.destination);
+                    fs.mkdirSync(path.dirname(destination), { recursive: true });
+                    fs.copyFileSync(source, destination);
+                    return { result: `Copied ${source} to ${destination}` };
+                } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
+            }
+            case 'moveFile': {
+                const approved = await requestPermission(res, 'moveFile', args, 'medium', sessionPermissions);
+                if (!approved) return { result: 'User denied', error: true };
+                try {
+                    const source = ensureAllowedPath(args.source);
+                    const destination = ensureAllowedPath(args.destination);
+                    fs.mkdirSync(path.dirname(destination), { recursive: true });
+                    fs.renameSync(source, destination);
+                    return { result: `Moved ${source} to ${destination}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'runCode': {
