@@ -132,23 +132,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     const fileInput = document.getElementById('fileInput');
     const imagePreviewArea = document.getElementById('imagePreviewArea');
     const dragDropOverlay = document.getElementById('dragDropOverlay');
+    const inputArea = document.getElementById('inputArea');
     const micButton = document.getElementById('micButton');
     const webSearchButton = document.getElementById('webSearchButton');
+    const chatWorkflowButton = document.getElementById('chatWorkflowButton');
+    const agentWorkflowButton = document.getElementById('agentWorkflowButton');
+    const agentCapabilitiesStrip = document.getElementById('agentCapabilitiesStrip');
+    const agentCapabilitiesToggle = document.getElementById('agentCapabilitiesToggle');
+    const agentCapabilitiesSummary = document.getElementById('agentCapabilitiesSummary');
+    const agentCapabilitiesBody = document.getElementById('agentCapabilitiesBody');
+    const agentResearchModeControl = document.getElementById('agentResearchModeControl');
+    const agentMemoryModeControl = document.getElementById('agentMemoryModeControl');
+    const agentSkillsModeControl = document.getElementById('agentSkillsModeControl');
+
+    const CHAT_WORKFLOW_MODE_KEY = 'chatWorkflowMode';
+    const AGENT_RESEARCH_MODE_KEY = 'agentResearchMode';
+    const AGENT_MEMORY_MODE_KEY = 'agentMemoryMode';
+    const AGENT_SKILLS_MODE_KEY = 'agentSkillsMode';
 
     // Web search state
     let webSearchEnabled = false;
-
-    webSearchButton.addEventListener('click', () => {
-        webSearchEnabled = !webSearchEnabled;
-        webSearchButton.classList.toggle('active', webSearchEnabled);
-        webSearchButton.title = webSearchEnabled ? 'Web Search: ON' : 'Web Search: OFF';
-        // Disable deep research when web search is enabled (mutually exclusive)
-        if (webSearchEnabled && deepResearchEnabled) {
-            deepResearchEnabled = false;
-            deepResearchButton.classList.remove('active');
-            deepResearchButton.title = 'Deep Research: OFF';
-        }
-    });
+    let chatWorkflowMode = 'chat';
+    let agentResearchMode = 'auto';
+    let agentMemoryMode = 'inject';
+    let agentSkillsMode = 'auto';
+    let agentCapabilitiesExpanded = false;
 
     // Slash command state
     const SLASH_COMMANDS_KEY = 'slashCommands';
@@ -174,37 +182,207 @@ document.addEventListener('DOMContentLoaded', async () => {
     const deepResearchButton = document.getElementById('deepResearchButton');
     let deepResearchEnabled = false;
 
-    deepResearchButton.addEventListener('click', () => {
-        deepResearchEnabled = !deepResearchEnabled;
-        deepResearchButton.classList.toggle('active', deepResearchEnabled);
-        deepResearchButton.title = deepResearchEnabled ? 'Deep Research: ON' : 'Deep Research: OFF';
-        // Disable web search when deep research is enabled (mutually exclusive)
-        if (deepResearchEnabled && webSearchEnabled) {
-            webSearchEnabled = false;
-            webSearchButton.classList.remove('active');
-            webSearchButton.title = 'Web Search: OFF';
-        }
-    });
-
     // Agent mode state
     const agentModeButton = document.getElementById('agentModeButton');
     let agentModeEnabled = false;
-
-    agentModeButton.addEventListener('click', () => {
-        agentModeEnabled = !agentModeEnabled;
-        agentModeButton.classList.toggle('active', agentModeEnabled);
-        agentModeButton.title = agentModeEnabled ? 'Agent Mode: ON' : 'Agent Mode: OFF';
-    });
 
     // Memory state
     const memoryButton = document.getElementById('memoryButton');
     let memoryEnabled = false;
 
-    memoryButton.addEventListener('click', () => {
-        memoryEnabled = !memoryEnabled;
+    function persistWorkflowPreferences() {
+        return chrome.storage.local.set({
+            webSearchEnabled,
+            deepResearchEnabled,
+            agentModeEnabled,
+            memoryEnabled,
+            [CHAT_WORKFLOW_MODE_KEY]: chatWorkflowMode,
+            [AGENT_RESEARCH_MODE_KEY]: agentResearchMode,
+            [AGENT_MEMORY_MODE_KEY]: agentMemoryMode,
+            [AGENT_SKILLS_MODE_KEY]: agentSkillsMode,
+        }).catch(err => console.warn('[Workflow] Failed to persist workflow state:', err));
+    }
+
+    function updateSegmentedControl(control, activeValue) {
+        if (!control) return;
+        control.querySelectorAll('[data-value]').forEach(button => {
+            button.classList.toggle('active', button.dataset.value === activeValue);
+        });
+    }
+
+    function formatCapabilityLabel(value) {
+        const labels = {
+            off: 'Off',
+            web: 'Web',
+            deep: 'Deep',
+            auto: 'Auto',
+            inject: 'Inject',
+            inject_and_extract: 'Inject + Save',
+            manual: 'Manual',
+        };
+        return labels[value] || value;
+    }
+
+    function updateAgentCapabilitiesSummary() {
+        if (!agentCapabilitiesSummary) return;
+        agentCapabilitiesSummary.textContent = `Research ${formatCapabilityLabel(agentResearchMode)} · Memory ${formatCapabilityLabel(agentMemoryMode)} · Skills ${formatCapabilityLabel(agentSkillsMode)}`;
+    }
+
+    function setAgentCapabilitiesExpanded(expanded) {
+        agentCapabilitiesExpanded = !!expanded;
+        if (!agentCapabilitiesStrip) return;
+        agentCapabilitiesStrip.dataset.expanded = agentCapabilitiesExpanded ? 'true' : 'false';
+        if (agentCapabilitiesToggle) {
+            agentCapabilitiesToggle.setAttribute('aria-expanded', agentCapabilitiesExpanded ? 'true' : 'false');
+        }
+        if (agentCapabilitiesBody) {
+            agentCapabilitiesBody.hidden = !agentCapabilitiesExpanded;
+        }
+    }
+
+    function setChatWebSearchEnabled(enabled, { persist = true } = {}) {
+        webSearchEnabled = !!enabled;
+        if (webSearchEnabled) deepResearchEnabled = false;
+        webSearchButton.classList.toggle('active', webSearchEnabled);
+        webSearchButton.title = webSearchEnabled ? 'Web Search: ON' : 'Web Search: OFF';
+        deepResearchButton.classList.toggle('active', deepResearchEnabled);
+        deepResearchButton.title = deepResearchEnabled ? 'Deep Research: ON' : 'Deep Research: OFF';
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setChatDeepResearchEnabled(enabled, { persist = true } = {}) {
+        deepResearchEnabled = !!enabled;
+        if (deepResearchEnabled) webSearchEnabled = false;
+        deepResearchButton.classList.toggle('active', deepResearchEnabled);
+        deepResearchButton.title = deepResearchEnabled ? 'Deep Research: ON' : 'Deep Research: OFF';
+        webSearchButton.classList.toggle('active', webSearchEnabled);
+        webSearchButton.title = webSearchEnabled ? 'Web Search: ON' : 'Web Search: OFF';
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setChatMemoryEnabled(enabled, { persist = true } = {}) {
+        memoryEnabled = !!enabled;
         memoryButton.classList.toggle('active', memoryEnabled);
         memoryButton.title = memoryEnabled ? 'Memory: ON' : 'Memory: OFF';
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setAgentResearchMode(mode, { persist = true } = {}) {
+        const allowed = ['off', 'web', 'deep', 'auto'];
+        agentResearchMode = allowed.includes(mode) ? mode : 'auto';
+        updateSegmentedControl(agentResearchModeControl, agentResearchMode);
+        updateAgentCapabilitiesSummary();
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setAgentMemoryMode(mode, { persist = true } = {}) {
+        const allowed = ['off', 'inject', 'inject_and_extract'];
+        agentMemoryMode = allowed.includes(mode) ? mode : 'inject';
+        updateSegmentedControl(agentMemoryModeControl, agentMemoryMode);
+        updateAgentCapabilitiesSummary();
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setAgentSkillsMode(mode, { persist = true } = {}) {
+        const allowed = ['auto', 'manual'];
+        agentSkillsMode = allowed.includes(mode) ? mode : 'auto';
+        updateSegmentedControl(agentSkillsModeControl, agentSkillsMode);
+        updateAgentCapabilitiesSummary();
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setWorkflowMode(mode, { persist = true } = {}) {
+        chatWorkflowMode = mode === 'agent' ? 'agent' : 'chat';
+        agentModeEnabled = chatWorkflowMode === 'agent';
+
+        if (inputArea) inputArea.dataset.workflowMode = chatWorkflowMode;
+        if (agentCapabilitiesStrip) agentCapabilitiesStrip.hidden = chatWorkflowMode !== 'agent';
+
+        chatWorkflowButton?.classList.toggle('active', chatWorkflowMode === 'chat');
+        agentWorkflowButton?.classList.toggle('active', chatWorkflowMode === 'agent');
+
+        messageInput.placeholder = chatWorkflowMode === 'agent'
+            ? 'Ask Agent to code, automate, or work in your repo...'
+            : 'Ask anything...';
+
+        webSearchButton.style.display = chatWorkflowMode === 'chat' ? '' : 'none';
+        deepResearchButton.style.display = chatWorkflowMode === 'chat' ? '' : 'none';
+        memoryButton.style.display = chatWorkflowMode === 'chat' ? '' : 'none';
+        agentModeButton.style.display = 'none';
+        agentModeButton.classList.toggle('active', agentModeEnabled);
+        agentModeButton.title = agentModeEnabled ? 'Agent Workflow: ON' : 'Agent Workflow: OFF';
+
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function getActiveResearchMode() {
+        if (chatWorkflowMode === 'agent') return agentResearchMode;
+        if (deepResearchEnabled) return 'deep';
+        if (webSearchEnabled) return 'web';
+        return 'off';
+    }
+
+    function getActiveMemoryMode() {
+        if (chatWorkflowMode === 'agent') return agentMemoryMode;
+        return memoryEnabled ? 'inject' : 'off';
+    }
+
+    function getActiveSkillsPolicy() {
+        return chatWorkflowMode === 'agent' ? agentSkillsMode : 'auto';
+    }
+
+    webSearchButton.addEventListener('click', () => setChatWebSearchEnabled(!webSearchEnabled));
+    deepResearchButton.addEventListener('click', () => setChatDeepResearchEnabled(!deepResearchEnabled));
+    agentModeButton.addEventListener('click', () => setWorkflowMode(chatWorkflowMode === 'agent' ? 'chat' : 'agent'));
+    memoryButton.addEventListener('click', () => setChatMemoryEnabled(!memoryEnabled));
+    chatWorkflowButton?.addEventListener('click', () => setWorkflowMode('chat'));
+    agentWorkflowButton?.addEventListener('click', () => setWorkflowMode('agent'));
+    agentCapabilitiesToggle?.addEventListener('click', () => setAgentCapabilitiesExpanded(!agentCapabilitiesExpanded));
+    agentResearchModeControl?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-value]');
+        if (!button) return;
+        setAgentResearchMode(button.dataset.value);
     });
+    agentMemoryModeControl?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-value]');
+        if (!button) return;
+        setAgentMemoryMode(button.dataset.value);
+    });
+    agentSkillsModeControl?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-value]');
+        if (!button) return;
+        setAgentSkillsMode(button.dataset.value);
+    });
+
+    setChatWebSearchEnabled(false, { persist: false });
+    setChatDeepResearchEnabled(false, { persist: false });
+    setChatMemoryEnabled(false, { persist: false });
+    setAgentResearchMode('auto', { persist: false });
+    setAgentMemoryMode('inject', { persist: false });
+    setAgentSkillsMode('auto', { persist: false });
+    setAgentCapabilitiesExpanded(false);
+    setWorkflowMode('chat', { persist: false });
+
+    async function loadWorkflowPreferences() {
+        const stored = await chrome.storage.local.get({
+            webSearchEnabled: false,
+            deepResearchEnabled: false,
+            agentModeEnabled: false,
+            memoryEnabled: false,
+            [CHAT_WORKFLOW_MODE_KEY]: null,
+            [AGENT_RESEARCH_MODE_KEY]: 'auto',
+            [AGENT_MEMORY_MODE_KEY]: 'inject',
+            [AGENT_SKILLS_MODE_KEY]: 'auto',
+        });
+
+        setChatWebSearchEnabled(!!stored.webSearchEnabled, { persist: false });
+        setChatDeepResearchEnabled(!!stored.deepResearchEnabled, { persist: false });
+        setChatMemoryEnabled(!!stored.memoryEnabled, { persist: false });
+        setAgentResearchMode(stored[AGENT_RESEARCH_MODE_KEY], { persist: false });
+        setAgentMemoryMode(stored[AGENT_MEMORY_MODE_KEY], { persist: false });
+        setAgentSkillsMode(stored[AGENT_SKILLS_MODE_KEY], { persist: false });
+        setWorkflowMode(stored[CHAT_WORKFLOW_MODE_KEY] || (stored.agentModeEnabled ? 'agent' : 'chat'), { persist: false });
+    }
 
     // Keyword patterns that trigger auto-save to memory
     const MEMORY_SAVE_PATTERNS = [
@@ -5541,10 +5719,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const botTextElement = addMessageToChatUI(currentModelName, '', 'bot-message', modelData);
         const botMessageDiv = botTextElement.parentElement;
 
-        // Show search step indicator if web search or deep research is enabled
+        const activeResearchMode = getActiveResearchMode();
+        const activeMemoryMode = getActiveMemoryMode();
+
+        // Show search step indicator if explicit web or deep research is enabled
         let searchStepEl = null;
-        if (webSearchEnabled || deepResearchEnabled) {
-            searchStepEl = createSearchStepElement(deepResearchEnabled ? 'deep_research' : 'web');
+        if (activeResearchMode === 'web' || activeResearchMode === 'deep') {
+            searchStepEl = createSearchStepElement(activeResearchMode === 'deep' ? 'deep_research' : 'web');
             // Insert before the text content div
             const textContentDiv = botMessageDiv.querySelector('.message-text-content');
             if (textContentDiv) {
@@ -5647,9 +5828,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 requestBody._path = currentLlamaCppPath;
             }
 
-            if (webSearchEnabled) requestBody._webSearch = true;
-            if (deepResearchEnabled) requestBody._deepResearch = true;
-            if (memoryEnabled) requestBody._memory = true;
+            if (activeResearchMode === 'web') requestBody._webSearch = true;
+            if (activeResearchMode === 'deep') requestBody._deepResearch = true;
+            if (activeMemoryMode !== 'off') requestBody._memory = true;
 
             // Detect explicit save-to-memory intent in the last user message
             const lastUserMsg = apiMessages.filter(m => m.role === 'user').at(-1);
@@ -5678,10 +5859,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (agentModeEnabled) {
                 const configuredMaxSteps = Number.isInteger(agentConfig?.maxSteps) && agentConfig.maxSteps > 0
                     ? agentConfig.maxSteps : 15;
-                const researchPolicy = deepResearchEnabled ? 'deep' : webSearchEnabled ? 'web' : 'auto';
-                const memoryPolicy = memoryEnabled
-                    ? (memoryAutoExtract ? 'inject_and_extract' : 'inject')
-                    : 'off';
+                const researchPolicy = activeResearchMode;
+                const memoryPolicy = activeMemoryMode;
                 const agentBody = {
                     messages: apiMessages,
                     model: currentModelName,
@@ -5689,12 +5868,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     maxSteps: configuredMaxSteps,
                     _researchPolicy: researchPolicy,
                     _memoryPolicy: memoryPolicy,
-                    _skillsPolicy: pendingSkillName ? 'manual' : 'auto'
+                    _skillsPolicy: pendingSkillName ? 'manual' : getActiveSkillsPolicy()
                 };
-                if (webSearchEnabled) agentBody._webSearch = true;
-                if (deepResearchEnabled) agentBody._deepResearch = true;
-                if (memoryEnabled) agentBody._memory = true;
-                if (memoryAutoExtract) agentBody._memoryAutoExtract = true;
+                if (researchPolicy === 'web') agentBody._webSearch = true;
+                if (researchPolicy === 'deep') agentBody._deepResearch = true;
+                if (memoryPolicy !== 'off') agentBody._memory = true;
+                if (memoryPolicy === 'inject_and_extract') agentBody._memoryAutoExtract = true;
                 if (lastUserMsg && detectMemorySaveIntent(lastUserMsg.content || '')) {
                     agentBody._saveToMemory = lastUserMsg.content;
                 }
@@ -5748,7 +5927,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 // Auto-extract memories from agent exchange (fire-and-forget)
-                if (memoryAutoExtract && lastUserMsg && finalText) {
+                if (memoryPolicy === 'inject_and_extract' && lastUserMsg && finalText) {
                     triggerMemoryExtraction(lastUserMsg.content, finalText);
                 }
 
@@ -5987,7 +6166,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // Auto-extract memories from this exchange (fire-and-forget)
-            if ((memoryEnabled || memoryAutoExtract) && lastUserMsg) {
+            if ((activeMemoryMode !== 'off' || memoryAutoExtract) && lastUserMsg) {
                 triggerMemoryExtraction(lastUserMsg.content, accumulatedContent);
             }
 
@@ -6090,7 +6269,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!agentModeEnabled) {
                 const md = await loadModelChatState(currentModelName);
                 const warningMessage = addMessageToChatUI('System',
-                    `The "${pendingSkillName}" skill requires Agent Mode. Enable it with the Agent Mode button in the toolbar, then resend your message.`,
+                    `The "${pendingSkillName}" skill requires Agent workflow. Switch to Agent in the header, then resend your message.`,
                     'error-message', md);
                 warningMessage.textContent = '';
                 warningMessage.style.display = 'inline-flex';
@@ -6100,9 +6279,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const agentModeIcon = createLucideIcon('bot', 15);
                 agentModeIcon.style.flexShrink = '0';
                 warningMessage.append(
-                    document.createTextNode(`The "${pendingSkillName}" skill requires Agent Mode. Enable it with the `),
+                    document.createTextNode(`The "${pendingSkillName}" skill requires Agent workflow. Switch to `),
                     agentModeIcon,
-                    document.createTextNode(' button in the toolbar, then resend your message.')
+                    document.createTextNode(' in the header, then resend your message.')
                 );
                 pendingSkillName = null;
                 return;
@@ -6638,6 +6817,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function init() {
         setComposerAvailability(false);
+        await loadWorkflowPreferences();
         const readiness = await refreshStartupReadiness({ forceRender: true });
         startReadinessRecoveryPoll();
         let startupBlocked = false;
@@ -7457,17 +7637,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const saved = r[MEMORY_AUTO_INJECT_KEY] ?? false;
                 autoInjectCb.checked = saved;
                 if (saved && !memoryEnabled) {
-                    memoryEnabled = true;
-                    memoryButton.classList.add('active');
-                    memoryButton.title = 'Memory: ON';
+                    setChatMemoryEnabled(true, { persist: false });
                 }
             });
             autoInjectCb.addEventListener('change', () => {
                 const checked = autoInjectCb.checked;
                 chrome.storage.local.set({ [MEMORY_AUTO_INJECT_KEY]: checked });
-                memoryEnabled = checked;
-                memoryButton.classList.toggle('active', checked);
-                memoryButton.title = checked ? 'Memory: ON' : 'Memory: OFF';
+                setChatMemoryEnabled(checked);
             });
         }
 
@@ -7786,14 +7962,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Alt+W  — web search  (Ctrl+W = close window)
         if (e.key.toLowerCase() === 'w' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
-            webSearchButton.click();
+            if (chatWorkflowMode === 'agent') {
+                setAgentResearchMode(agentResearchMode === 'web' ? 'off' : 'web');
+            } else {
+                webSearchButton.click();
+            }
         }
         // Alt+R  — deep research  (Ctrl+R = read aloud, already taken)
         if (e.key.toLowerCase() === 'r' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
-            deepResearchButton.click();
+            if (chatWorkflowMode === 'agent') {
+                setAgentResearchMode(agentResearchMode === 'deep' ? 'off' : 'deep');
+            } else {
+                deepResearchButton.click();
+            }
         }
-        // Alt+A  — agent mode  (Ctrl+A = select all)
+        // Alt+A  — Agent workflow  (Ctrl+A = select all)
         if (e.key.toLowerCase() === 'a' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
             agentModeButton.click();
@@ -7814,7 +7998,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 case 'm': {                                         // Ctrl+M — toggle memory
                     e.preventDefault();
-                    if (memoryButton) memoryButton.click();
+                    if (chatWorkflowMode === 'agent') {
+                        setAgentMemoryMode(agentMemoryMode === 'off' ? 'inject' : 'off');
+                    } else if (memoryButton) {
+                        memoryButton.click();
+                    }
                     break;
                 }
                 case 'd': {                                         // Ctrl+D — delete conversation
@@ -9411,6 +9599,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 deepResearchEnabled: typeof deepResearchEnabled !== 'undefined' ? deepResearchEnabled : false,
                 agentModeEnabled: typeof agentModeEnabled !== 'undefined' ? agentModeEnabled : false,
                 memoryEnabled: typeof memoryEnabled !== 'undefined' ? memoryEnabled : false,
+                chatWorkflowMode: typeof chatWorkflowMode !== 'undefined' ? chatWorkflowMode : 'chat',
+                agentResearchMode: typeof agentResearchMode !== 'undefined' ? agentResearchMode : 'auto',
+                agentMemoryMode: typeof agentMemoryMode !== 'undefined' ? agentMemoryMode : 'inject',
+                agentSkillsMode: typeof agentSkillsMode !== 'undefined' ? agentSkillsMode : 'auto',
             };
         }
 
@@ -9424,6 +9616,29 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (typeof state.currentLlamaCppPath !== 'undefined') {
                 if (typeof currentLlamaCppPath !== 'undefined') currentLlamaCppPath = state.currentLlamaCppPath;
+            }
+            if (typeof state.webSearchEnabled !== 'undefined') {
+                setChatWebSearchEnabled(state.webSearchEnabled, { persist: false });
+            }
+            if (typeof state.deepResearchEnabled !== 'undefined') {
+                setChatDeepResearchEnabled(state.deepResearchEnabled, { persist: false });
+            }
+            if (typeof state.memoryEnabled !== 'undefined') {
+                setChatMemoryEnabled(state.memoryEnabled, { persist: false });
+            }
+            if (typeof state.agentResearchMode !== 'undefined') {
+                setAgentResearchMode(state.agentResearchMode, { persist: false });
+            }
+            if (typeof state.agentMemoryMode !== 'undefined') {
+                setAgentMemoryMode(state.agentMemoryMode, { persist: false });
+            }
+            if (typeof state.agentSkillsMode !== 'undefined') {
+                setAgentSkillsMode(state.agentSkillsMode, { persist: false });
+            }
+            if (typeof state.chatWorkflowMode !== 'undefined') {
+                setWorkflowMode(state.chatWorkflowMode, { persist: false });
+            } else if (typeof state.agentModeEnabled !== 'undefined') {
+                setWorkflowMode(state.agentModeEnabled ? 'agent' : 'chat', { persist: false });
             }
         }
 

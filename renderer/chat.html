@@ -978,11 +978,47 @@
             margin-left: var(--space-sm);
         }
 
+        #chatWorkflowSwitcher {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            padding: 3px;
+            margin-left: auto;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-subtle);
+            border-radius: 10px;
+        }
+
+        .workflow-switch-button {
+            min-width: 58px;
+            height: 28px;
+            padding: 0 12px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .workflow-switch-button:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .workflow-switch-button.active {
+            color: var(--text-primary);
+            background: linear-gradient(180deg, rgba(245, 166, 35, 0.22), rgba(245, 166, 35, 0.12));
+            box-shadow: inset 0 0 0 1px rgba(245, 166, 35, 0.16);
+        }
+
         #modelStatusGroup {
             display: flex;
             align-items: center;
             gap: 6px;
-            margin-left: auto;
             margin-right: var(--space-md);
         }
 
@@ -1524,6 +1560,159 @@
 
         #inputCard:focus-within {
             border-color: var(--accent);
+        }
+
+        #agentCapabilitiesStrip {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            margin-bottom: 8px;
+            background: rgba(245, 166, 35, 0.045);
+            border: 1px solid rgba(245, 166, 35, 0.1);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        #agentCapabilitiesStrip[hidden] {
+            display: none !important;
+        }
+
+        #agentCapabilitiesStrip[data-expanded="false"] #agentCapabilitiesBody {
+            display: none;
+        }
+
+        #agentCapabilitiesStrip[data-expanded="true"] {
+            background: linear-gradient(180deg, rgba(245, 166, 35, 0.075), rgba(245, 166, 35, 0.03));
+            border-color: rgba(245, 166, 35, 0.16);
+        }
+
+        .agent-capabilities-header {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            padding: 9px 12px;
+            background: transparent;
+            border: none;
+            color: inherit;
+            cursor: pointer;
+            text-align: left;
+            gap: 12px;
+            transition: background-color var(--transition);
+        }
+
+        .agent-capabilities-header:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .agent-capabilities-copy {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .agent-capabilities-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .agent-capabilities-title i {
+            width: 14px;
+            height: 14px;
+            color: var(--accent);
+        }
+
+        .agent-capabilities-summary {
+            margin-top: 3px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .agent-capabilities-toggle-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 7px;
+            background: rgba(255, 255, 255, 0.03);
+            color: var(--text-muted);
+            flex-shrink: 0;
+            transition: all var(--transition);
+        }
+
+        #agentCapabilitiesStrip[data-expanded="true"] .agent-capabilities-toggle-icon {
+            transform: rotate(180deg);
+            color: var(--text-primary);
+        }
+
+        #agentCapabilitiesBody {
+            padding: 0 12px 10px;
+            border-top: 1px solid rgba(245, 166, 35, 0.08);
+        }
+
+        .agent-capability-groups {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            padding-top: 10px;
+        }
+
+        .agent-capability-group {
+            min-width: 0;
+            flex: 1 1 180px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .agent-capability-label {
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .agent-segmented-control {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .agent-segmented-button {
+            min-height: 28px;
+            padding: 0 10px;
+            border: 1px solid var(--border-subtle);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.025);
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .agent-segmented-button:hover {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+        }
+
+        .agent-segmented-button.active {
+            background: rgba(245, 166, 35, 0.12);
+            border-color: rgba(245, 166, 35, 0.18);
+            color: var(--accent);
+        }
+
+        #inputArea[data-workflow-mode="agent"] #inputCard {
+            border-color: rgba(245, 166, 35, 0.24);
+            box-shadow: inset 0 1px 0 rgba(245, 166, 35, 0.04);
         }
 
         #inputToolbar {
@@ -5295,6 +5484,10 @@ body {
                 </button>
                 <h1>Ollama<span style="color:var(--accent)">Brah</span></h1>
                 <span id="appVersion" class="app-version"></span>
+                <div id="chatWorkflowSwitcher" aria-label="Conversation workflow">
+                    <button id="chatWorkflowButton" class="workflow-switch-button active" title="Use standard chat mode">Chat</button>
+                    <button id="agentWorkflowButton" class="workflow-switch-button" title="Use agent mode for coding and automation">Agent</button>
+                </div>
                 <div id="modelStatusGroup">
                     <div id="modelNameDisplay">Loading...</div>
                     <span id="personaBadge" class="persona-badge" style="display: none;" title="Active persona"></span>
@@ -5338,9 +5531,46 @@ body {
             <div id="inputArea">
                 <div id="slashCommandPopup"></div>
                 <input type="file" id="fileInput" accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.html,.css,.sql,.sh,.yml,.yaml,.xml,.log,.csv" multiple style="display: none;">
+                <div id="agentCapabilitiesStrip" data-expanded="false" hidden>
+                    <button id="agentCapabilitiesToggle" class="agent-capabilities-header" aria-expanded="false" title="Show or hide agent controls">
+                        <div class="agent-capabilities-copy">
+                            <div class="agent-capabilities-title"><i data-lucide="bot"></i><span>Agent controls</span></div>
+                            <div id="agentCapabilitiesSummary" class="agent-capabilities-summary">Research Auto · Memory Inject · Skills Auto</div>
+                        </div>
+                        <span class="agent-capabilities-toggle-icon"><i data-lucide="chevron-down"></i></span>
+                    </button>
+                    <div id="agentCapabilitiesBody">
+                        <div class="agent-capability-groups">
+                            <div class="agent-capability-group">
+                                <span class="agent-capability-label">Research</span>
+                                <div id="agentResearchModeControl" class="agent-segmented-control">
+                                    <button class="agent-segmented-button" data-value="off">Off</button>
+                                    <button class="agent-segmented-button" data-value="web">Web</button>
+                                    <button class="agent-segmented-button" data-value="deep">Deep</button>
+                                    <button class="agent-segmented-button" data-value="auto">Auto</button>
+                                </div>
+                            </div>
+                            <div class="agent-capability-group">
+                                <span class="agent-capability-label">Memory</span>
+                                <div id="agentMemoryModeControl" class="agent-segmented-control">
+                                    <button class="agent-segmented-button" data-value="off">Off</button>
+                                    <button class="agent-segmented-button" data-value="inject">Inject</button>
+                                    <button class="agent-segmented-button" data-value="inject_and_extract">Inject + Save</button>
+                                </div>
+                            </div>
+                            <div class="agent-capability-group">
+                                <span class="agent-capability-label">Skills</span>
+                                <div id="agentSkillsModeControl" class="agent-segmented-control">
+                                    <button class="agent-segmented-button" data-value="auto">Auto</button>
+                                    <button class="agent-segmented-button" data-value="manual">Manual</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div id="inputCard">
                     <div id="messageInputWrapper">
-                        <textarea id="messageInput" placeholder="Message..." rows="1" autofocus></textarea>
+                        <textarea id="messageInput" placeholder="Ask anything..." rows="1" autofocus></textarea>
                     </div>
                     <div id="inputToolbar">
                         <div id="inputToolsLeft">
@@ -5655,7 +5885,7 @@ body {
                         <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
                     </button>
                     <div id="skillsSectionBody" class="settings-section-body">
-                        <p class="modal-description">Skills give the agent specialized instructions. Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">/skill-name</code> in the message box to activate a skill. Requires <strong>Agent Mode</strong>.</p>
+                        <p class="modal-description">Skills give the agent specialized instructions. Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">/skill-name</code> in the message box to activate a skill. Requires the <strong>Agent</strong> workflow.</p>
                         <div id="skillsList" class="persona-presets-list"></div>
                         <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px;">
                             <input type="text" id="skillInstallInput"
@@ -5943,7 +6173,7 @@ body {
                         <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
                     </button>
                     <div id="agentSectionBody" class="settings-section-body">
-                        <p class="modal-description">Configure the agentic loop: which tools the AI can use and what
+                        <p class="modal-description">Configure the coding and automation workflow: which tools the agent can use and what
                             permissions are required before each action.</p>
 
                         <div class="llamacpp-field">
@@ -6210,7 +6440,7 @@ body {
                         <div class="shortcut-keys"><kbd>Alt</kbd><kbd>R</kbd></div>
                     </div>
                     <div class="shortcut-item">
-                        <span class="shortcut-desc">Toggle agent mode</span>
+                        <span class="shortcut-desc">Toggle Agent workflow</span>
                         <div class="shortcut-keys"><kbd>Alt</kbd><kbd>A</kbd></div>
                     </div>
                     <div class="shortcut-item">

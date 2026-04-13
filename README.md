@@ -8,10 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.9.9
+## What's New - v1.10.0
 
-- **Model Management now accepts pasted `ollama pull ...` and `ollama run ...` commands** - the app strips the CLI prefix and sends the actual model name to Ollama, avoiding the previous `400` failure
-- **Pulling models through the desktop UI is more forgiving** - you can paste from terminal docs or your shell history without manually editing the command first
+- **New top-bar `Chat` / `Agent` switcher** - the app now makes the conversational workflow and the coding/automation workflow visually distinct instead of hiding Agent Mode as just another composer toggle
+- **Agent workflow now has a dedicated capabilities strip** - choose research, memory, and skills behavior for coding and automation tasks without cluttering the normal chat toolbar
+- **Agent Mode copy now better explains the coding workflow** - labels and settings text more clearly position Agent as the place for repo work, automation, and delegated tasks
 
 ---
 
@@ -56,9 +57,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Context meter showing token breakdown (system prompt / search / conversation)
 
 ### Input Modes
+- **Top-bar `Chat` / `Agent` workflow switcher** — quickly move between normal conversation and the coding/automation workflow
 - **Web search** — augment responses with live Tavily search results
 - **Deep research** — multi-step Exa research pipeline before answering
 - **Agent mode** — autonomous tool-use loop with step-by-step visualization, live in-progress status feedback between tool phases, configurable max steps and permissions, and support for web search, deep research, memory injection, and skill hints in a single run
+- **Agent capabilities strip** — in Agent workflow, pick research mode (`Off / Web / Deep / Auto`), memory mode (`Off / Inject / Inject + Save`), and skills mode (`Auto / Manual`)
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
 - Semantic memory search in the memory manager, with provenance like source type, extraction mode, and linked conversation/message metadata
 - Auto-extracted memories save directly with provenance and deduplication, and replies can show which memories were used in context
@@ -91,7 +94,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 | Add file | `Ctrl+I` |
 | Toggle web search | `Alt+W` |
 | Toggle deep research | `Alt+R` |
-| Toggle agent mode | `Alt+A` |
+| Toggle Agent workflow | `Alt+A` |
 | Toggle memory | `Ctrl+M` |
 
 ---
