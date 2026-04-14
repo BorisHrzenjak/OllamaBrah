@@ -1676,10 +1676,14 @@ async function executeDurableAgentRun(runId, body = {}) {
         const _pathGuidance = _isWin
             ? `Always use Windows-style absolute paths (e.g. ${_examplePath}), never Unix-style paths (e.g. /home/user/file).`
             : `Always use Unix-style absolute paths (e.g. ${_examplePath}), never Windows-style paths (e.g. C:\\Users\\...).`;
+        const workspaceDirective = workspaceRoot
+            ? `WORKSPACE ROOT: "${workspaceRoot}". Treat this as the active repo/project root. For repo work, keep file edits, reads, diffs, and shell commands inside this workspace. Prefer relative paths or workspace-rooted paths. Do not use the home directory or unrelated absolute paths unless the user explicitly asks for that.`
+            : 'WORKSPACE ROOT: none selected. If the user says "in this repo" or wants project-scoped work, first identify the intended workspace before editing files.';
         const AGENT_DIRECTIVE = 'You are operating in AGENT MODE with real, functional tools available. ' +
             'When the user asks you to do something that requires a tool (read a file, search the web, run code, etc.), ALWAYS call the appropriate tool — never say you cannot access the internet or file system. The tools are real. Use them.\n' +
             `SYSTEM INFORMATION: OS=${_platform}, home directory="${os.homedir()}", path separator="${_pathSep}". ` +
             _pathGuidance + '\n' +
+            workspaceDirective + '\n' +
             'WEB SEARCH GUIDANCE: For any time-sensitive question, call webSearch before answering. Use fetchPage on relevant URLs before synthesizing the final answer.\n' +
             'FILE TOOL GUIDANCE: Use findFiles to count or discover files by type, and prefer precise file tools over broad rewrites.';
         const sysIdx = messages.findIndex(m => m.role === 'system');
@@ -1772,6 +1776,7 @@ async function executeDurableAgentRun(runId, body = {}) {
                 const current = getRun(runId);
                 const filesTouched = [...new Set([...(current?.filesTouched || []), ...touched])];
                 updateRun(runId, { filesTouched });
+                writer.write(JSON.stringify({ type: 'files_touched', files: filesTouched }));
             }
 
             if (backend === 'llamacpp') {

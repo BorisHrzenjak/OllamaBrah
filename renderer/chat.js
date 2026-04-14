@@ -866,21 +866,187 @@ document.addEventListener('DOMContentLoaded', async () => {
         return card;
     }
 
+    const FILE_EDIT_TOOL_NAMES = new Set([
+        'writeFile',
+        'replaceInFile',
+        'applyPatch',
+        'appendFile',
+        'deleteFile',
+        'mkdir',
+        'copyFile',
+        'moveFile',
+    ]);
+    const SHELL_OUTPUT_TOOL_NAMES = new Set(['runShell', 'runCode']);
+
+    function getAgentToolPanel(name) {
+        if (SHELL_OUTPUT_TOOL_NAMES.has(name)) return 'shell';
+        if (FILE_EDIT_TOOL_NAMES.has(name)) return 'files';
+        return 'timeline';
+    }
+
+    function summarizeAgentPaths(paths, limit = 6) {
+        const safePaths = Array.isArray(paths) ? paths.filter(Boolean) : [];
+        if (!safePaths.length) return 'No files touched yet';
+        const preview = safePaths.slice(0, limit).join('\n');
+        const extra = safePaths.length > limit ? `\n... and ${safePaths.length - limit} more` : '';
+        return `${safePaths.length} file${safePaths.length === 1 ? '' : 's'} touched\n${preview}${extra}`;
+    }
+
+    function extractDiffPreview(text, limit = 8000) {
+        const raw = String(text || '');
+        if (!raw) return '';
+        if (!(raw.includes('@@') && (raw.includes('---') || raw.includes('+++')))) return '';
+        return raw.slice(0, limit);
+    }
+
+    function createAgentRunSection(title, description = '', { visible = false } = {}) {
+        const section = document.createElement('section');
+        section.className = 'agent-run-section';
+        section.style.display = visible ? '' : 'none';
+
+        const header = document.createElement('div');
+        header.className = 'agent-run-section-header';
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'agent-run-section-title';
+        titleEl.textContent = title;
+        header.appendChild(titleEl);
+
+        if (description) {
+            const descEl = document.createElement('div');
+            descEl.className = 'agent-run-section-description';
+            descEl.textContent = description;
+            header.appendChild(descEl);
+        }
+
+        const body = document.createElement('div');
+        body.className = 'agent-run-section-body';
+        section.append(header, body);
+        return { section, body };
+    }
+
+    function appendAgentSectionItem(sectionRef, element) {
+        if (!sectionRef || !element) return element;
+        sectionRef.section.style.display = '';
+        sectionRef.body.appendChild(element);
+        return element;
+    }
+
+    function createAgentRunCard(title, body, tone = 'neutral') {
+        const card = document.createElement('div');
+        card.className = `agent-run-card agent-run-card-${tone}`;
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'agent-run-card-title';
+        titleEl.textContent = title;
+
+        const bodyEl = document.createElement('pre');
+        bodyEl.className = 'agent-run-card-body';
+        bodyEl.textContent = body;
+
+        card.append(titleEl, bodyEl);
+        return card;
+    }
+
+    function createAgentRunPanels(workspaceRoot) {
+        const root = document.createElement('div');
+        root.className = 'agent-run-sections';
+
+        const sections = {
+            timeline: createAgentRunSection('Timeline', 'Reasoning, approvals, and tool activity', { visible: true }),
+            files: createAgentRunSection('File Edits', 'Files changed during this run'),
+            diffs: createAgentRunSection('Diff Preview', 'Patch and diff output when available'),
+            shell: createAgentRunSection('Shell Output', 'Command execution and output'),
+            final: createAgentRunSection('Final Summary', workspaceRoot ? `Workspace: ${workspaceRoot}` : 'Workspace: Not set'),
+        };
+
+        Object.values(sections).forEach(section => root.appendChild(section.section));
+
+        return {
+            root,
+            sections,
+            workspaceRoot: workspaceRoot || null,
+            touchedPaths: new Set(),
+            touchedCard: null,
+            finalSummaryCard: null,
+        };
+    }
+
+    function updateAgentTouchedFilesCard(panels, files = []) {
+        if (!panels) return;
+        for (const file of files) {
+            if (file) panels.touchedPaths.add(String(file));
+        }
+
+        const body = summarizeAgentPaths([...panels.touchedPaths]);
+        if (!panels.touchedCard) {
+            panels.touchedCard = createAgentRunCard('Files Touched', body);
+            appendAgentSectionItem(panels.sections.files, panels.touchedCard);
+            return;
+        }
+
+        const bodyEl = panels.touchedCard.querySelector('.agent-run-card-body');
+        if (bodyEl) bodyEl.textContent = body;
+    }
+
+    function upsertAgentFinalSummary(panels, finalState, { continueRunId = null } = {}) {
+        if (!panels) return;
+        const files = [...panels.touchedPaths];
+        const lines = [
+            `State: ${finalState || 'completed'}`,
+            `Workspace: ${panels.workspaceRoot || 'Not set'}`,
+            `Files touched: ${files.length}`,
+        ];
+        if (files.length) lines.push('', summarizeAgentPaths(files));
+        if (continueRunId) lines.push('', 'Continuation available: this run hit the current step limit.');
+
+        if (!panels.finalSummaryCard) {
+            panels.finalSummaryCard = createAgentRunCard('Run Summary', lines.join('\n'), finalState === 'failed' ? 'error' : (finalState === 'cancelled' ? 'warning' : 'success'));
+            appendAgentSectionItem(panels.sections.final, panels.finalSummaryCard);
+            return;
+        }
+
+        panels.finalSummaryCard.className = `agent-run-card agent-run-card-${finalState === 'failed' ? 'error' : (finalState === 'cancelled' ? 'warning' : 'success')}`;
+        const bodyEl = panels.finalSummaryCard.querySelector('.agent-run-card-body');
+        if (bodyEl) bodyEl.textContent = lines.join('\n');
+    }
+
     async function handleAgentStream(botTextElement, botMessageDiv, reader, handlers = {}) {
         const decoder = new TextDecoder();
         let buf = '';
         let currentContentDiv = null;
         let currentContentText = '';
-        let lastToolCallBlock = {}; // toolName → last block element
+        const pendingToolBlocks = new Map();
         let continueRunId = handlers.runId || null;
         let memoryUsageMeta = null;
         let contextBreakdown = null;
         let pendingToolCalls = 0;
         let lastStatusText = '';
+        let lastTimelineStatus = '';
         let finalState = 'completed';
         const onSearchEvent = typeof handlers.onSearchEvent === 'function' ? handlers.onSearchEvent : null;
         const onMemoryEvent = typeof handlers.onMemoryEvent === 'function' ? handlers.onMemoryEvent : null;
         const onContextBreakdown = typeof handlers.onContextBreakdown === 'function' ? handlers.onContextBreakdown : null;
+        const panels = createAgentRunPanels(handlers.workspaceRoot || null);
+
+        const queueToolBlock = (name, entry) => {
+            const queue = pendingToolBlocks.get(name) || [];
+            queue.push(entry);
+            pendingToolBlocks.set(name, queue);
+        };
+
+        const shiftToolBlock = (name) => {
+            const queue = pendingToolBlocks.get(name) || [];
+            const next = queue.shift() || null;
+            if (queue.length) pendingToolBlocks.set(name, queue);
+            else pendingToolBlocks.delete(name);
+            return next;
+        };
+
+        const peekToolBlock = (name) => {
+            const queue = pendingToolBlocks.get(name) || [];
+            return queue[0] || null;
+        };
 
         // Step counter line
         const counterEl = document.createElement('span');
@@ -891,6 +1057,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const liveStatusEl = document.createElement('div');
         liveStatusEl.className = 'agent-live-status';
         botTextElement.appendChild(liveStatusEl);
+        botTextElement.appendChild(panels.root);
 
         const setLiveStatus = (text, mode = 'working') => {
             lastStatusText = text || '';
@@ -931,18 +1098,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const streamResp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(resumedRunId)}/stream`);
                         if (!streamResp.ok) throw new Error(`Run stream error: ${streamResp.status}`);
                         const contReader = streamResp.body.getReader();
-                        const contResult = await handleAgentStream(botTextElement, botMessageDiv, contReader, { ...handlers, runId: resumedRunId });
+                        const contResult = await handleAgentStream(botTextElement, botMessageDiv, contReader, {
+                            ...handlers,
+                            runId: resumedRunId,
+                            workspaceRoot: resumedRun?.run?.workspaceRoot || handlers.workspaceRoot || null,
+                        });
                         if (contResult?.text) currentContentText = contResult.text;
                     } catch (e) {
                         const errDiv = document.createElement('div');
                         errDiv.className = 'agent-error';
                         errDiv.textContent = 'Continue failed: ' + e.message;
-                        botTextElement.appendChild(errDiv);
+                        appendAgentSectionItem(panels.sections.final, errDiv);
                     }
                 };
                 row.appendChild(btn);
             }
-            botTextElement.appendChild(row);
+            appendAgentSectionItem(panels.sections.final, row);
         }
 
         const processAgentChunk = (chunk) => {
@@ -965,6 +1136,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (chunk.type === 'status') {
                 setLiveStatus(chunk.text, chunk.phase === 'executing_tools' ? 'working' : 'working');
+                if (chunk.text && chunk.text !== lastTimelineStatus) {
+                    appendAgentSectionItem(panels.sections.timeline, createAgentRunCard('Status', chunk.text));
+                    lastTimelineStatus = chunk.text;
+                }
                 return false;
             }
 
@@ -983,7 +1158,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!currentContentDiv) {
                     currentContentDiv = document.createElement('div');
                     currentContentDiv.className = 'agent-content-block';
-                    botTextElement.appendChild(currentContentDiv);
+                    appendAgentSectionItem(panels.sections.final, currentContentDiv);
                 }
                 currentContentText += chunk.text;
                 currentContentDiv.innerHTML = '';
@@ -997,18 +1172,38 @@ document.addEventListener('DOMContentLoaded', async () => {
                 setLiveStatus(`Running ${pendingToolCalls} tool${pendingToolCalls === 1 ? '' : 's'}...`);
                 const block = createAgentStepBlock('tool_call', chunk.name, chunk.args);
                 block.dataset.toolName = chunk.name;
-                botTextElement.appendChild(block);
-                lastToolCallBlock[chunk.name] = block;
+                const panelKey = getAgentToolPanel(chunk.name);
+                appendAgentSectionItem(panels.sections[panelKey], block);
+                queueToolBlock(chunk.name, { block, args: chunk.args || {}, panelKey });
+
+                if (chunk.name === 'applyPatch') {
+                    const diffText = extractDiffPreview(chunk.args?.diff || '');
+                    if (diffText) {
+                        appendAgentSectionItem(
+                            panels.sections.diffs,
+                            createAgentRunCard(`Patch Preview${chunk.args?.path ? ` (${chunk.args.path})` : ''}`, diffText)
+                        );
+                    }
+                }
             }
 
             if (chunk.type === 'tool_result') {
-                const block = lastToolCallBlock[chunk.name];
+                const pending = shiftToolBlock(chunk.name);
+                const block = pending?.block;
                 if (block) {
                     appendResultToStepBlock(block, chunk.result, chunk.error);
                     // Change block class to show result type
                     block.classList.remove('agent-step-tool_call');
                     block.classList.add('agent-step-tool_result');
                 }
+
+                if (chunk.name === 'diffFiles') {
+                    const diffText = extractDiffPreview(chunk.result);
+                    if (diffText) {
+                        appendAgentSectionItem(panels.sections.diffs, createAgentRunCard('Diff Output', diffText));
+                    }
+                }
+
                 pendingToolCalls = Math.max(0, pendingToolCalls - 1);
                 if (pendingToolCalls === 0) {
                     setLiveStatus('Tool work finished. Reviewing results and drafting the next response...');
@@ -1022,7 +1217,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentContentText = '';
                 setLiveStatus('Waiting for your permission to continue...', 'waiting');
                 const card = createPermissionCard(chunk);
-                botTextElement.appendChild(card);
+                appendAgentSectionItem(panels.sections.timeline, card);
             }
 
             if (chunk.type === 'plan_request') {
@@ -1030,23 +1225,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentContentText = '';
                 setLiveStatus('Waiting for your plan approval to continue...', 'waiting');
                 const card = createPlanCard(chunk);
-                botTextElement.appendChild(card);
+                appendAgentSectionItem(panels.sections.timeline, card);
             }
 
             if (chunk.type === 'plan_decision') {
                 const note = document.createElement('div');
                 note.className = 'agent-context-compressed';
                 note.innerHTML = `<span class="compress-icon">${chunk.approved ? '✓' : '✗'}</span><span>${chunk.approved ? 'Plan approved' : 'Plan rejected'}${chunk.plan?.summary ? `: ${chunk.plan.summary}` : ''}</span>`;
-                botTextElement.appendChild(note);
+                appendAgentSectionItem(panels.sections.timeline, note);
                 setLiveStatus(chunk.approved ? 'Plan approved. Continuing...' : 'Plan rejected.', chunk.approved ? 'working' : 'waiting');
             }
 
             if (chunk.type === 'files_touched') {
-                const note = document.createElement('div');
-                note.className = 'agent-context-compressed';
-                const preview = Array.isArray(chunk.files) ? chunk.files.slice(0, 5).join(', ') : '';
-                note.innerHTML = `<span class="compress-icon">📁</span><span>Files touched in this run: ${Array.isArray(chunk.files) ? chunk.files.length : 0}${preview ? ` — ${preview}` : ''}</span>`;
-                botTextElement.appendChild(note);
+                updateAgentTouchedFilesCard(panels, chunk.files);
             }
 
             if (chunk.type === 'context_compressed') {
@@ -1060,17 +1251,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                     <span>Context compressed at step ${chunk.step} — ${kb(chunk.tokensBefore)} → ${kb(chunk.tokensAfter)} tokens (${savedPct}% freed)</span>
                 `;
                 note.title = `${saved} tokens were summarized to free context space. Pinned messages are preserved.`;
-                botTextElement.appendChild(note);
+                appendAgentSectionItem(panels.sections.timeline, note);
                 setLiveStatus('Condensing earlier work to keep enough context for the next step...');
             }
 
             if (chunk.type === 'tool_running') {
-                const block = lastToolCallBlock[chunk.name];
+                const pending = peekToolBlock(chunk.name);
+                const block = pending?.block;
                 if (block) {
                     const statusEl = block.querySelector('.agent-step-status');
                     if (statusEl) statusEl.textContent = 'Executing…';
                 }
-                setLiveStatus(`Executing ${chunk.name}...`);
+                const cwdSuffix = chunk.cwd ? ` in ${chunk.cwd}` : '';
+                setLiveStatus(`Executing ${chunk.name}${cwdSuffix}...`);
             }
 
             if (chunk.type === 'step_done') {
@@ -1090,21 +1283,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const errDiv = document.createElement('div');
                 errDiv.className = 'agent-error';
                 errDiv.textContent = 'Agent error: ' + chunk.text;
-                botTextElement.appendChild(errDiv);
+                appendAgentSectionItem(panels.sections.final, errDiv);
             }
 
             if (chunk.type === 'cancel_requested') {
                 setLiveStatus('Cancelling agent run...', 'waiting');
+                appendAgentSectionItem(panels.sections.timeline, createAgentRunCard('Cancellation', 'Cancelling agent run...', 'warning'));
             }
 
             if (chunk.type === 'cancelled') {
                 finalState = 'cancelled';
                 setLiveStatus('Agent run cancelled.');
+                appendAgentSectionItem(panels.sections.final, createAgentRunCard('Run Cancelled', 'The run was cancelled before completion.', 'warning'));
             }
 
             if (chunk.type === 'done') {
                 counterEl.textContent = '';
                 setLiveStatus('');
+                upsertAgentFinalSummary(panels, finalState, { continueRunId });
                 if (continueRunId) {
                     renderContinueButtons(continueRunId);
                 }
@@ -1177,7 +1373,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                 botTextElement.appendChild(audit);
             }
             const result = await streamAgentRun(run.id, botTextElement, botMessageDiv, {
-                onContextBreakdown: (breakdown) => { lastContextBreakdown = breakdown; }
+                onContextBreakdown: (breakdown) => { lastContextBreakdown = breakdown; },
+                workspaceRoot: run.workspaceRoot || null,
             });
             if (persistResult && result?.text) {
                 const latest = await loadModelChatState(currentModelName);
@@ -6241,7 +6438,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                     },
                     onContextBreakdown: (breakdown) => {
                         lastContextBreakdown = breakdown;
-                    }
+                    },
+                    workspaceRoot: runRecord.workspaceRoot || agentWorkspaceRoot || null,
                 });
                 const finalText = agentResult?.text || '';
                 const agentMemoryMeta = agentResult?.memoryUsageMeta || null;

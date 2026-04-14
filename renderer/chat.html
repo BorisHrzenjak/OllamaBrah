@@ -5139,6 +5139,84 @@
             margin: 4px 0;
         }
 
+        .agent-run-sections {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .agent-run-section {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            background: color-mix(in srgb, var(--bg-secondary) 82%, transparent);
+            overflow: hidden;
+        }
+
+        .agent-run-section-header {
+            padding: 10px 12px 8px 12px;
+            border-bottom: 1px solid var(--border-subtle);
+            background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent);
+        }
+
+        .agent-run-section-title {
+            font-size: var(--font-size-sm);
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .agent-run-section-description {
+            margin-top: 2px;
+            font-size: var(--font-size-xs);
+            color: var(--text-muted);
+            word-break: break-word;
+        }
+
+        .agent-run-section-body {
+            padding: 10px 12px 12px 12px;
+        }
+
+        .agent-run-section-body > * + * {
+            margin-top: 8px;
+        }
+
+        .agent-run-card {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-tertiary);
+            padding: 8px 10px;
+        }
+
+        .agent-run-card-success {
+            border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+        }
+
+        .agent-run-card-warning {
+            border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+        }
+
+        .agent-run-card-error {
+            border-color: color-mix(in srgb, var(--error-text) 45%, var(--border));
+        }
+
+        .agent-run-card-title {
+            font-size: var(--font-size-xs);
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .agent-run-card-body {
+            margin: 0;
+            font-size: var(--font-size-xs);
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 260px;
+            overflow-y: auto;
+            font-family: inherit;
+        }
+
         .agent-continue-row {
             display: flex;
             gap: 8px;

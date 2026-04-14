@@ -295,6 +295,32 @@ test('getAgentBlockedPaths includes ALWAYS_BLOCKED_PATHS', () => {
     }
 });
 
+test('resolveWorkspacePath keeps relative paths inside workspace', () => {
+    const workspace = path.join(tmpDir, 'workspace');
+    fs.mkdirSync(workspace, { recursive: true });
+    const resolved = tools.ensureAllowedPath(path.join(workspace, 'a.txt'));
+    assert(tools.isPathInsideWorkspace(resolved, workspace));
+});
+
+test('isPathInsideWorkspace rejects paths outside workspace', () => {
+    const workspace = path.join(tmpDir, 'workspace');
+    const outside = path.join(tmpDir, 'outside.txt');
+    assert.strictEqual(tools.isPathInsideWorkspace(outside, workspace), false);
+});
+
+test('extractCommandPaths finds absolute Windows paths in shell commands', () => {
+    const paths = tools.extractCommandPaths('type C:\\Users\\Boris\\file.txt && more "C:\\Users\\Boris\\Other File.txt"');
+    assert(paths.some(p => p === 'C:\\Users\\Boris\\file.txt'));
+    assert(paths.some(p => p === 'C:\\Users\\Boris\\Other File.txt'));
+});
+
+test('validateShellCommandForWorkspace rejects absolute paths outside workspace', () => {
+    const workspace = path.join(tmpDir, 'workspace');
+    assert.throws(() => {
+        tools.validateShellCommandForWorkspace('type C:\\Users\\Boris\\phase4-plan-test.txt', workspace);
+    }, /outside the selected workspace/i);
+});
+
 fs.rmSync(tmpDir, { recursive: true, force: true });
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

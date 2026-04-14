@@ -199,6 +199,15 @@ function ensureAllowedPath(targetPath) {
     return resolved;
 }
 
+function isPathInsideWorkspace(targetPath, workspaceRoot) {
+    if (!workspaceRoot) return true;
+    const resolvedTarget = path.resolve(String(targetPath || '')).toLowerCase();
+    const resolvedWorkspace = path.resolve(String(workspaceRoot || '')).toLowerCase();
+    return resolvedTarget === resolvedWorkspace
+        || resolvedTarget.startsWith(resolvedWorkspace + path.sep)
+        || resolvedTarget.startsWith(resolvedWorkspace + '/');
+}
+
 function resolveWorkspacePath(targetPath, workspaceRoot) {
     const raw = String(targetPath || '').trim();
     if (!raw) throw new Error('Path is required');
@@ -207,7 +216,38 @@ function resolveWorkspacePath(targetPath, workspaceRoot) {
     const resolved = (hasDrive || isAbsoluteUnix || !workspaceRoot)
         ? raw
         : path.join(workspaceRoot, raw);
-    return ensureAllowedPath(resolved);
+    const allowed = ensureAllowedPath(resolved);
+    if (workspaceRoot && !isPathInsideWorkspace(allowed, workspaceRoot)) {
+        throw new Error(`Path must stay inside the selected workspace: ${workspaceRoot}`);
+    }
+    return allowed;
+}
+
+function extractCommandPaths(cmd) {
+    const text = String(cmd || '');
+    const matches = [];
+    const patterns = [
+        /"([a-zA-Z]:\\[^"\r\n]+)"/g,
+        /'([a-zA-Z]:\\[^'\r\n]+)'/g,
+        /([a-zA-Z]:\\[^\s|&;<>"']+)/g,
+    ];
+
+    for (const pattern of patterns) {
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+            matches.push(match[1]);
+        }
+    }
+
+    return [...new Set(matches)];
+}
+
+function validateShellCommandForWorkspace(cmd, workspaceRoot) {
+    if (!workspaceRoot) return;
+    const outsidePath = extractCommandPaths(cmd).find(filePath => !isPathInsideWorkspace(filePath, workspaceRoot));
+    if (outsidePath) {
+        throw new Error(`Shell command references a path outside the selected workspace: ${outsidePath}`);
+    }
 }
 
 function collectTouchedPaths(name, args = {}) {
@@ -765,31 +805,31 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'replaceInFile': {
-                const approved = await requestPermission(res, 'replaceInFile', args, 'medium', sessionPermissions);
+                const approved = await requestPermission(res, 'replaceInFile', scopedArgs, 'medium', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
                 try {
-                    const filePath = ensureAllowedPath(args.path);
-                    const search = String(args.search || '');
+                    const filePath = ensureAllowedPath(scopedArgs.path);
+                    const search = String(scopedArgs.search || '');
                     if (!search) return { result: 'Search text was empty', error: true };
                     const original = fs.readFileSync(filePath, 'utf8');
-                    const replaceAll = args.replaceAll === true;
+                    const replaceAll = scopedArgs.replaceAll === true;
                     const matchCount = original.split(search).length - 1;
                     if (matchCount === 0) return { result: 'No matches found', error: true };
                     const updated = replaceAll
-                        ? original.split(search).join(String(args.replace || ''))
-                        : original.replace(search, String(args.replace || ''));
+                        ? original.split(search).join(String(scopedArgs.replace || ''))
+                        : original.replace(search, String(scopedArgs.replace || ''));
                     fs.writeFileSync(filePath, updated, 'utf8');
                     if (toolCache) toolCache.invalidatePath(filePath);
                     return { result: `Replaced ${replaceAll ? matchCount : 1} occurrence(s) in ${filePath}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'applyPatch': {
-                const approved = await requestPermission(res, 'applyPatch', args, 'high', sessionPermissions);
+                const approved = await requestPermission(res, 'applyPatch', scopedArgs, 'high', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
                 try {
-                    const filePath = ensureAllowedPath(args.path);
+                    const filePath = ensureAllowedPath(scopedArgs.path);
                     const original = fs.readFileSync(filePath, 'utf8');
-                    const patched = diffLib.applyPatch(original, String(args.diff || ''));
+                    const patched = diffLib.applyPatch(original, String(scopedArgs.diff || ''));
                     if (patched === false) return { result: 'Patch could not be applied cleanly', error: true };
                     fs.writeFileSync(filePath, patched, 'utf8');
                     if (toolCache) toolCache.invalidatePath(filePath);
@@ -797,14 +837,14 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'listDirectory': {
-                const approved = await requestPermission(res, 'listDirectory', args, 'low', sessionPermissions);
+                const approved = await requestPermission(res, 'listDirectory', scopedArgs, 'low', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                if (!isPathAllowed(scopedArgs.path)) return { result: 'Path not allowed', error: true };
                 try {
-                    const cacheKey = `dir:${path.resolve(args.path).toLowerCase()}`;
+                    const cacheKey = `dir:${path.resolve(scopedArgs.path).toLowerCase()}`;
                     const cached = toolCache && toolCache.get(cacheKey);
                     if (cached) return { result: cached };
-                    const entries = fs.readdirSync(args.path, { withFileTypes: true });
+                    const entries = fs.readdirSync(scopedArgs.path, { withFileTypes: true });
                     const dirs = entries.filter(e => e.isDirectory());
                     const files = entries.filter(e => !e.isDirectory());
                     const extCounts = {};
@@ -817,7 +857,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                         .map(([ext, n]) => `${ext}: ${n}`)
                         .join(', ');
                     const lines = [
-                        `Directory: ${args.path}`,
+                        `Directory: ${scopedArgs.path}`,
                         `Total: ${entries.length} items (${files.length} files, ${dirs.length} dirs)`,
                         extSummary ? `File types: ${extSummary}` : '',
                         '',
@@ -830,17 +870,17 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'findFiles': {
-                const approved = await requestPermission(res, 'findFiles', args, 'low', sessionPermissions);
+                const approved = await requestPermission(res, 'findFiles', scopedArgs, 'low', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                if (!isPathAllowed(scopedArgs.path)) return { result: 'Path not allowed', error: true };
                 try {
-                    const cacheKey = `find:${path.resolve(args.path).toLowerCase()}:${args.pattern}:${!!args.recursive}`;
+                    const cacheKey = `find:${path.resolve(scopedArgs.path).toLowerCase()}:${scopedArgs.pattern}:${!!scopedArgs.recursive}`;
                     const cached = toolCache && toolCache.get(cacheKey);
                     if (cached) return { result: cached };
-                    const exts = args.pattern === '*'
+                    const exts = scopedArgs.pattern === '*'
                         ? []
-                        : String(args.pattern).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-                    const recursive = !!args.recursive;
+                        : String(scopedArgs.pattern).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+                    const recursive = !!scopedArgs.recursive;
                     const found = [];
                     function walk(dir, depth) {
                         if (depth > (recursive ? 20 : 0)) return;
@@ -855,25 +895,25 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                             }
                         }
                     }
-                    walk(args.path, 0);
+                    walk(scopedArgs.path, 0);
                     const preview = found.slice(0, 50).join('\n');
                     const more = found.length > 50 ? `\n... and ${found.length - 50} more` : '';
-                    const result = `Found ${found.length} file(s) matching "${args.pattern}" in ${args.path}${recursive ? ' (recursive)' : ''}:\n${preview}${more}`;
+                    const result = `Found ${found.length} file(s) matching "${scopedArgs.pattern}" in ${scopedArgs.path}${recursive ? ' (recursive)' : ''}:\n${preview}${more}`;
                     if (toolCache) toolCache.set(cacheKey, result);
                     return { result };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'searchInFiles': {
-                const approved = await requestPermission(res, 'searchInFiles', args, 'low', sessionPermissions);
+                const approved = await requestPermission(res, 'searchInFiles', scopedArgs, 'low', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
                 try {
-                    const root = ensureAllowedPath(args.path);
-                    const cacheKey = `search:${root.toLowerCase()}:${stableHash(args.query, args.filePattern, String(!!args.regex))}`;
+                    const root = ensureAllowedPath(scopedArgs.path);
+                    const cacheKey = `search:${root.toLowerCase()}:${stableHash(scopedArgs.query, scopedArgs.filePattern, String(!!scopedArgs.regex))}`;
                     const cached = toolCache && toolCache.get(cacheKey);
                     if (cached) return { result: cached };
-                    const matcher = args.filePattern ? globToRegExp(args.filePattern) : null;
-                    const regex = args.regex ? new RegExp(String(args.query || ''), 'i') : null;
-                    const query = String(args.query || '');
+                    const matcher = scopedArgs.filePattern ? globToRegExp(scopedArgs.filePattern) : null;
+                    const regex = scopedArgs.regex ? new RegExp(String(scopedArgs.query || ''), 'i') : null;
+                    const query = String(scopedArgs.query || '');
                     const hits = [];
                     walkDirectory(root, {
                         recursive: true,
@@ -901,14 +941,14 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'globFiles': {
-                const approved = await requestPermission(res, 'globFiles', args, 'low', sessionPermissions);
+                const approved = await requestPermission(res, 'globFiles', scopedArgs, 'low', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
                 try {
-                    const root = ensureAllowedPath(args.path);
-                    const cacheKey = `glob:${root.toLowerCase()}:${args.pattern || '**/*'}`;
+                    const root = ensureAllowedPath(scopedArgs.path);
+                    const cacheKey = `glob:${root.toLowerCase()}:${scopedArgs.pattern || '**/*'}`;
                     const cached = toolCache && toolCache.get(cacheKey);
                     if (cached) return { result: cached };
-                    const matcher = globToRegExp(args.pattern || '**/*');
+                    const matcher = globToRegExp(scopedArgs.pattern || '**/*');
                     const found = [];
                     walkDirectory(root, {
                         recursive: true,
@@ -927,31 +967,31 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'deleteFile': {
-                const approved = await requestPermission(res, 'deleteFile', args, 'high', sessionPermissions);
+                const approved = await requestPermission(res, 'deleteFile', scopedArgs, 'high', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                if (!isPathAllowed(scopedArgs.path)) return { result: 'Path not allowed', error: true };
                 try {
-                    fs.unlinkSync(args.path);
-                    if (toolCache) toolCache.invalidatePath(args.path);
-                    return { result: 'File deleted: ' + args.path };
+                    fs.unlinkSync(scopedArgs.path);
+                    if (toolCache) toolCache.invalidatePath(scopedArgs.path);
+                    return { result: 'File deleted: ' + scopedArgs.path };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'mkdir': {
-                const approved = await requestPermission(res, 'mkdir', args, 'medium', sessionPermissions);
+                const approved = await requestPermission(res, 'mkdir', scopedArgs, 'medium', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
                 try {
-                    const dirPath = ensureAllowedPath(args.path);
+                    const dirPath = ensureAllowedPath(scopedArgs.path);
                     fs.mkdirSync(dirPath, { recursive: true });
                     if (toolCache) toolCache.invalidatePath(dirPath);
                     return { result: `Directory created: ${dirPath}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'copyFile': {
-                const approved = await requestPermission(res, 'copyFile', args, 'medium', sessionPermissions);
+                const approved = await requestPermission(res, 'copyFile', scopedArgs, 'medium', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
                 try {
-                    const source = ensureAllowedPath(args.source);
-                    const destination = ensureAllowedPath(args.destination);
+                    const source = ensureAllowedPath(scopedArgs.source);
+                    const destination = ensureAllowedPath(scopedArgs.destination);
                     fs.mkdirSync(path.dirname(destination), { recursive: true });
                     fs.copyFileSync(source, destination);
                     if (toolCache) { toolCache.invalidatePath(source); toolCache.invalidatePath(destination); }
@@ -959,11 +999,11 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'moveFile': {
-                const approved = await requestPermission(res, 'moveFile', args, 'medium', sessionPermissions);
+                const approved = await requestPermission(res, 'moveFile', scopedArgs, 'medium', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
                 try {
-                    const source = ensureAllowedPath(args.source);
-                    const destination = ensureAllowedPath(args.destination);
+                    const source = ensureAllowedPath(scopedArgs.source);
+                    const destination = ensureAllowedPath(scopedArgs.destination);
                     fs.mkdirSync(path.dirname(destination), { recursive: true });
                     fs.renameSync(source, destination);
                     if (toolCache) { toolCache.invalidatePath(source); toolCache.invalidatePath(destination); }
@@ -979,10 +1019,12 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
             case 'runShell': {
                 // runShell respects agentToolPermissions (default: 'disabled').
                 // When enabled, permission level 'confirm' is strongly recommended.
-                const approved = await requestPermission(res, 'runShell', { cmd: args.cmd }, 'critical', sessionPermissions);
+                const shellCwd = workspaceRoot ? ensureAllowedPath(workspaceRoot) : undefined;
+                validateShellCommandForWorkspace(args.cmd, shellCwd);
+                const approved = await requestPermission(res, 'runShell', { cmd: args.cmd, cwd: shellCwd }, 'critical', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                res.write(JSON.stringify({ type: 'tool_running', name: 'runShell', preview: args.cmd }) + '\n');
-                return await runShellTool(args.cmd);
+                res.write(JSON.stringify({ type: 'tool_running', name: 'runShell', preview: args.cmd, cwd: shellCwd || process.cwd() }) + '\n');
+                return await runShellTool(args.cmd, shellCwd);
             }
             case 'saveMemory': {
                 const text = String(args.text || '').trim();
@@ -1055,13 +1097,15 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 }
             }
             case 'diffFiles': {
-                const approved = await requestPermission(res, 'diffFiles', args, 'low', sessionPermissions);
+                const approved = await requestPermission(res, 'diffFiles', { pathA: resolveWorkspacePath(args.pathA, workspaceRoot), pathB: resolveWorkspacePath(args.pathB, workspaceRoot) }, 'low', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                if (!isPathAllowed(args.pathA) || !isPathAllowed(args.pathB)) return { result: 'Path not allowed', error: true };
+                const pathA = resolveWorkspacePath(args.pathA, workspaceRoot);
+                const pathB = resolveWorkspacePath(args.pathB, workspaceRoot);
+                if (!isPathAllowed(pathA) || !isPathAllowed(pathB)) return { result: 'Path not allowed', error: true };
                 try {
-                    const a = fs.readFileSync(args.pathA, 'utf8');
-                    const b = fs.readFileSync(args.pathB, 'utf8');
-                    const changes = diffLib.structuredPatch(args.pathA, args.pathB, a, b);
+                    const a = fs.readFileSync(pathA, 'utf8');
+                    const b = fs.readFileSync(pathB, 'utf8');
+                    const changes = diffLib.structuredPatch(pathA, pathB, a, b);
                     const hunks = changes.hunks || [];
                     let added = 0, removed = 0;
                     for (const h of hunks) {
@@ -1070,8 +1114,8 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                             else if (line.startsWith('-')) removed++;
                         }
                     }
-                    const summary = `Diff: ${args.pathA} → ${args.pathB}\n${hunks.length} hunk(s), +${added} line(s) added, -${removed} line(s) removed\n`;
-                    const patch = diffLib.createTwoFilesPatch(args.pathA, args.pathB, a, b);
+                    const summary = `Diff: ${pathA} → ${pathB}\n${hunks.length} hunk(s), +${added} line(s) added, -${removed} line(s) removed\n`;
+                    const patch = diffLib.createTwoFilesPatch(pathA, pathB, a, b);
                     const MAX_DIFF = 8000;
                     const budget = MAX_DIFF - summary.length;
                     if (patch.length <= budget) {
@@ -1083,14 +1127,14 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'appendFile': {
-                const approved = await requestPermission(res, 'appendFile', args, 'medium', sessionPermissions);
+                const approved = await requestPermission(res, 'appendFile', scopedArgs, 'medium', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                if (!isPathAllowed(scopedArgs.path)) return { result: 'Path not allowed', error: true };
                 try {
-                    fs.mkdirSync(path.dirname(args.path), { recursive: true });
-                    fs.appendFileSync(args.path, args.content || '', 'utf8');
-                    if (toolCache) toolCache.invalidatePath(args.path);
-                    return { result: 'Appended to: ' + args.path };
+                    fs.mkdirSync(path.dirname(scopedArgs.path), { recursive: true });
+                    fs.appendFileSync(scopedArgs.path, scopedArgs.content || '', 'utf8');
+                    if (toolCache) toolCache.invalidatePath(scopedArgs.path);
+                    return { result: 'Appended to: ' + scopedArgs.path };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'loadSkill': {
@@ -1141,10 +1185,10 @@ async function runCodeTool(lang, code) {
     return { result: 'Unsupported language: ' + lang, error: true };
 }
 
-async function runShellTool(cmd) {
+async function runShellTool(cmd, cwd) {
     return new Promise((resolve) => {
         let out = '', err = '';
-        const proc = spawn(cmd, { shell: true, timeout: 30000 });
+        const proc = spawn(cmd, { shell: true, timeout: 30000, cwd: cwd || process.cwd() });
         proc.stdout.on('data', d => { out += d; });
         proc.stderr.on('data', d => { err += d; });
         proc.on('close', () => resolve({ result: (out + err).slice(0, 4000) || '(no output)' }));
@@ -1218,6 +1262,7 @@ module.exports = {
     generatePermissionId,
     isPathAllowed,
     ensureAllowedPath,
+    isPathInsideWorkspace,
     AGENT_TOOLS,
     getEnabledTools,
     requestPermission,
@@ -1225,6 +1270,8 @@ module.exports = {
     executeTool,
     runCodeTool,
     runShellTool,
+    extractCommandPaths,
+    validateShellCommandForWorkspace,
     handleAgentPermission,
     handleAgentPlan,
     handleAgentConfigGet,
