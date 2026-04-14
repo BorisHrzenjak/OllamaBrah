@@ -199,6 +199,34 @@ function ensureAllowedPath(targetPath) {
     return resolved;
 }
 
+function resolveWorkspacePath(targetPath, workspaceRoot) {
+    const raw = String(targetPath || '').trim();
+    if (!raw) throw new Error('Path is required');
+    const hasDrive = /^[a-zA-Z]:[\\/]/.test(raw);
+    const isAbsoluteUnix = raw.startsWith('/');
+    const resolved = (hasDrive || isAbsoluteUnix || !workspaceRoot)
+        ? raw
+        : path.join(workspaceRoot, raw);
+    return ensureAllowedPath(resolved);
+}
+
+function collectTouchedPaths(name, args = {}) {
+    switch (name) {
+        case 'writeFile':
+        case 'applyPatch':
+        case 'replaceInFile':
+        case 'deleteFile':
+        case 'appendFile':
+        case 'mkdir':
+            return args.path ? [String(args.path)] : [];
+        case 'copyFile':
+        case 'moveFile':
+            return [args.source, args.destination].filter(Boolean).map(String);
+        default:
+            return [];
+    }
+}
+
 function walkDirectory(dir, { recursive = true, maxDepth = 20, onEntry }, depth = 0) {
     if (depth > maxDepth) return;
     let entries;
@@ -647,8 +675,16 @@ async function requestPlanApproval(res, plan, sessionPermissions) {
 }
 
 // Execute a single tool call, streaming progress/result
-async function executeTool(res, name, args, sessionPermissions, model, backend, toolCache) {
+async function executeTool(res, name, args, sessionPermissions, model, backend, toolCache, workspaceRoot) {
     try {
+        const scopedArgs = args && typeof args === 'object' ? { ...args } : {};
+        if (['readFile', 'readFileRange', 'writeFile', 'replaceInFile', 'applyPatch', 'listDirectory', 'findFiles', 'searchInFiles', 'globFiles', 'deleteFile', 'mkdir', 'appendFile'].includes(name) && scopedArgs.path) {
+            scopedArgs.path = resolveWorkspacePath(scopedArgs.path, workspaceRoot);
+        }
+        if (['copyFile', 'moveFile'].includes(name)) {
+            if (scopedArgs.source) scopedArgs.source = resolveWorkspacePath(scopedArgs.source, workspaceRoot);
+            if (scopedArgs.destination) scopedArgs.destination = resolveWorkspacePath(scopedArgs.destination, workspaceRoot);
+        }
         switch (name) {
             case 'webSearch': {
                 const tavilyKey = process.env.TAVILY_API_KEY;
@@ -697,34 +733,34 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 }
             }
             case 'readFile': {
-                const approved = await requestPermission(res, 'readFile', args, 'medium', sessionPermissions);
+                const approved = await requestPermission(res, 'readFile', scopedArgs, 'medium', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                if (!isPathAllowed(scopedArgs.path)) return { result: 'Path not allowed', error: true };
                 try {
-                    const content = fs.readFileSync(args.path, 'utf8');
+                    const content = fs.readFileSync(scopedArgs.path, 'utf8');
                     return { result: content.slice(0, 8000) };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'readFileRange': {
-                const approved = await requestPermission(res, 'readFileRange', args, 'low', sessionPermissions);
+                const approved = await requestPermission(res, 'readFileRange', scopedArgs, 'low', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
                 try {
-                    const filePath = ensureAllowedPath(args.path);
-                    const start = Math.max(1, parseInt(args.start, 10) || 1);
-                    const end = Math.max(start, parseInt(args.end, 10) || start);
+                    const filePath = ensureAllowedPath(scopedArgs.path);
+                    const start = Math.max(1, parseInt(scopedArgs.start, 10) || 1);
+                    const end = Math.max(start, parseInt(scopedArgs.end, 10) || start);
                     const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
                     const slice = lines.slice(start - 1, end);
                     return { result: formatLineRange(slice, start) || `(no content in lines ${start}-${end})` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'writeFile': {
-                const approved = await requestPermission(res, 'writeFile', args, 'high', sessionPermissions);
+                const approved = await requestPermission(res, 'writeFile', scopedArgs, 'high', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
+                if (!isPathAllowed(scopedArgs.path)) return { result: 'Path not allowed', error: true };
                 try {
-                    fs.mkdirSync(path.dirname(args.path), { recursive: true });
-                    fs.writeFileSync(args.path, args.content || '', 'utf8');
-                    if (toolCache) toolCache.invalidatePath(args.path);
+                    fs.mkdirSync(path.dirname(scopedArgs.path), { recursive: true });
+                    fs.writeFileSync(scopedArgs.path, scopedArgs.content || '', 'utf8');
+                    if (toolCache) toolCache.invalidatePath(scopedArgs.path);
                     return { result: 'File written successfully' };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }

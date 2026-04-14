@@ -286,6 +286,31 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const agentRunHistoryList = document.getElementById('agentRunHistoryList');
     const agentRunHistoryRefresh = document.getElementById('agentRunHistoryRefresh');
+    const agentWorkspacePathEl = document.getElementById('agentWorkspacePath');
+    const agentWorkspaceButton = document.getElementById('agentWorkspaceButton');
+    const AGENT_WORKSPACE_KEY = 'agentWorkspaceRoot';
+    let agentWorkspaceRoot = null;
+
+    function renderAgentWorkspace() {
+        if (!agentWorkspacePathEl) return;
+        agentWorkspacePathEl.textContent = agentWorkspaceRoot || 'No workspace selected';
+        agentWorkspacePathEl.title = agentWorkspaceRoot || 'No workspace selected';
+    }
+
+    async function loadAgentWorkspacePreference() {
+        try {
+            agentWorkspaceRoot = await window.electronAPI?.store?.get(AGENT_WORKSPACE_KEY, null);
+        } catch {}
+        renderAgentWorkspace();
+    }
+
+    async function setAgentWorkspaceRoot(nextPath) {
+        agentWorkspaceRoot = nextPath || null;
+        renderAgentWorkspace();
+        try {
+            await window.electronAPI?.store?.set(AGENT_WORKSPACE_KEY, agentWorkspaceRoot);
+        } catch {}
+    }
 
     function formatRunTimestamp(ts) {
         if (!ts) return '';
@@ -384,6 +409,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     agentRunHistoryHeader?.addEventListener('click', () => {
         agentRunHistory?.classList.toggle('collapsed');
     });
+
+    agentWorkspaceButton?.addEventListener('click', async () => {
+        const picked = await window.electronAPI?.workspace?.pickFolder?.();
+        if (picked) await setAgentWorkspaceRoot(picked);
+    });
+
+    loadAgentWorkspacePreference();
 
     function getActiveResearchMode() {
         if (chatWorkflowMode === 'agent') return agentResearchMode;
@@ -1007,6 +1039,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 note.innerHTML = `<span class="compress-icon">${chunk.approved ? '✓' : '✗'}</span><span>${chunk.approved ? 'Plan approved' : 'Plan rejected'}${chunk.plan?.summary ? `: ${chunk.plan.summary}` : ''}</span>`;
                 botTextElement.appendChild(note);
                 setLiveStatus(chunk.approved ? 'Plan approved. Continuing...' : 'Plan rejected.', chunk.approved ? 'working' : 'waiting');
+            }
+
+            if (chunk.type === 'files_touched') {
+                const note = document.createElement('div');
+                note.className = 'agent-context-compressed';
+                const preview = Array.isArray(chunk.files) ? chunk.files.slice(0, 5).join(', ') : '';
+                note.innerHTML = `<span class="compress-icon">📁</span><span>Files touched in this run: ${Array.isArray(chunk.files) ? chunk.files.length : 0}${preview ? ` — ${preview}` : ''}</span>`;
+                botTextElement.appendChild(note);
             }
 
             if (chunk.type === 'context_compressed') {
@@ -6168,6 +6208,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                     model: currentModelName,
                     backend: currentModelBackend,
                     maxSteps: configuredMaxSteps,
+                    workspaceRoot: agentWorkspaceRoot || null,
                     _researchPolicy: researchPolicy,
                     _memoryPolicy: memoryPolicy,
                     _skillsPolicy: pendingSkillName ? 'manual' : getActiveSkillsPolicy()

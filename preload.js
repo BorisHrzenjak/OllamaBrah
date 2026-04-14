@@ -51,6 +51,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         pickFolder: () => ipcRenderer.invoke('skills:pickFolder'),
     },
 
+    workspace: {
+        pickFolder: () => ipcRenderer.invoke('workspace:pickFolder'),
+    },
+
     on:  (ch, cb) => ipcRenderer.on(ch, (_e, ...a) => cb(...a)),
     off: (ch, cb) => ipcRenderer.removeListener(ch, cb),
 });

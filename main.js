@@ -457,6 +457,11 @@ function registerIpcHandlers() {
         const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
         return result.canceled ? null : result.filePaths[0];
     });
+
+    ipcMain.handle('workspace:pickFolder', async () => {
+        const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+        return result.canceled ? null : result.filePaths[0];
+    });
 }
 
 function normalizeVersionPart(part) {

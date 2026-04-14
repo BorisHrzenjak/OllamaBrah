@@ -1572,6 +1572,54 @@
             display: contents;
         }
 
+        #agentWorkspaceBar {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 10px;
+            border-top: 1px solid var(--border-subtle);
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        #inputArea[data-workflow-mode="agent"] #agentWorkspaceBar {
+            display: flex;
+        }
+
+        #agentWorkspaceMeta {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        #agentWorkspaceLabel {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        #agentWorkspacePath {
+            font-size: var(--font-size-sm);
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+        }
+
+        .agent-workspace-btn {
+            flex-shrink: 0;
+            height: 30px;
+            padding: 0 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+
         .agent-ctrl-divider {
             width: 1px;
             height: 18px;
@@ -5758,6 +5806,13 @@ body {
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-square"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>
                             </button>
                         </div>
+                    </div>
+                    <div id="agentWorkspaceBar">
+                        <div id="agentWorkspaceMeta">
+                            <span id="agentWorkspaceLabel">Workspace</span>
+                            <span id="agentWorkspacePath">No workspace selected</span>
+                        </div>
+                        <button id="agentWorkspaceButton" class="agent-workspace-btn" title="Select workspace folder">Select Folder</button>
                     </div>
                 </div>
             </div>

@@ -1655,7 +1655,7 @@ function attachRunStream(runId, res) {
 }
 
 async function executeDurableAgentRun(runId, body = {}) {
-    const { messages: initialMessages, model, backend = 'ollama', maxSteps, continueFrom, _skillHint } = body;
+    const { messages: initialMessages, model, backend = 'ollama', maxSteps, continueFrom, _skillHint, workspaceRoot } = body;
     const steps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || getAgentMaxSteps()));
     const tools = getEnabledTools();
     const sessionPermissions = new Map();
@@ -1730,6 +1730,8 @@ async function executeDurableAgentRun(runId, body = {}) {
 
             if (!toolCalls || toolCalls.length === 0) {
                 writer.write(JSON.stringify({ type: 'step_done', step, maxSteps: steps }));
+                const current = getRun(runId);
+                if (current?.filesTouched?.length) writer.write(JSON.stringify({ type: 'files_touched', files: current.filesTouched }));
                 setRunStatus(runId, 'completed', { latestMessages: messages, pendingPermission: null });
                 break;
             }
@@ -1755,10 +1757,22 @@ async function executeDurableAgentRun(runId, body = {}) {
             for (const tc of toolCalls) writer.write(JSON.stringify({ type: 'tool_call', name: tc.name, args: tc.args }));
 
             const execResults = await Promise.all(toolCalls.map(async tc => {
-                const { result, error } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend, toolCache);
+                const { result, error } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend, toolCache, workspaceRoot);
                 writer.write(JSON.stringify({ type: 'tool_result', name: tc.name, result, error: !!error }));
                 return { tc, result, error };
             }));
+
+            const touched = [...new Set(execResults.flatMap(({ tc }) => {
+                const args = tc.args || {};
+                if (['writeFile', 'replaceInFile', 'applyPatch', 'deleteFile', 'appendFile', 'mkdir'].includes(tc.name)) return args.path ? [args.path] : [];
+                if (['copyFile', 'moveFile'].includes(tc.name)) return [args.source, args.destination].filter(Boolean);
+                return [];
+            }))];
+            if (touched.length) {
+                const current = getRun(runId);
+                const filesTouched = [...new Set([...(current?.filesTouched || []), ...touched])];
+                updateRun(runId, { filesTouched });
+            }
 
             if (backend === 'llamacpp') {
                 messages.push({ role: 'assistant', content: '', tool_calls: execResults.map(({ tc }) => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.args) } })) });
