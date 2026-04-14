@@ -1212,6 +1212,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
+            if (chunk.type === 'file_diff') {
+                const diffText = extractDiffPreview(chunk.diff);
+                if (diffText) {
+                    appendAgentSectionItem(
+                        panels.sections.diffs,
+                        createAgentRunCard(`Completed Edit${chunk.path ? ` (${chunk.path})` : ''}`, diffText)
+                    );
+                }
+            }
+
             if (chunk.type === 'permission_request') {
                 currentContentDiv = null;
                 currentContentText = '';

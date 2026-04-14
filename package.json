@@ -6,7 +6,8 @@
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --win",
-    "test": "node test/tools.test.js"
+    "test": "node test/tools.test.js",
+    "test:phase5-diff": "node test/phase5-diff-preview.test.js"
   },
   "build": {
     "appId": "com.ollamabrah.app",

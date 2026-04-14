@@ -250,6 +250,20 @@ function validateShellCommandForWorkspace(cmd, workspaceRoot) {
     }
 }
 
+function createFileDiffPreview(filePath, beforeText, afterText) {
+    const before = typeof beforeText === 'string' ? beforeText : '';
+    const after = typeof afterText === 'string' ? afterText : '';
+    if (before === after) return null;
+
+    const patch = diffLib.createTwoFilesPatch(filePath, filePath, before, after, 'before', 'after');
+    const MAX_DIFF = 8000;
+    if (patch.length <= MAX_DIFF) return patch;
+
+    const truncated = patch.slice(0, MAX_DIFF);
+    const lastNewline = truncated.lastIndexOf('\n');
+    return truncated.slice(0, lastNewline > 0 ? lastNewline : MAX_DIFF) + `\n... (diff truncated, ${patch.length - MAX_DIFF} more bytes)`;
+}
+
 function collectTouchedPaths(name, args = {}) {
     switch (name) {
         case 'writeFile':
@@ -798,10 +812,15 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 if (!approved) return { result: 'User denied', error: true };
                 if (!isPathAllowed(scopedArgs.path)) return { result: 'Path not allowed', error: true };
                 try {
+                    const previous = fs.existsSync(scopedArgs.path) ? fs.readFileSync(scopedArgs.path, 'utf8') : '';
                     fs.mkdirSync(path.dirname(scopedArgs.path), { recursive: true });
                     fs.writeFileSync(scopedArgs.path, scopedArgs.content || '', 'utf8');
                     if (toolCache) toolCache.invalidatePath(scopedArgs.path);
-                    return { result: 'File written successfully' };
+                    return {
+                        result: 'File written successfully',
+                        diffPreview: createFileDiffPreview(scopedArgs.path, previous, String(scopedArgs.content || '')),
+                        diffPath: scopedArgs.path,
+                    };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'replaceInFile': {
@@ -820,7 +839,11 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                         : original.replace(search, String(scopedArgs.replace || ''));
                     fs.writeFileSync(filePath, updated, 'utf8');
                     if (toolCache) toolCache.invalidatePath(filePath);
-                    return { result: `Replaced ${replaceAll ? matchCount : 1} occurrence(s) in ${filePath}` };
+                    return {
+                        result: `Replaced ${replaceAll ? matchCount : 1} occurrence(s) in ${filePath}`,
+                        diffPreview: createFileDiffPreview(filePath, original, updated),
+                        diffPath: filePath,
+                    };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'applyPatch': {
@@ -833,7 +856,11 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                     if (patched === false) return { result: 'Patch could not be applied cleanly', error: true };
                     fs.writeFileSync(filePath, patched, 'utf8');
                     if (toolCache) toolCache.invalidatePath(filePath);
-                    return { result: `Patch applied successfully to ${filePath}` };
+                    return {
+                        result: `Patch applied successfully to ${filePath}`,
+                        diffPreview: createFileDiffPreview(filePath, original, patched),
+                        diffPath: filePath,
+                    };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'listDirectory': {
@@ -971,9 +998,14 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 if (!approved) return { result: 'User denied', error: true };
                 if (!isPathAllowed(scopedArgs.path)) return { result: 'Path not allowed', error: true };
                 try {
+                    const previous = fs.existsSync(scopedArgs.path) ? fs.readFileSync(scopedArgs.path, 'utf8') : '';
                     fs.unlinkSync(scopedArgs.path);
                     if (toolCache) toolCache.invalidatePath(scopedArgs.path);
-                    return { result: 'File deleted: ' + scopedArgs.path };
+                    return {
+                        result: 'File deleted: ' + scopedArgs.path,
+                        diffPreview: createFileDiffPreview(scopedArgs.path, previous, ''),
+                        diffPath: scopedArgs.path,
+                    };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'mkdir': {
@@ -1131,10 +1163,16 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 if (!approved) return { result: 'User denied', error: true };
                 if (!isPathAllowed(scopedArgs.path)) return { result: 'Path not allowed', error: true };
                 try {
+                    const previous = fs.existsSync(scopedArgs.path) ? fs.readFileSync(scopedArgs.path, 'utf8') : '';
                     fs.mkdirSync(path.dirname(scopedArgs.path), { recursive: true });
                     fs.appendFileSync(scopedArgs.path, scopedArgs.content || '', 'utf8');
                     if (toolCache) toolCache.invalidatePath(scopedArgs.path);
-                    return { result: 'Appended to: ' + scopedArgs.path };
+                    const updated = fs.readFileSync(scopedArgs.path, 'utf8');
+                    return {
+                        result: 'Appended to: ' + scopedArgs.path,
+                        diffPreview: createFileDiffPreview(scopedArgs.path, previous, updated),
+                        diffPath: scopedArgs.path,
+                    };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'loadSkill': {

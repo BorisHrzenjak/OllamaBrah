@@ -321,6 +321,29 @@ test('validateShellCommandForWorkspace rejects absolute paths outside workspace'
     }, /outside the selected workspace/i);
 });
 
+test('writeFile returns a diff preview for completed edits', async () => {
+    const workspace = path.join(tmpDir, 'workspace-diff');
+    fs.mkdirSync(workspace, { recursive: true });
+    const target = path.join(workspace, 'note.txt');
+    const fakeRes = { write: () => {}, runId: 'test-run' };
+    const result = await tools.executeTool(fakeRes, 'writeFile', { path: target, content: 'hello\nworld\n' }, new Map([['writeFile', true]]), 'test', 'ollama', null, workspace);
+    assert.strictEqual(result.error, undefined);
+    assert(result.diffPreview.includes('hello'));
+    assert(result.diffPath.endsWith('note.txt'));
+});
+
+test('replaceInFile returns a diff preview for completed edits', async () => {
+    const workspace = path.join(tmpDir, 'workspace-replace');
+    fs.mkdirSync(workspace, { recursive: true });
+    const target = path.join(workspace, 'note.txt');
+    fs.writeFileSync(target, 'alpha\nbeta\n', 'utf8');
+    const fakeRes = { write: () => {}, runId: 'test-run' };
+    const result = await tools.executeTool(fakeRes, 'replaceInFile', { path: target, search: 'beta', replace: 'gamma' }, new Map([['replaceInFile', true]]), 'test', 'ollama', null, workspace);
+    assert.strictEqual(result.error, undefined);
+    assert(result.diffPreview.includes('-beta'));
+    assert(result.diffPreview.includes('+gamma'));
+});
+
 fs.rmSync(tmpDir, { recursive: true, force: true });
 
 console.log(`\nResults: ${passed} passed, ${failed} failed`);

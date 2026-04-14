@@ -1761,9 +1761,10 @@ async function executeDurableAgentRun(runId, body = {}) {
             for (const tc of toolCalls) writer.write(JSON.stringify({ type: 'tool_call', name: tc.name, args: tc.args }));
 
             const execResults = await Promise.all(toolCalls.map(async tc => {
-                const { result, error } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend, toolCache, workspaceRoot);
+                const { result, error, diffPreview, diffPath } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend, toolCache, workspaceRoot);
                 writer.write(JSON.stringify({ type: 'tool_result', name: tc.name, result, error: !!error }));
-                return { tc, result, error };
+                if (diffPreview) writer.write(JSON.stringify({ type: 'file_diff', name: tc.name, path: diffPath || tc.args?.path || null, diff: diffPreview }));
+                return { tc, result, error, diffPreview, diffPath };
             }));
 
             const touched = [...new Set(execResults.flatMap(({ tc }) => {
