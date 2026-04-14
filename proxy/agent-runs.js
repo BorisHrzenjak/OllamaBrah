@@ -37,6 +37,8 @@ function createRun(body = {}) {
         backend: body.backend || 'ollama',
         maxSteps: body.maxSteps || null,
         pendingPermission: null,
+        pendingPlan: null,
+        approvedPlans: [],
         lastError: null,
         latestMessages: Array.isArray(body.messages) ? body.messages : [],
         requestBody: body,

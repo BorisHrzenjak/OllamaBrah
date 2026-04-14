@@ -65,6 +65,46 @@ test('Permission levels are correct for dangerous tools', () => {
     assert(tools.agentToolPermissions.runCode === 'confirm');
 });
 
+test('PLAN_GATED tools are exported and include risky file actions', () => {
+    assert(tools.PLAN_GATED_TOOLS instanceof Set);
+    assert(tools.PLAN_GATED_TOOLS.has('runShell'));
+    assert(tools.PLAN_GATED_TOOLS.has('writeFile'));
+    assert(tools.PLAN_GATED_TOOLS.has('applyPatch'));
+    assert(tools.PLAN_GATED_TOOLS.has('moveFile'));
+});
+
+test('buildToolPlan summarizes shell and file actions', () => {
+    const shellPlan = tools.buildToolPlan('runShell', { cmd: 'npm test' }, 'critical');
+    assert(shellPlan.summary.includes('Run shell command'));
+    assert(shellPlan.commands[0] === 'npm test');
+
+    const filePlan = tools.buildToolPlan('writeFile', { path: 'C:\\tmp\\a.txt' }, 'high');
+    assert(filePlan.summary.includes('Write file'));
+    assert(filePlan.files[0].includes('a.txt'));
+});
+
+test('buildExecutionPlan groups multiple risky actions into one plan', () => {
+    const plan = tools.buildExecutionPlan([
+        { name: 'writeFile', args: { path: 'C:\\tmp\\a.txt' }, risk: 'high' },
+        { name: 'runShell', args: { cmd: 'npm test' }, risk: 'critical' },
+        { name: 'readFile', args: { path: 'C:\\tmp\\b.txt' }, risk: 'low' },
+    ]);
+
+    assert(plan);
+    assert.strictEqual(plan.actions.length, 2);
+    assert.strictEqual(plan.risk, 'critical');
+    assert(plan.files.some(file => file.includes('a.txt')));
+    assert(plan.commands.includes('npm test'));
+});
+
+test('buildExecutionPlan returns null when no risky tools exist', () => {
+    const plan = tools.buildExecutionPlan([
+        { name: 'readFile', args: { path: 'C:\\tmp\\a.txt' }, risk: 'low' },
+        { name: 'globFiles', args: { path: 'C:\\tmp', pattern: '**/*.js' }, risk: 'low' },
+    ]);
+    assert.strictEqual(plan, null);
+});
+
 test('Permission levels are auto for safe tools', () => {
     assert(tools.agentToolPermissions.readFile === 'auto');
     assert(tools.agentToolPermissions.readFileRange === 'auto');

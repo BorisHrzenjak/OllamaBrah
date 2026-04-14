@@ -104,6 +104,69 @@ let agentToolPermissions = {
 
 // Pending permission requests: id → { resolve, reject }
 const pendingPermissions = new Map();
+const pendingPlanApprovals = new Map();
+
+const PLAN_GATED_TOOLS = new Set([
+    'runShell',
+    'writeFile',
+    'applyPatch',
+    'replaceInFile',
+    'deleteFile',
+    'mkdir',
+    'copyFile',
+    'moveFile',
+    'appendFile',
+]);
+
+function getPlanToolEntry(tool, args, risk) {
+    const files = [];
+    const commands = [];
+    if (args?.path) files.push(String(args.path));
+    if (args?.source) files.push(String(args.source));
+    if (args?.destination) files.push(String(args.destination));
+    if (tool === 'runShell' && args?.cmd) commands.push(String(args.cmd));
+
+    const actionMap = {
+        runShell: `Run shell command: ${args?.cmd || ''}`,
+        writeFile: `Write file ${args?.path || ''}`,
+        applyPatch: `Patch file ${args?.path || ''}`,
+        replaceInFile: `Replace text in ${args?.path || ''}`,
+        deleteFile: `Delete file ${args?.path || ''}`,
+        mkdir: `Create directory ${args?.path || ''}`,
+        copyFile: `Copy ${args?.source || ''} to ${args?.destination || ''}`,
+        moveFile: `Move ${args?.source || ''} to ${args?.destination || ''}`,
+        appendFile: `Append to file ${args?.path || ''}`,
+    };
+
+    return {
+        tool,
+        summary: actionMap[tool] || `Run ${tool}`,
+        risk: risk || 'medium',
+        files,
+        commands,
+        argsPreview: Object.fromEntries(Object.entries(args || {}).map(([k, v]) => [k, String(v).slice(0, 200)])),
+    };
+}
+
+function buildExecutionPlan(toolCalls = []) {
+    const entries = toolCalls
+        .filter(tc => PLAN_GATED_TOOLS.has(tc.name))
+        .map(tc => getPlanToolEntry(tc.name, tc.args, tc.risk));
+    if (!entries.length) return null;
+
+    const files = [...new Set(entries.flatMap(entry => entry.files))];
+    const commands = [...new Set(entries.flatMap(entry => entry.commands))];
+    const risks = ['low', 'medium', 'high', 'critical'];
+    const risk = entries.reduce((current, entry) => risks[Math.max(risks.indexOf(current), risks.indexOf(entry.risk || 'medium'))], 'low');
+
+    return {
+        summary: entries.length === 1 ? entries[0].summary : `Execute ${entries.length} risky actions in this step`,
+        risk,
+        files,
+        commands,
+        actions: entries,
+    };
+}
 
 function generatePermissionId() {
     return Math.random().toString(36).slice(2, 10);
@@ -543,6 +606,42 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
                 cleanup(approved);
             },
             reject: () => cleanup(false)
+        });
+    });
+}
+
+async function requestPlanApproval(res, plan, sessionPermissions) {
+    if (!plan || !Array.isArray(plan.actions) || !plan.actions.length) return true;
+    const sessionPlanKey = `plan:${stableHash(JSON.stringify(plan.actions.map(action => ({ tool: action.tool, files: action.files, commands: action.commands }))))}`;
+    if (sessionPermissions.has(sessionPlanKey)) return true;
+
+    const id = generatePermissionId();
+    res.write(JSON.stringify({ type: 'plan_request', id, plan, runId: res.runId || null }) + '\n');
+
+    return new Promise((resolve) => {
+        const timeout = setTimeout(() => cleanup(false), 300000);
+        const onClose = () => cleanup(false);
+
+        const cleanup = (approved) => {
+            clearTimeout(timeout);
+            if (typeof res.removeListener === 'function') res.removeListener('close', onClose);
+            pendingPlanApprovals.delete(id);
+            resolve(approved);
+        };
+
+        if (typeof res.once === 'function') res.once('close', onClose);
+
+        pendingPlanApprovals.set(id, {
+            runId: res.runId || null,
+            plan,
+            resolve: (approved, scope) => {
+                if (typeof res.write === 'function' && !res.writableEnded) {
+                    res.write(JSON.stringify({ type: 'plan_decision', id, approved: !!approved, scope, plan }) + '\n');
+                }
+                if (approved && scope === 'session') sessionPermissions.set(sessionPlanKey, true);
+                cleanup(approved);
+            },
+            reject: () => cleanup(false),
         });
     });
 }
@@ -1027,6 +1126,14 @@ function handleAgentPermission(req, res) {
     res.json({ ok: true });
 }
 
+function handleAgentPlan(req, res) {
+    const { id, approved, scope = 'once' } = req.body || {};
+    const pending = pendingPlanApprovals.get(id);
+    if (!pending) return res.status(404).json({ error: 'No pending plan with that id' });
+    pending.resolve(!!approved, scope);
+    res.json({ ok: true, plan: pending.plan });
+}
+
 // GET /api/agent/config — return current agent config
 function handleAgentConfigGet(req, res) {
     res.json({ maxSteps: agentMaxSteps, allowedDirs: agentAllowedDirs, blockedPaths: agentBlockedPaths, toolPermissions: agentToolPermissions });
@@ -1068,16 +1175,22 @@ module.exports = {
     agentBlockedPaths,
     agentToolPermissions,
     pendingPermissions,
+    pendingPlanApprovals,
+    PLAN_GATED_TOOLS,
+    buildToolPlan: getPlanToolEntry,
+    buildExecutionPlan,
     generatePermissionId,
     isPathAllowed,
     ensureAllowedPath,
     AGENT_TOOLS,
     getEnabledTools,
     requestPermission,
+    requestPlanApproval,
     executeTool,
     runCodeTool,
     runShellTool,
     handleAgentPermission,
+    handleAgentPlan,
     handleAgentConfigGet,
     handleAgentConfigPost,
     getAgentMaxSteps,

@@ -24,6 +24,8 @@ const {
     getEnabledTools,
     getAgentMaxSteps,
     createToolCache,
+    buildExecutionPlan,
+    requestPlanApproval,
 } = require('./tools');
 const { fetchOllama, resolveOllamaBaseUrl } = require('./ollama');
 const {
@@ -1579,10 +1581,28 @@ function emitRunEvent(runId, payload) {
         setRunStatus(runId, 'waiting_permission', {
             pendingPermission: { id: payload.id, tool: payload.tool, args: payload.args, risk: payload.risk }
         });
+    } else if (payload.type === 'plan_request') {
+        setRunStatus(runId, 'waiting_permission', {
+            pendingPlan: { id: payload.id, ...payload.plan }
+        });
+    } else if (payload.type === 'plan_decision') {
+        const current = getRun(runId);
+        const approvedPlans = Array.isArray(current?.approvedPlans) ? [...current.approvedPlans] : [];
+        approvedPlans.push({
+            id: payload.id,
+            approved: !!payload.approved,
+            scope: payload.scope || 'once',
+            plan: payload.plan || null,
+            timestamp: Date.now(),
+        });
+        setRunStatus(runId, current?.status === 'waiting_permission' ? 'running' : (current?.status || 'running'), {
+            pendingPlan: null,
+            approvedPlans,
+        });
     } else if (payload.type === 'tool_result') {
         const current = getRun(runId);
         if (current?.status === 'waiting_permission') {
-            setRunStatus(runId, 'running', { pendingPermission: null });
+            setRunStatus(runId, 'running', { pendingPermission: null, pendingPlan: null });
         }
     }
     if (active) {
@@ -1644,7 +1664,7 @@ async function executeDurableAgentRun(runId, body = {}) {
     let previousStepUsedTools = false;
     let messages = continueFrom ? [...continueFrom] : [...(initialMessages || [])];
 
-    setRunStatus(runId, 'running', { maxSteps: steps, latestMessages: messages, pendingPermission: null, lastError: null });
+    setRunStatus(runId, 'running', { maxSteps: steps, latestMessages: messages, pendingPermission: null, pendingPlan: null, approvedPlans: [], lastError: null });
 
     if (!continueFrom) {
         const _platform = os.platform();
@@ -1712,6 +1732,23 @@ async function executeDurableAgentRun(runId, body = {}) {
                 writer.write(JSON.stringify({ type: 'step_done', step, maxSteps: steps }));
                 setRunStatus(runId, 'completed', { latestMessages: messages, pendingPermission: null });
                 break;
+            }
+
+            const plan = buildExecutionPlan(toolCalls.map(tc => ({
+                name: tc.name,
+                args: tc.args,
+                risk: tc.name === 'runShell' ? 'critical'
+                    : ['writeFile', 'applyPatch', 'deleteFile'].includes(tc.name) ? 'high'
+                        : ['replaceInFile', 'mkdir', 'copyFile', 'moveFile', 'appendFile'].includes(tc.name) ? 'medium'
+                            : 'low'
+            })));
+            if (plan) {
+                const planApproved = await requestPlanApproval(writer, plan, sessionPermissions);
+                if (!planApproved) {
+                    writer.write(JSON.stringify({ type: 'error', text: 'Plan not approved.' }));
+                    setRunStatus(runId, 'failed', { latestMessages: messages, pendingPlan: null });
+                    break;
+                }
             }
 
             writer.write(JSON.stringify({ type: 'status', phase: 'executing_tools', text: `Running ${toolCalls.length} tool${toolCalls.length === 1 ? '' : 's'}...`, step, maxSteps: steps }));

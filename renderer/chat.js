@@ -775,6 +775,65 @@ document.addEventListener('DOMContentLoaded', async () => {
         return card;
     }
 
+    function createPlanCard(chunk) {
+        const plan = chunk.plan || {};
+        const card = document.createElement('div');
+        card.className = 'agent-permission-card';
+        card.style.borderColor = '#f59e0b';
+
+        const header = document.createElement('div');
+        header.className = 'agent-perm-header';
+        header.innerHTML = `<span class="agent-perm-tool">Plan Approval Required</span><span class="agent-perm-risk">[${plan.risk || 'medium'}]</span>`;
+        card.appendChild(header);
+
+        const summary = document.createElement('div');
+        summary.className = 'agent-perm-args';
+        const actionLines = Array.isArray(plan.actions) && plan.actions.length
+            ? plan.actions.map(action => `- ${action.summary}`).join('\n')
+            : '';
+        const fileLines = plan.files?.length ? `\nFiles:\n${plan.files.join('\n')}` : '';
+        const commandLines = plan.commands?.length ? `\nCommands:\n${plan.commands.join('\n')}` : '';
+        summary.textContent = `${plan.summary || 'Planned action'}${actionLines ? `\n\nActions:\n${actionLines}` : ''}${fileLines}${commandLines}`.trim();
+        card.appendChild(summary);
+
+        const btnRow = document.createElement('div');
+        btnRow.className = 'agent-perm-buttons';
+
+        const allowBtn = document.createElement('button');
+        allowBtn.className = 'agent-perm-allow';
+        allowBtn.textContent = 'Approve once';
+
+        const sessionBtn = document.createElement('button');
+        sessionBtn.className = 'agent-perm-session';
+        sessionBtn.textContent = 'Approve session';
+
+        const denyBtn = document.createElement('button');
+        denyBtn.className = 'agent-perm-deny';
+        denyBtn.textContent = 'Reject';
+
+        btnRow.append(allowBtn, sessionBtn, denyBtn);
+        card.appendChild(btnRow);
+
+        const respond = async (approved, scope) => {
+            [allowBtn, sessionBtn, denyBtn].forEach(b => b.disabled = true);
+            try {
+                await fetch(`${PROXY_BASE}/api/agent/plan`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: chunk.id, approved, scope })
+                });
+                btnRow.innerHTML = `<span class="agent-perm-result">${approved ? '✓ Plan approved' : '✗ Plan rejected'}</span>`;
+            } catch {
+                [allowBtn, sessionBtn, denyBtn].forEach(b => b.disabled = false);
+            }
+        };
+
+        allowBtn.addEventListener('click', () => respond(true, 'once'));
+        sessionBtn.addEventListener('click', () => respond(true, 'session'));
+        denyBtn.addEventListener('click', () => respond(false, 'once'));
+        return card;
+    }
+
     async function handleAgentStream(botTextElement, botMessageDiv, reader, handlers = {}) {
         const decoder = new TextDecoder();
         let buf = '';
@@ -934,6 +993,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                 botTextElement.appendChild(card);
             }
 
+            if (chunk.type === 'plan_request') {
+                currentContentDiv = null;
+                currentContentText = '';
+                setLiveStatus('Waiting for your plan approval to continue...', 'waiting');
+                const card = createPlanCard(chunk);
+                botTextElement.appendChild(card);
+            }
+
+            if (chunk.type === 'plan_decision') {
+                const note = document.createElement('div');
+                note.className = 'agent-context-compressed';
+                note.innerHTML = `<span class="compress-icon">${chunk.approved ? '✓' : '✗'}</span><span>${chunk.approved ? 'Plan approved' : 'Plan rejected'}${chunk.plan?.summary ? `: ${chunk.plan.summary}` : ''}</span>`;
+                botTextElement.appendChild(note);
+                setLiveStatus(chunk.approved ? 'Plan approved. Continuing...' : 'Plan rejected.', chunk.approved ? 'working' : 'waiting');
+            }
+
             if (chunk.type === 'context_compressed') {
                 const note = document.createElement('div');
                 note.className = 'agent-context-compressed';
@@ -1044,7 +1119,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return handleAgentStream(botTextElement, botMessageDiv, reader, { ...handlers, runId });
     }
 
-    async function replayAgentRun(run, { persistResult = false } = {}) {
+async function replayAgentRun(run, { persistResult = false } = {}) {
         const modelData = await loadModelChatState(currentModelName);
         const botTextElement = addMessageToChatUI(currentModelName, '', 'bot-message', modelData);
         const botMessageDiv = botTextElement.parentElement;
@@ -1054,6 +1129,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         isStreaming = ['running', 'waiting_permission'].includes(run.status);
 
         try {
+            if (Array.isArray(run.approvedPlans) && run.approvedPlans.length) {
+                const audit = document.createElement('div');
+                audit.className = 'agent-context-compressed';
+                const approvedCount = run.approvedPlans.filter(p => p.approved).length;
+                audit.innerHTML = `<span class="compress-icon">📝</span><span>Plan audit: ${approvedCount}/${run.approvedPlans.length} approved</span>`;
+                botTextElement.appendChild(audit);
+            }
             const result = await streamAgentRun(run.id, botTextElement, botMessageDiv, {
                 onContextBreakdown: (breakdown) => { lastContextBreakdown = breakdown; }
             });

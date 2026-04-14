@@ -8,13 +8,12 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.14.0
+## What's New - v1.15.0
 
-- **Per-run tool cache** — directory listings, search results, and glob matches are cached within each agent run so the model doesn't rescan the same workspace repeatedly; caches auto-invalidate on file writes and expire after 30 seconds
-- **Improved diffFiles output** — structured diff summary with hunk count, lines added/removed stats, and line-boundary-aware truncation so the stats always come through even for large diffs
-- **Tool descriptions nudge toward precise coding tools** — `readFile`, `writeFile`, and `appendFile` now mention `readFileRange`, `replaceInFile`, and `applyPatch` as the preferred options for code work
-- **Agent run history in sidebar** — past and active agent runs appear in the sidebar when in Agent mode, with status dots, timestamps, and click-to-replay
-- **Tool and permission tests** — 31 unit tests covering tool definitions, permission levels, path blocking, cache behavior, and more (`npm test`)
+- **Plan-first approvals for risky agent actions** — shell commands and file-changing tools now emit a plan approval card before execution so Agent Mode asks for intent-level confirmation before the lower-level permission prompt
+- **Plan decisions are persisted with the run** — pending plans, approval decisions, and a basic plan audit trail are now stored with durable runs and replayed after reconnect/reopen
+- **Run replay shows plan audit context** — reopening a run now shows whether plans were approved, making serious coding tasks easier to review
+- **Phase 4 test coverage started** — plan-gated tool metadata is now covered alongside the existing tool and permission tests (`npm test`)
 
 ---
 
@@ -67,6 +66,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Coding-oriented agent tools** — targeted file range reads, codebase search, globbing, in-file replace, single-file patch application, and file system helpers for repo work
 - **Per-run tool cache** — search, glob, and directory results are cached per run and auto-invalidated on writes to avoid redundant rescans
 - **Agent run history** — sidebar shows past and active runs with status indicators and click-to-replay when in Agent mode
+- **Plan-first approvals** — risky shell and file-changing actions now require a plan approval step before execution
 - **Durable agent run APIs** — persisted run metadata plus event log streaming, cancel, and resume endpoints for longer-lived agent workflows
 - **Renderer run recovery** — the desktop UI can reconnect to active runs, replay recent runs, and resume from max-step limits through the durable run API
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear

@@ -33,6 +33,7 @@ const {
 
 const {
     handleAgentPermission,
+    handleAgentPlan,
     handleAgentConfigGet,
     handleAgentConfigPost,
 } = require('./tools');
@@ -575,6 +576,7 @@ app.post('/api/research', handleResearch);
 // --- Agent Routes ---
 
 app.post('/api/agent/permission', handleAgentPermission);
+app.post('/api/agent/plan', handleAgentPlan);
 app.get('/api/agent/config', handleAgentConfigGet);
 app.post('/api/agent/config', handleAgentConfigPost);
 app.get('/api/agent/runs', handleAgentRunList);
