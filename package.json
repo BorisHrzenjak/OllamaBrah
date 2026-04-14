@@ -1,11 +1,12 @@
 {
   "name": "ollama-brah",
-  "version": "1.13.0",
+  "version": "1.14.0",
   "description": "Ollama Brah - Standalone Electron chat app for local Ollama models",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win"
+    "build": "electron-builder --win",
+    "test": "node test/tools.test.js"
   },
   "build": {
     "appId": "com.ollamabrah.app",

@@ -8,11 +8,13 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.13.0
+## What's New - v1.14.0
 
-- **Agent Mode now reconnects to durable runs from the desktop UI** - the renderer creates agent runs through `/api/agent/runs`, streams them through the run endpoint, and can reconnect after reloads instead of depending on one fragile live request
-- **Recent Agent Runs are now visible in the sidebar** - you can see run status, reconnect to active work, replay recent runs, and cancel in-progress runs from a dedicated sidebar section
-- **Stop now cancels the agent run, not just the stream** - the UI now targets the durable run backend so long-running agent work behaves like a task instead of a disposable response stream
+- **Per-run tool cache** — directory listings, search results, and glob matches are cached within each agent run so the model doesn't rescan the same workspace repeatedly; caches auto-invalidate on file writes and expire after 30 seconds
+- **Improved diffFiles output** — structured diff summary with hunk count, lines added/removed stats, and line-boundary-aware truncation so the stats always come through even for large diffs
+- **Tool descriptions nudge toward precise coding tools** — `readFile`, `writeFile`, and `appendFile` now mention `readFileRange`, `replaceInFile`, and `applyPatch` as the preferred options for code work
+- **Agent run history in sidebar** — past and active agent runs appear in the sidebar when in Agent mode, with status dots, timestamps, and click-to-replay
+- **Tool and permission tests** — 31 unit tests covering tool definitions, permission levels, path blocking, cache behavior, and more (`npm test`)
 
 ---
 
@@ -63,6 +65,8 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Agent mode** — autonomous tool-use loop with step-by-step visualization, live in-progress status feedback between tool phases, configurable max steps and permissions, and support for web search, deep research, memory injection, and skill hints in a single run
 - **Agent capabilities strip** — in Agent workflow, pick research mode (`Off / Web / Deep / Auto`), memory mode (`Off / Inject / Inject + Save`), and skills mode (`Auto / Manual`)
 - **Coding-oriented agent tools** — targeted file range reads, codebase search, globbing, in-file replace, single-file patch application, and file system helpers for repo work
+- **Per-run tool cache** — search, glob, and directory results are cached per run and auto-invalidated on writes to avoid redundant rescans
+- **Agent run history** — sidebar shows past and active runs with status indicators and click-to-replay when in Agent mode
 - **Durable agent run APIs** — persisted run metadata plus event log streaming, cancel, and resume endpoints for longer-lived agent workflows
 - **Renderer run recovery** — the desktop UI can reconnect to active runs, replay recent runs, and resume from max-step limits through the durable run API
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
@@ -122,6 +126,11 @@ npm start
 ```
 
 > `electron-rebuild` is required because `better-sqlite3` is a native addon that must be compiled against Electron's bundled Node version. Skipping this step will cause a crash on startup.
+
+**Run tests**
+```bash
+npm test
+```
 
 **Build a distributable**
 ```bash

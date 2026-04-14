@@ -4,11 +4,53 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const memory = require('./memory');
 const diffLib = require('diff');
 const { fetchPageViaJina, fetchBinaryUrl, fetchTavilyResults, heuristicTimeRange } = require('./search');
 const skillsModule = require('./skills');
 const { parsePdfBuffer } = require('./document-parser');
+
+const CACHE_TTL_MS = 30_000;
+const CACHE_MAX_ENTRIES = 200;
+
+function createToolCache() {
+    const store = new Map();
+    return {
+        get(key) {
+            const entry = store.get(key);
+            if (!entry) return undefined;
+            if (Date.now() - entry.ts > CACHE_TTL_MS) { store.delete(key); return undefined; }
+            return entry.value;
+        },
+        set(key, value) {
+            if (store.size >= CACHE_MAX_ENTRIES) {
+                const oldest = store.keys().next().value;
+                store.delete(oldest);
+            }
+            store.set(key, { value, ts: Date.now() });
+        },
+        invalidatePrefix(prefix) {
+            for (const key of store.keys()) {
+                if (key.startsWith(prefix)) store.delete(key);
+            }
+        },
+        invalidatePath(filePath) {
+            const dir = path.dirname(filePath).toLowerCase();
+            for (const key of [...store.keys()]) {
+                if (key.includes(dir) || dir.includes(key.split(':')[1] || '')) {
+                    store.delete(key);
+                }
+            }
+        },
+        clear() { store.clear(); },
+    };
+}
+
+function stableHash(...parts) {
+    const joined = parts.filter(Boolean).join('\0');
+    return crypto.createHash('md5').update(joined).digest('hex').slice(0, 12);
+}
 
 // --- Agent config (updated via POST /api/agent/config) ---
 let agentMaxSteps = parseInt(process.env.AGENT_MAX_STEPS || '15', 10);
@@ -180,7 +222,7 @@ const AGENT_TOOLS = [
         type: 'function',
         function: {
             name: 'readFile',
-            description: 'Read the contents of a file from disk.',
+            description: 'Read the contents of a file from disk. For large files, prefer readFileRange to avoid wasting context on irrelevant sections.',
             parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the file' } }, required: ['path'] }
         }
     },
@@ -204,7 +246,7 @@ const AGENT_TOOLS = [
         type: 'function',
         function: {
             name: 'writeFile',
-            description: 'Write or overwrite a file on disk.',
+            description: 'Write or overwrite a file on disk. For editing existing code, prefer replaceInFile or applyPatch instead — they are safer and more precise.',
             parameters: { type: 'object', properties: { path: { type: 'string', description: 'Absolute path to the file' }, content: { type: 'string', description: 'Content to write' } }, required: ['path', 'content'] }
         }
     },
@@ -416,7 +458,7 @@ const AGENT_TOOLS = [
         type: 'function',
         function: {
             name: 'appendFile',
-            description: 'Append text to the end of a file without overwriting its existing content. Safer than writeFile for logs, notes, or journals. Creates the file if it does not exist.',
+            description: 'Append text to the end of a file without overwriting its existing content. Good for logs, notes, or journals. For editing existing code, prefer replaceInFile or applyPatch. Creates the file if it does not exist.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -506,7 +548,7 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
 }
 
 // Execute a single tool call, streaming progress/result
-async function executeTool(res, name, args, sessionPermissions, model, backend) {
+async function executeTool(res, name, args, sessionPermissions, model, backend, toolCache) {
     try {
         switch (name) {
             case 'webSearch': {
@@ -583,6 +625,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 try {
                     fs.mkdirSync(path.dirname(args.path), { recursive: true });
                     fs.writeFileSync(args.path, args.content || '', 'utf8');
+                    if (toolCache) toolCache.invalidatePath(args.path);
                     return { result: 'File written successfully' };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
@@ -601,6 +644,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                         ? original.split(search).join(String(args.replace || ''))
                         : original.replace(search, String(args.replace || ''));
                     fs.writeFileSync(filePath, updated, 'utf8');
+                    if (toolCache) toolCache.invalidatePath(filePath);
                     return { result: `Replaced ${replaceAll ? matchCount : 1} occurrence(s) in ${filePath}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
@@ -613,6 +657,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     const patched = diffLib.applyPatch(original, String(args.diff || ''));
                     if (patched === false) return { result: 'Patch could not be applied cleanly', error: true };
                     fs.writeFileSync(filePath, patched, 'utf8');
+                    if (toolCache) toolCache.invalidatePath(filePath);
                     return { result: `Patch applied successfully to ${filePath}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
@@ -621,10 +666,12 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 if (!approved) return { result: 'User denied', error: true };
                 if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
                 try {
+                    const cacheKey = `dir:${path.resolve(args.path).toLowerCase()}`;
+                    const cached = toolCache && toolCache.get(cacheKey);
+                    if (cached) return { result: cached };
                     const entries = fs.readdirSync(args.path, { withFileTypes: true });
                     const dirs = entries.filter(e => e.isDirectory());
                     const files = entries.filter(e => !e.isDirectory());
-                    // Count by extension
                     const extCounts = {};
                     for (const f of files) {
                         const ext = path.extname(f.name).toLowerCase() || '(no ext)';
@@ -642,7 +689,9 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                         ...dirs.map(e => '[DIR] ' + e.name),
                         ...files.map(e => e.name),
                     ].filter(l => l !== undefined);
-                    return { result: lines.join('\n') };
+                    const result = lines.join('\n');
+                    if (toolCache) toolCache.set(cacheKey, result);
+                    return { result };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'findFiles': {
@@ -650,6 +699,9 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 if (!approved) return { result: 'User denied', error: true };
                 if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
                 try {
+                    const cacheKey = `find:${path.resolve(args.path).toLowerCase()}:${args.pattern}:${!!args.recursive}`;
+                    const cached = toolCache && toolCache.get(cacheKey);
+                    if (cached) return { result: cached };
                     const exts = args.pattern === '*'
                         ? []
                         : String(args.pattern).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -671,7 +723,9 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     walk(args.path, 0);
                     const preview = found.slice(0, 50).join('\n');
                     const more = found.length > 50 ? `\n... and ${found.length - 50} more` : '';
-                    return { result: `Found ${found.length} file(s) matching "${args.pattern}" in ${args.path}${recursive ? ' (recursive)' : ''}:\n${preview}${more}` };
+                    const result = `Found ${found.length} file(s) matching "${args.pattern}" in ${args.path}${recursive ? ' (recursive)' : ''}:\n${preview}${more}`;
+                    if (toolCache) toolCache.set(cacheKey, result);
+                    return { result };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'searchInFiles': {
@@ -679,6 +733,9 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 if (!approved) return { result: 'User denied', error: true };
                 try {
                     const root = ensureAllowedPath(args.path);
+                    const cacheKey = `search:${root.toLowerCase()}:${stableHash(args.query, args.filePattern, String(!!args.regex))}`;
+                    const cached = toolCache && toolCache.get(cacheKey);
+                    if (cached) return { result: cached };
                     const matcher = args.filePattern ? globToRegExp(args.filePattern) : null;
                     const regex = args.regex ? new RegExp(String(args.query || ''), 'i') : null;
                     const query = String(args.query || '');
@@ -703,7 +760,9 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     });
                     const preview = hits.slice(0, 100).join('\n');
                     const more = hits.length > 100 ? `\n... and ${hits.length - 100} more match(es)` : '';
-                    return { result: hits.length ? `Found ${hits.length} match(es):\n${preview}${more}` : 'No matches found' };
+                    const result = hits.length ? `Found ${hits.length} match(es):\n${preview}${more}` : 'No matches found';
+                    if (toolCache) toolCache.set(cacheKey, result);
+                    return { result };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'globFiles': {
@@ -711,6 +770,9 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 if (!approved) return { result: 'User denied', error: true };
                 try {
                     const root = ensureAllowedPath(args.path);
+                    const cacheKey = `glob:${root.toLowerCase()}:${args.pattern || '**/*'}`;
+                    const cached = toolCache && toolCache.get(cacheKey);
+                    if (cached) return { result: cached };
                     const matcher = globToRegExp(args.pattern || '**/*');
                     const found = [];
                     walkDirectory(root, {
@@ -724,7 +786,9 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     });
                     const preview = found.slice(0, 100).join('\n');
                     const more = found.length > 100 ? `\n... and ${found.length - 100} more` : '';
-                    return { result: found.length ? `Matched ${found.length} file(s):\n${preview}${more}` : 'No files matched' };
+                    const result = found.length ? `Matched ${found.length} file(s):\n${preview}${more}` : 'No files matched';
+                    if (toolCache) toolCache.set(cacheKey, result);
+                    return { result };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'deleteFile': {
@@ -733,6 +797,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 if (!isPathAllowed(args.path)) return { result: 'Path not allowed', error: true };
                 try {
                     fs.unlinkSync(args.path);
+                    if (toolCache) toolCache.invalidatePath(args.path);
                     return { result: 'File deleted: ' + args.path };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
@@ -742,6 +807,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 try {
                     const dirPath = ensureAllowedPath(args.path);
                     fs.mkdirSync(dirPath, { recursive: true });
+                    if (toolCache) toolCache.invalidatePath(dirPath);
                     return { result: `Directory created: ${dirPath}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
@@ -753,6 +819,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     const destination = ensureAllowedPath(args.destination);
                     fs.mkdirSync(path.dirname(destination), { recursive: true });
                     fs.copyFileSync(source, destination);
+                    if (toolCache) { toolCache.invalidatePath(source); toolCache.invalidatePath(destination); }
                     return { result: `Copied ${source} to ${destination}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
@@ -764,6 +831,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                     const destination = ensureAllowedPath(args.destination);
                     fs.mkdirSync(path.dirname(destination), { recursive: true });
                     fs.renameSync(source, destination);
+                    if (toolCache) { toolCache.invalidatePath(source); toolCache.invalidatePath(destination); }
                     return { result: `Moved ${source} to ${destination}` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
@@ -858,8 +926,25 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 try {
                     const a = fs.readFileSync(args.pathA, 'utf8');
                     const b = fs.readFileSync(args.pathB, 'utf8');
+                    const changes = diffLib.structuredPatch(args.pathA, args.pathB, a, b);
+                    const hunks = changes.hunks || [];
+                    let added = 0, removed = 0;
+                    for (const h of hunks) {
+                        for (const line of h.lines) {
+                            if (line.startsWith('+')) added++;
+                            else if (line.startsWith('-')) removed++;
+                        }
+                    }
+                    const summary = `Diff: ${args.pathA} → ${args.pathB}\n${hunks.length} hunk(s), +${added} line(s) added, -${removed} line(s) removed\n`;
                     const patch = diffLib.createTwoFilesPatch(args.pathA, args.pathB, a, b);
-                    return { result: patch.slice(0, 8000) };
+                    const MAX_DIFF = 8000;
+                    const budget = MAX_DIFF - summary.length;
+                    if (patch.length <= budget) {
+                        return { result: summary + patch };
+                    }
+                    const truncated = patch.slice(0, budget);
+                    const lastNewline = truncated.lastIndexOf('\n');
+                    return { result: summary + truncated.slice(0, lastNewline) + `\n... (diff truncated, ${patch.length - budget} more bytes)` };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
             case 'appendFile': {
@@ -869,6 +954,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend) 
                 try {
                     fs.mkdirSync(path.dirname(args.path), { recursive: true });
                     fs.appendFileSync(args.path, args.content || '', 'utf8');
+                    if (toolCache) toolCache.invalidatePath(args.path);
                     return { result: 'Appended to: ' + args.path };
                 } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
             }
@@ -984,6 +1070,7 @@ module.exports = {
     pendingPermissions,
     generatePermissionId,
     isPathAllowed,
+    ensureAllowedPath,
     AGENT_TOOLS,
     getEnabledTools,
     requestPermission,
@@ -996,4 +1083,5 @@ module.exports = {
     getAgentMaxSteps,
     getAgentAllowedDirs,
     getAgentBlockedPaths,
+    createToolCache,
 };

@@ -3889,6 +3889,138 @@
             margin: 0 0 var(--space-sm) 0;
         }
 
+        /* Agent Run History */
+        #agentRunHistory {
+            display: none;
+            flex-direction: column;
+            border-top: 1px solid var(--border-subtle);
+            max-height: 40%;
+            min-height: 0;
+        }
+
+        #conversationSidebar[data-show-runs="true"] #agentRunHistory {
+            display: flex;
+        }
+
+        #agentRunHistoryHeader {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        #agentRunHistoryHeader:hover {
+            color: var(--text-primary);
+        }
+
+        #agentRunHistoryToggle {
+            display: flex;
+            align-items: center;
+            transition: transform var(--transition);
+            flex-shrink: 0;
+        }
+
+        #agentRunHistoryHeader > span:nth-child(2) {
+            flex: 1;
+        }
+
+        #agentRunHistory.collapsed #agentRunHistoryToggle {
+            transform: rotate(-90deg);
+        }
+
+        #agentRunHistory.collapsed #agentRunHistoryList {
+            display: none;
+        }
+
+        #agentRunHistoryRefresh {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            transition: color var(--transition);
+        }
+
+        #agentRunHistoryRefresh:hover {
+            color: var(--text-primary);
+        }
+
+        #agentRunHistoryList {
+            overflow-y: auto;
+            flex: 1;
+            min-height: 0;
+            padding: 0 6px 6px;
+        }
+
+        .agent-run-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: var(--font-size-sm);
+            color: var(--text-secondary);
+            transition: background-color var(--transition);
+            position: relative;
+        }
+
+        .agent-run-item:hover {
+            background-color: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .agent-run-status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .agent-run-status-dot.completed { background-color: #22c55e; }
+        .agent-run-status-dot.running { background-color: var(--accent); animation: pulse-dot 1.5s infinite; }
+        .agent-run-status-dot.waiting_permission { background-color: #eab308; animation: pulse-dot 1.5s infinite; }
+        .agent-run-status-dot.failed { background-color: #ef4444; }
+        .agent-run-status-dot.cancelled { background-color: var(--text-muted); }
+        .agent-run-status-dot.queued { background-color: var(--text-muted); }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .agent-run-label {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .agent-run-time {
+            font-size: 10px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .agent-run-empty {
+            padding: 12px;
+            text-align: center;
+            font-size: var(--font-size-sm);
+            color: var(--text-muted);
+        }
+
         /* Sidebar Footer */
         #sidebarFooter {
             padding: var(--space-md);
@@ -5465,6 +5597,18 @@ body {
             </div>
             <div id="tagFilterBar"></div>
             <div id="conversationList"></div>
+            <div id="agentRunHistory">
+                <div id="agentRunHistoryHeader">
+                    <span id="agentRunHistoryToggle" title="Collapse run history">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    </span>
+                    <span>Agent Runs</span>
+                    <button id="agentRunHistoryRefresh" title="Refresh run list">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+                    </button>
+                </div>
+                <div id="agentRunHistoryList"></div>
+            </div>
             <div id="sidebarFooter">
                 <button id="dashboardButton" class="sidebar-footer-button" title="Usage Dashboard">
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"

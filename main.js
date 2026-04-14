@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, session, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, session, dialog, clipboard } = require('electron');
 const path = require('path');
 const Database = require('better-sqlite3');
 const Store = require('electron-store');
@@ -286,6 +286,10 @@ function registerIpcHandlers() {
             throw new Error('Invalid external URL');
         }
         await shell.openExternal(url);
+    });
+    ipcMain.handle('app:writeClipboard', async (_e, text) => {
+        clipboard.writeText(String(text || ''));
+        return true;
     });
 
     // Store

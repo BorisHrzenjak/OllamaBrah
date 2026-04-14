@@ -267,6 +267,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         chatWorkflowButton?.classList.toggle('active', chatWorkflowMode === 'chat');
         agentWorkflowButton?.classList.toggle('active', chatWorkflowMode === 'agent');
 
+        if (conversationSidebar) conversationSidebar.dataset.showRuns = chatWorkflowMode === 'agent' ? 'true' : 'false';
+        if (chatWorkflowMode === 'agent') refreshAgentRunHistory();
+
         messageInput.placeholder = chatWorkflowMode === 'agent'
             ? 'Ask Agent to code, automate, or work in your repo...'
             : 'Ask anything...';
@@ -280,6 +283,107 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (persist) persistWorkflowPreferences();
     }
+
+    const agentRunHistoryList = document.getElementById('agentRunHistoryList');
+    const agentRunHistoryRefresh = document.getElementById('agentRunHistoryRefresh');
+
+    function formatRunTimestamp(ts) {
+        if (!ts) return '';
+        const d = new Date(ts);
+        const now = new Date();
+        const diffMs = now - d;
+        if (diffMs < 60000) return 'just now';
+        if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}m ago`;
+        if (diffMs < 86400000) return `${Math.floor(diffMs / 3600000)}h ago`;
+        return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+
+    function escapeHTML(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function getRunLabel(run) {
+        const msgs = run.latestMessages || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'user') {
+                const text = typeof msgs[i].content === 'string' ? msgs[i].content : '';
+                return text.slice(0, 60) || 'Agent run';
+            }
+        }
+        return 'Agent run';
+    }
+
+    async function refreshAgentRunHistory() {
+        if (!agentRunHistoryList) return;
+        try {
+            const resp = await fetch(`${PROXY_BASE}/api/agent/runs?limit=20`);
+            if (!resp.ok) return;
+            const runs = await resp.json();
+            if (!runs.length) {
+                agentRunHistoryList.innerHTML = '<div class="agent-run-empty">No agent runs yet</div>';
+                return;
+            }
+            agentRunHistoryList.innerHTML = runs.map(run => {
+                const statusClass = run.status || 'queued';
+                return `<div class="agent-run-item" data-run-id="${run.id}" data-run-status="${statusClass}" title="${run.status} — ${run.model || ''}">
+                    <span class="agent-run-status-dot ${statusClass}"></span>
+                    <span class="agent-run-label">${escapeHTML(getRunLabel(run))}</span>
+                    <span class="agent-run-time">${formatRunTimestamp(run.updatedAt)}</span>
+                </div>`;
+            }).join('');
+        } catch {
+            agentRunHistoryList.innerHTML = '<div class="agent-run-empty">Could not load runs</div>';
+        }
+    }
+
+    agentRunHistoryList?.addEventListener('click', async (e) => {
+        const item = e.target.closest('.agent-run-item');
+        if (!item) return;
+        const runId = item.dataset.runId;
+        const status = item.dataset.runStatus;
+        if (!runId) return;
+
+        if (status === 'running' || status === 'waiting_permission') {
+            if (currentAgentRunId === runId) return;
+            try {
+                const resp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}`);
+                if (!resp.ok) return;
+                const run = await resp.json();
+                await replayAgentRun(run, { persistResult: false });
+            } catch {}
+            return;
+        }
+
+        try {
+            const resp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}`);
+            if (!resp.ok) return;
+            const run = await resp.json();
+            const msgs = run.latestMessages || [];
+            let text = '';
+            for (let i = msgs.length - 1; i >= 0; i--) {
+                if (msgs[i].role === 'assistant' && typeof msgs[i].content === 'string' && msgs[i].content.trim()) {
+                    text = msgs[i].content;
+                    break;
+                }
+            }
+            if (text) {
+                const modelData = await loadModelChatState(currentModelName);
+                const botTextElement = addMessageToChatUI(currentModelName, '', 'bot-message', modelData);
+                botTextElement.appendChild(renderMarkdownWithThinking(text, false));
+                botTextElement.parentElement.classList.remove('streaming');
+            }
+        } catch {}
+    });
+
+    agentRunHistoryRefresh?.addEventListener('click', (e) => { e.stopPropagation(); refreshAgentRunHistory(); });
+
+    const agentRunHistory = document.getElementById('agentRunHistory');
+    const agentRunHistoryHeader = document.getElementById('agentRunHistoryHeader');
+    agentRunHistoryHeader?.addEventListener('click', () => {
+        agentRunHistory?.classList.toggle('collapsed');
+    });
 
     function getActiveResearchMode() {
         if (chatWorkflowMode === 'agent') return agentResearchMode;
@@ -976,6 +1080,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentAbortController = null;
             currentAgentRunId = null;
             isStreaming = false;
+            if (chatWorkflowMode === 'agent') refreshAgentRunHistory();
         }
     }
 
@@ -2178,7 +2283,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function copyToClipboard(text, buttonElement) {
         try {
-            await navigator.clipboard.writeText(text);
+            if (isElectron && window.electronAPI?.writeClipboard) {
+                await window.electronAPI.writeClipboard(text);
+            } else if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                throw new Error('Clipboard API unavailable');
+            }
             if (buttonElement) {
                 const originalInnerHTML = buttonElement.innerHTML;
                 buttonElement.textContent = 'Copied!';
@@ -2305,11 +2416,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 copyBtn.className = 'code-copy-button';
                 copyBtn.textContent = 'Copy';
                 copyBtn.addEventListener('click', async () => {
-                    await navigator.clipboard.writeText(code.textContent);
-                    copyBtn.textContent = 'Copied!';
+                    await copyToClipboard(code.textContent, copyBtn);
                     copyBtn.classList.add('copied');
                     setTimeout(() => {
-                        copyBtn.textContent = 'Copy';
                         copyBtn.classList.remove('copied');
                     }, 2000);
                 });
@@ -6367,6 +6476,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             sendButton.style.display = 'flex';
             currentAbortController = null;
             currentAgentRunId = null;
+            if (chatWorkflowMode === 'agent') refreshAgentRunHistory();
             if (botTextElement) botTextElement.dataset.fullMessage = '';
 
             // Remove streaming class from message

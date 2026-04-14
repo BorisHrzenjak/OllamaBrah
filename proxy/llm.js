@@ -23,6 +23,7 @@ const {
     executeTool,
     getEnabledTools,
     getAgentMaxSteps,
+    createToolCache,
 } = require('./tools');
 const { fetchOllama, resolveOllamaBaseUrl } = require('./ollama');
 const {
@@ -1344,8 +1345,8 @@ async function handleAgentChat(req, res) {
     const { messages: initialMessages, model, backend = 'ollama', maxSteps, continueFrom, _skillHint } = req.body || {};
     const steps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || getAgentMaxSteps()));
     const tools = getEnabledTools();
-    // Session-scoped permission grants — cleared when this request ends (not global)
     const sessionPermissions = new Map();
+    const toolCache = createToolCache();
     let previousStepUsedTools = false;
 
     res.setHeader('Content-Type', 'application/x-ndjson');
@@ -1466,7 +1467,7 @@ async function handleAgentChat(req, res) {
 
             const execResults = await Promise.all(
                 toolCalls.map(async tc => {
-                    const { result, error } = await executeTool(res, tc.name, tc.args, sessionPermissions, model, backend);
+                    const { result, error } = await executeTool(res, tc.name, tc.args, sessionPermissions, model, backend, toolCache);
                     res.write(JSON.stringify({ type: 'tool_result', name: tc.name, result, error: !!error }) + '\n');
                     return { tc, result, error };
                 })
@@ -1638,6 +1639,7 @@ async function executeDurableAgentRun(runId, body = {}) {
     const steps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || getAgentMaxSteps()));
     const tools = getEnabledTools();
     const sessionPermissions = new Map();
+    const toolCache = createToolCache();
     const writer = createRunWriter(runId);
     let previousStepUsedTools = false;
     let messages = continueFrom ? [...continueFrom] : [...(initialMessages || [])];
@@ -1716,7 +1718,7 @@ async function executeDurableAgentRun(runId, body = {}) {
             for (const tc of toolCalls) writer.write(JSON.stringify({ type: 'tool_call', name: tc.name, args: tc.args }));
 
             const execResults = await Promise.all(toolCalls.map(async tc => {
-                const { result, error } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend);
+                const { result, error } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend, toolCache);
                 writer.write(JSON.stringify({ type: 'tool_result', name: tc.name, result, error: !!error }));
                 return { tc, result, error };
             }));
