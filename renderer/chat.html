@@ -1562,152 +1562,152 @@
             border-color: var(--accent);
         }
 
-        #agentCapabilitiesStrip {
-            display: flex;
-            flex-direction: column;
-            gap: 0;
-            margin-bottom: 8px;
-            background: rgba(245, 166, 35, 0.045);
-            border: 1px solid rgba(245, 166, 35, 0.1);
-            border-radius: 10px;
-            overflow: hidden;
-        }
-
-        #agentCapabilitiesStrip[hidden] {
-            display: none !important;
-        }
-
-        #agentCapabilitiesStrip[data-expanded="false"] #agentCapabilitiesBody {
+        #agentInlineControls {
             display: none;
-        }
-
-        #agentCapabilitiesStrip[data-expanded="true"] {
-            background: linear-gradient(180deg, rgba(245, 166, 35, 0.075), rgba(245, 166, 35, 0.03));
-            border-color: rgba(245, 166, 35, 0.16);
-        }
-
-        .agent-capabilities-header {
-            display: flex;
             align-items: center;
-            width: 100%;
-            padding: 9px 12px;
+            gap: 2px;
+        }
+
+        #inputArea[data-workflow-mode="agent"] #agentInlineControls {
+            display: contents;
+        }
+
+        .agent-ctrl-divider {
+            width: 1px;
+            height: 18px;
+            background: var(--border-subtle);
+            margin: 0 4px;
+            flex-shrink: 0;
+        }
+
+        .agent-ctrl {
+            position: relative;
+        }
+
+        .agent-ctrl-btn {
+            height: 28px;
+            padding: 0 8px;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
             background: transparent;
-            border: none;
-            color: inherit;
+            border: 1px solid transparent;
+            border-radius: 7px;
+            color: var(--text-muted);
             cursor: pointer;
-            text-align: left;
-            gap: 12px;
-            transition: background-color var(--transition);
+            transition: all var(--transition);
+            white-space: nowrap;
         }
 
-        .agent-capabilities-header:hover {
-            background: rgba(255, 255, 255, 0.02);
+        .agent-ctrl-btn i {
+            width: 14px;
+            height: 14px;
+            flex-shrink: 0;
         }
 
-        .agent-capabilities-copy {
-            min-width: 0;
-            flex: 1;
+        .agent-ctrl-chevron {
+            width: 10px !important;
+            height: 10px !important;
+            opacity: 0.45;
+            transition: transform var(--transition);
         }
 
-        .agent-capabilities-title {
+        .agent-ctrl-btn.open .agent-ctrl-chevron {
+            transform: rotate(180deg);
+        }
+
+        .agent-ctrl-name {
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .agent-ctrl-value {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 1px 5px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.07);
+            opacity: 0.8;
+        }
+
+        .agent-ctrl-btn:hover {
+            background: var(--bg-quaternary);
+            color: var(--text-secondary);
+        }
+
+        .agent-ctrl-btn.research-active {
+            color: var(--accent);
+            background: var(--accent-subtle);
+            border-color: rgba(245, 166, 35, 0.18);
+        }
+
+        .agent-ctrl-btn.memory-active {
+            color: #10b981;
+            background: rgba(16, 185, 129, 0.1);
+            border-color: rgba(16, 185, 129, 0.18);
+        }
+
+        .agent-ctrl-btn.skills-active {
+            color: #8b5cf6;
+            background: rgba(139, 92, 246, 0.1);
+            border-color: rgba(139, 92, 246, 0.18);
+        }
+
+        .agent-ctrl-dropdown {
+            position: fixed;
+            z-index: 9999;
+            min-width: 134px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 4px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+            display: none;
+            flex-direction: column;
+            gap: 1px;
+        }
+
+        .agent-ctrl-dropdown.open {
+            display: flex;
+        }
+
+        .agent-ctrl-option {
             display: flex;
             align-items: center;
             gap: 8px;
+            padding: 6px 10px;
+            border-radius: 5px;
             font-size: 12px;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        .agent-capabilities-title i {
-            width: 14px;
-            height: 14px;
-            color: var(--accent);
-        }
-
-        .agent-capabilities-summary {
-            margin-top: 3px;
-            font-size: 11px;
+            font-weight: 500;
             color: var(--text-secondary);
-            line-height: 1.5;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .agent-capabilities-toggle-icon {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 24px;
-            height: 24px;
-            border-radius: 7px;
-            background: rgba(255, 255, 255, 0.03);
-            color: var(--text-muted);
-            flex-shrink: 0;
-            transition: all var(--transition);
-        }
-
-        #agentCapabilitiesStrip[data-expanded="true"] .agent-capabilities-toggle-icon {
-            transform: rotate(180deg);
-            color: var(--text-primary);
-        }
-
-        #agentCapabilitiesBody {
-            padding: 0 12px 10px;
-            border-top: 1px solid rgba(245, 166, 35, 0.08);
-        }
-
-        .agent-capability-groups {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            padding-top: 10px;
-        }
-
-        .agent-capability-group {
-            min-width: 0;
-            flex: 1 1 180px;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-
-        .agent-capability-label {
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            color: var(--text-muted);
-        }
-
-        .agent-segmented-control {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-        }
-
-        .agent-segmented-button {
-            min-height: 28px;
-            padding: 0 10px;
-            border: 1px solid var(--border-subtle);
-            border-radius: 999px;
-            background: rgba(255, 255, 255, 0.025);
-            color: var(--text-secondary);
-            font-size: 11px;
-            font-weight: 600;
             cursor: pointer;
-            transition: all var(--transition);
+            background: none;
+            border: none;
+            width: 100%;
+            text-align: left;
+            transition: background var(--transition), color var(--transition);
         }
 
-        .agent-segmented-button:hover {
-            background: rgba(255, 255, 255, 0.05);
+        .agent-ctrl-option:hover {
+            background: var(--bg-quaternary);
             color: var(--text-primary);
         }
 
-        .agent-segmented-button.active {
-            background: rgba(245, 166, 35, 0.12);
-            border-color: rgba(245, 166, 35, 0.18);
-            color: var(--accent);
+        .agent-ctrl-option.selected {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .opt-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: var(--border);
+        }
+
+        .agent-ctrl-option.selected .opt-dot {
+            background: currentColor;
         }
 
         #inputArea[data-workflow-mode="agent"] #inputCard {
@@ -3899,142 +3899,6 @@
             gap: 10px;
         }
 
-        .sidebar-agent-runs {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            padding: 10px;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border-subtle);
-            border-radius: var(--radius-md);
-        }
-
-        .sidebar-agent-runs[hidden] {
-            display: none !important;
-        }
-
-        .sidebar-agent-runs-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-        }
-
-        .sidebar-agent-runs-title {
-            font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            color: var(--text-muted);
-        }
-
-        .sidebar-agent-runs-refresh {
-            width: 24px;
-            height: 24px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0;
-            border: 1px solid var(--border-subtle);
-            border-radius: 7px;
-            background: transparent;
-            color: var(--text-muted);
-            cursor: pointer;
-            transition: all var(--transition);
-        }
-
-        .sidebar-agent-runs-refresh:hover {
-            color: var(--text-primary);
-            background: rgba(255, 255, 255, 0.03);
-        }
-
-        .sidebar-agent-runs-list {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .sidebar-agent-run-empty {
-            font-size: 12px;
-            color: var(--text-muted);
-        }
-
-        .sidebar-agent-run-item {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            padding: 8px 9px;
-            border: 1px solid var(--border-subtle);
-            border-radius: 10px;
-            background: rgba(255, 255, 255, 0.02);
-        }
-
-        .sidebar-agent-run-top {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-        }
-
-        .sidebar-agent-run-status {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            min-width: 0;
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        .sidebar-agent-run-dot {
-            width: 7px;
-            height: 7px;
-            border-radius: 999px;
-            flex-shrink: 0;
-            background: var(--text-muted);
-        }
-
-        .sidebar-agent-run-item.status-running .sidebar-agent-run-dot { background: var(--accent); }
-        .sidebar-agent-run-item.status-waiting_permission .sidebar-agent-run-dot { background: var(--warning); }
-        .sidebar-agent-run-item.status-completed .sidebar-agent-run-dot { background: var(--success); }
-        .sidebar-agent-run-item.status-failed .sidebar-agent-run-dot { background: var(--error-text); }
-        .sidebar-agent-run-item.status-cancelled .sidebar-agent-run-dot { background: var(--text-muted); }
-
-        .sidebar-agent-run-meta {
-            font-size: 11px;
-            color: var(--text-secondary);
-            line-height: 1.4;
-        }
-
-        .sidebar-agent-run-actions {
-            display: flex;
-            gap: 6px;
-        }
-
-        .sidebar-agent-run-action {
-            min-height: 26px;
-            padding: 0 8px;
-            border: 1px solid var(--border-subtle);
-            border-radius: 8px;
-            background: transparent;
-            color: var(--text-secondary);
-            font-size: 11px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all var(--transition);
-        }
-
-        .sidebar-agent-run-action:hover {
-            color: var(--text-primary);
-            background: rgba(255, 255, 255, 0.03);
-        }
-
-        .sidebar-agent-run-action.danger:hover {
-            color: #fff;
-            background: rgba(239, 68, 68, 0.2);
-            border-color: rgba(239, 68, 68, 0.35);
-        }
-
         .sidebar-footer-button {
             width: 100%;
             display: flex;
@@ -5602,15 +5466,6 @@ body {
             <div id="tagFilterBar"></div>
             <div id="conversationList"></div>
             <div id="sidebarFooter">
-                <div id="agentRunsPanel" class="sidebar-agent-runs">
-                    <div class="sidebar-agent-runs-header">
-                        <span class="sidebar-agent-runs-title">Agent Runs</span>
-                        <button id="refreshAgentRunsButton" class="sidebar-agent-runs-refresh" title="Refresh agent runs">
-                            <i data-lucide="refresh-cw"></i>
-                        </button>
-                    </div>
-                    <div id="agentRunsList" class="sidebar-agent-runs-list"></div>
-                </div>
                 <button id="dashboardButton" class="sidebar-footer-button" title="Usage Dashboard">
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -5679,43 +5534,6 @@ body {
             <div id="inputArea">
                 <div id="slashCommandPopup"></div>
                 <input type="file" id="fileInput" accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.html,.css,.sql,.sh,.yml,.yaml,.xml,.log,.csv" multiple style="display: none;">
-                <div id="agentCapabilitiesStrip" data-expanded="false" hidden>
-                    <button id="agentCapabilitiesToggle" class="agent-capabilities-header" aria-expanded="false" title="Show or hide agent controls">
-                        <div class="agent-capabilities-copy">
-                            <div class="agent-capabilities-title"><i data-lucide="bot"></i><span>Agent controls</span></div>
-                            <div id="agentCapabilitiesSummary" class="agent-capabilities-summary">Research Auto · Memory Inject · Skills Auto</div>
-                        </div>
-                        <span class="agent-capabilities-toggle-icon"><i data-lucide="chevron-down"></i></span>
-                    </button>
-                    <div id="agentCapabilitiesBody">
-                        <div class="agent-capability-groups">
-                            <div class="agent-capability-group">
-                                <span class="agent-capability-label">Research</span>
-                                <div id="agentResearchModeControl" class="agent-segmented-control">
-                                    <button class="agent-segmented-button" data-value="off">Off</button>
-                                    <button class="agent-segmented-button" data-value="web">Web</button>
-                                    <button class="agent-segmented-button" data-value="deep">Deep</button>
-                                    <button class="agent-segmented-button" data-value="auto">Auto</button>
-                                </div>
-                            </div>
-                            <div class="agent-capability-group">
-                                <span class="agent-capability-label">Memory</span>
-                                <div id="agentMemoryModeControl" class="agent-segmented-control">
-                                    <button class="agent-segmented-button" data-value="off">Off</button>
-                                    <button class="agent-segmented-button" data-value="inject">Inject</button>
-                                    <button class="agent-segmented-button" data-value="inject_and_extract">Inject + Save</button>
-                                </div>
-                            </div>
-                            <div class="agent-capability-group">
-                                <span class="agent-capability-label">Skills</span>
-                                <div id="agentSkillsModeControl" class="agent-segmented-control">
-                                    <button class="agent-segmented-button" data-value="auto">Auto</button>
-                                    <button class="agent-segmented-button" data-value="manual">Manual</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
                 <div id="inputCard">
                     <div id="messageInputWrapper">
                         <textarea id="messageInput" placeholder="Ask anything..." rows="1" autofocus></textarea>
@@ -5728,6 +5546,51 @@ body {
                             <button id="micButton" class="input-icon-button" title="Voice Input">
                                 <i data-lucide="mic"></i>
                             </button>
+                            <div id="agentInlineControls">
+                                <div class="agent-ctrl-divider"></div>
+                                <!-- Research -->
+                                <div class="agent-ctrl">
+                                    <button class="agent-ctrl-btn research-active" id="agentResearchBtn" title="Research: controls web search during agent tasks">
+                                        <i data-lucide="globe"></i>
+                                        <span class="agent-ctrl-name">Research</span>
+                                        <span class="agent-ctrl-value" id="agentResearchValue">Auto</span>
+                                        <i data-lucide="chevron-down" class="agent-ctrl-chevron"></i>
+                                    </button>
+                                    <div class="agent-ctrl-dropdown" id="agentResearchDropdown">
+                                        <button class="agent-ctrl-option" data-value="off"><span class="opt-dot"></span>Off</button>
+                                        <button class="agent-ctrl-option" data-value="web"><span class="opt-dot"></span>Web</button>
+                                        <button class="agent-ctrl-option" data-value="deep"><span class="opt-dot"></span>Deep</button>
+                                        <button class="agent-ctrl-option selected" data-value="auto"><span class="opt-dot"></span>Auto</button>
+                                    </div>
+                                </div>
+                                <!-- Memory -->
+                                <div class="agent-ctrl">
+                                    <button class="agent-ctrl-btn memory-active" id="agentMemoryBtn" title="Memory: controls how agent reads and saves memories">
+                                        <i data-lucide="brain"></i>
+                                        <span class="agent-ctrl-name">Memory</span>
+                                        <span class="agent-ctrl-value" id="agentMemoryValue">Inject</span>
+                                        <i data-lucide="chevron-down" class="agent-ctrl-chevron"></i>
+                                    </button>
+                                    <div class="agent-ctrl-dropdown" id="agentMemoryDropdown">
+                                        <button class="agent-ctrl-option" data-value="off"><span class="opt-dot"></span>Off</button>
+                                        <button class="agent-ctrl-option selected" data-value="inject"><span class="opt-dot"></span>Inject</button>
+                                        <button class="agent-ctrl-option" data-value="inject_and_extract"><span class="opt-dot"></span>Inject + Save</button>
+                                    </div>
+                                </div>
+                                <!-- Skills -->
+                                <div class="agent-ctrl">
+                                    <button class="agent-ctrl-btn skills-active" id="agentSkillsBtn" title="Skills: controls how agent selects and runs skills">
+                                        <i data-lucide="zap"></i>
+                                        <span class="agent-ctrl-name">Skills</span>
+                                        <span class="agent-ctrl-value" id="agentSkillsValue">Auto</span>
+                                        <i data-lucide="chevron-down" class="agent-ctrl-chevron"></i>
+                                    </button>
+                                    <div class="agent-ctrl-dropdown" id="agentSkillsDropdown">
+                                        <button class="agent-ctrl-option selected" data-value="auto"><span class="opt-dot"></span>Auto</button>
+                                        <button class="agent-ctrl-option" data-value="manual"><span class="opt-dot"></span>Manual</button>
+                                    </div>
+                                </div>
+                            </div>
                             <button id="webSearchButton" class="input-icon-button" title="Web Search: OFF">
                                 <i data-lucide="globe"></i>
                             </button>

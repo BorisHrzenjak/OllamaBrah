@@ -87,9 +87,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const conversationList = document.getElementById('conversationList');
     const conversationSearchInput = document.getElementById('conversationSearchInput');
     const clearSearchButton = document.getElementById('clearSearchButton');
-    const agentRunsPanel = document.getElementById('agentRunsPanel');
-    const agentRunsList = document.getElementById('agentRunsList');
-    const refreshAgentRunsButton = document.getElementById('refreshAgentRunsButton');
+
 
     // Settings modal elements
     const settingsButton = document.getElementById('settingsButton');
@@ -140,13 +138,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const webSearchButton = document.getElementById('webSearchButton');
     const chatWorkflowButton = document.getElementById('chatWorkflowButton');
     const agentWorkflowButton = document.getElementById('agentWorkflowButton');
-    const agentCapabilitiesStrip = document.getElementById('agentCapabilitiesStrip');
-    const agentCapabilitiesToggle = document.getElementById('agentCapabilitiesToggle');
-    const agentCapabilitiesSummary = document.getElementById('agentCapabilitiesSummary');
-    const agentCapabilitiesBody = document.getElementById('agentCapabilitiesBody');
-    const agentResearchModeControl = document.getElementById('agentResearchModeControl');
-    const agentMemoryModeControl = document.getElementById('agentMemoryModeControl');
-    const agentSkillsModeControl = document.getElementById('agentSkillsModeControl');
+
 
     const CHAT_WORKFLOW_MODE_KEY = 'chatWorkflowMode';
     const AGENT_RESEARCH_MODE_KEY = 'agentResearchMode';
@@ -159,7 +151,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     let agentResearchMode = 'auto';
     let agentMemoryMode = 'inject';
     let agentSkillsMode = 'auto';
-    let agentCapabilitiesExpanded = false;
 
     // Slash command state
     const SLASH_COMMANDS_KEY = 'slashCommands';
@@ -206,13 +197,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }).catch(err => console.warn('[Workflow] Failed to persist workflow state:', err));
     }
 
-    function updateSegmentedControl(control, activeValue) {
-        if (!control) return;
-        control.querySelectorAll('[data-value]').forEach(button => {
-            button.classList.toggle('active', button.dataset.value === activeValue);
-        });
-    }
-
     function formatCapabilityLabel(value) {
         const labels = {
             off: 'Off',
@@ -224,23 +208,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             manual: 'Manual',
         };
         return labels[value] || value;
-    }
-
-    function updateAgentCapabilitiesSummary() {
-        if (!agentCapabilitiesSummary) return;
-        agentCapabilitiesSummary.textContent = `Research ${formatCapabilityLabel(agentResearchMode)} · Memory ${formatCapabilityLabel(agentMemoryMode)} · Skills ${formatCapabilityLabel(agentSkillsMode)}`;
-    }
-
-    function setAgentCapabilitiesExpanded(expanded) {
-        agentCapabilitiesExpanded = !!expanded;
-        if (!agentCapabilitiesStrip) return;
-        agentCapabilitiesStrip.dataset.expanded = agentCapabilitiesExpanded ? 'true' : 'false';
-        if (agentCapabilitiesToggle) {
-            agentCapabilitiesToggle.setAttribute('aria-expanded', agentCapabilitiesExpanded ? 'true' : 'false');
-        }
-        if (agentCapabilitiesBody) {
-            agentCapabilitiesBody.hidden = !agentCapabilitiesExpanded;
-        }
     }
 
     function setChatWebSearchEnabled(enabled, { persist = true } = {}) {
@@ -273,24 +240,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     function setAgentResearchMode(mode, { persist = true } = {}) {
         const allowed = ['off', 'web', 'deep', 'auto'];
         agentResearchMode = allowed.includes(mode) ? mode : 'auto';
-        updateSegmentedControl(agentResearchModeControl, agentResearchMode);
-        updateAgentCapabilitiesSummary();
+        refreshAgentCtrlBtn('agentResearchBtn', 'agentResearchDropdown', 'agentResearchValue', 'research-active', agentResearchMode, 'off');
         if (persist) persistWorkflowPreferences();
     }
 
     function setAgentMemoryMode(mode, { persist = true } = {}) {
         const allowed = ['off', 'inject', 'inject_and_extract'];
         agentMemoryMode = allowed.includes(mode) ? mode : 'inject';
-        updateSegmentedControl(agentMemoryModeControl, agentMemoryMode);
-        updateAgentCapabilitiesSummary();
+        refreshAgentCtrlBtn('agentMemoryBtn', 'agentMemoryDropdown', 'agentMemoryValue', 'memory-active', agentMemoryMode, 'off');
         if (persist) persistWorkflowPreferences();
     }
 
     function setAgentSkillsMode(mode, { persist = true } = {}) {
         const allowed = ['auto', 'manual'];
         agentSkillsMode = allowed.includes(mode) ? mode : 'auto';
-        updateSegmentedControl(agentSkillsModeControl, agentSkillsMode);
-        updateAgentCapabilitiesSummary();
+        refreshAgentCtrlBtn('agentSkillsBtn', 'agentSkillsDropdown', 'agentSkillsValue', 'skills-active', agentSkillsMode, null);
         if (persist) persistWorkflowPreferences();
     }
 
@@ -299,7 +263,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         agentModeEnabled = chatWorkflowMode === 'agent';
 
         if (inputArea) inputArea.dataset.workflowMode = chatWorkflowMode;
-        if (agentCapabilitiesStrip) agentCapabilitiesStrip.hidden = chatWorkflowMode !== 'agent';
 
         chatWorkflowButton?.classList.toggle('active', chatWorkflowMode === 'chat');
         agentWorkflowButton?.classList.toggle('active', chatWorkflowMode === 'agent');
@@ -340,22 +303,80 @@ document.addEventListener('DOMContentLoaded', async () => {
     memoryButton.addEventListener('click', () => setChatMemoryEnabled(!memoryEnabled));
     chatWorkflowButton?.addEventListener('click', () => setWorkflowMode('chat'));
     agentWorkflowButton?.addEventListener('click', () => setWorkflowMode('agent'));
-    agentCapabilitiesToggle?.addEventListener('click', () => setAgentCapabilitiesExpanded(!agentCapabilitiesExpanded));
-    agentResearchModeControl?.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-value]');
-        if (!button) return;
-        setAgentResearchMode(button.dataset.value);
+
+    // ─── Agent Inline Controls — icon-button dropdowns ───────────────────────
+    const agentCtrlConfigs = [
+        {
+            btnId: 'agentResearchBtn', dropId: 'agentResearchDropdown',
+            valueId: 'agentResearchValue', activeClass: 'research-active',
+            setter: (v) => setAgentResearchMode(v),
+        },
+        {
+            btnId: 'agentMemoryBtn', dropId: 'agentMemoryDropdown',
+            valueId: 'agentMemoryValue', activeClass: 'memory-active',
+            setter: (v) => setAgentMemoryMode(v),
+        },
+        {
+            btnId: 'agentSkillsBtn', dropId: 'agentSkillsDropdown',
+            valueId: 'agentSkillsValue', activeClass: 'skills-active',
+            setter: (v) => setAgentSkillsMode(v),
+        },
+    ];
+
+    function refreshAgentCtrlBtn(btnId, dropId, valueId, activeClass, value, offValue) {
+        const btn = document.getElementById(btnId);
+        const drop = document.getElementById(dropId);
+        const valEl = document.getElementById(valueId);
+        if (!btn) return;
+        if (valEl) valEl.textContent = formatCapabilityLabel(value);
+        btn.classList.toggle(activeClass, value !== offValue);
+        if (drop) {
+            drop.querySelectorAll('.agent-ctrl-option').forEach(opt => {
+                opt.classList.toggle('selected', opt.dataset.value === value);
+            });
+        }
+    }
+
+    function closeAllAgentDropdowns(exceptDropId) {
+        agentCtrlConfigs.forEach(cfg => {
+            if (cfg.dropId === exceptDropId) return;
+            const drop = document.getElementById(cfg.dropId);
+            const btn = document.getElementById(cfg.btnId);
+            if (drop) drop.classList.remove('open');
+            if (btn) btn.classList.remove('open');
+        });
+    }
+
+    agentCtrlConfigs.forEach(cfg => {
+        const btn = document.getElementById(cfg.btnId);
+        const drop = document.getElementById(cfg.dropId);
+        if (!btn || !drop) return;
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = drop.classList.contains('open');
+            closeAllAgentDropdowns(cfg.dropId);
+            if (!isOpen) {
+                const rect = btn.getBoundingClientRect();
+                const dropWidth = drop.offsetWidth || 134;
+                const left = Math.min(rect.left, window.innerWidth - dropWidth - 8);
+                drop.style.left = Math.max(8, left) + 'px';
+                drop.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+                drop.classList.add('open');
+                btn.classList.add('open');
+            }
+        });
+
+        drop.addEventListener('click', (e) => {
+            const opt = e.target.closest('[data-value]');
+            if (!opt) return;
+            cfg.setter(opt.dataset.value);
+            drop.classList.remove('open');
+            btn.classList.remove('open');
+        });
     });
-    agentMemoryModeControl?.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-value]');
-        if (!button) return;
-        setAgentMemoryMode(button.dataset.value);
-    });
-    agentSkillsModeControl?.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-value]');
-        if (!button) return;
-        setAgentSkillsMode(button.dataset.value);
-    });
+
+    document.addEventListener('click', () => closeAllAgentDropdowns(null));
 
     setChatWebSearchEnabled(false, { persist: false });
     setChatDeepResearchEnabled(false, { persist: false });
@@ -363,7 +384,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     setAgentResearchMode('auto', { persist: false });
     setAgentMemoryMode('inject', { persist: false });
     setAgentSkillsMode('auto', { persist: false });
-    setAgentCapabilitiesExpanded(false);
     setWorkflowMode('chat', { persist: false });
 
     async function loadWorkflowPreferences() {
@@ -385,95 +405,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         setAgentMemoryMode(stored[AGENT_MEMORY_MODE_KEY], { persist: false });
         setAgentSkillsMode(stored[AGENT_SKILLS_MODE_KEY], { persist: false });
         setWorkflowMode(stored[CHAT_WORKFLOW_MODE_KEY] || (stored.agentModeEnabled ? 'agent' : 'chat'), { persist: false });
-    }
-
-    function formatAgentRunStatus(status) {
-        const labels = {
-            queued: 'Queued',
-            running: 'Running',
-            waiting_permission: 'Waiting',
-            paused: 'Paused',
-            completed: 'Completed',
-            failed: 'Failed',
-            cancelled: 'Cancelled',
-        };
-        return labels[status] || status || 'Unknown';
-    }
-
-    function formatRelativeTime(timestamp) {
-        if (!timestamp) return '';
-        const deltaMs = Date.now() - timestamp;
-        const mins = Math.floor(deltaMs / 60000);
-        if (mins < 1) return 'just now';
-        if (mins < 60) return `${mins}m ago`;
-        const hours = Math.floor(mins / 60);
-        if (hours < 24) return `${hours}h ago`;
-        const days = Math.floor(hours / 24);
-        return `${days}d ago`;
-    }
-
-    function renderAgentRunsPanel() {
-        if (!agentRunsPanel || !agentRunsList) return;
-        agentRunsList.innerHTML = '';
-        const visibleRuns = recentAgentRuns.slice(0, 6);
-        if (!visibleRuns.length) {
-            const empty = document.createElement('div');
-            empty.className = 'sidebar-agent-run-empty';
-            empty.textContent = 'No recent agent runs yet.';
-            agentRunsList.appendChild(empty);
-            return;
-        }
-
-        visibleRuns.forEach(run => {
-            const item = document.createElement('div');
-            item.className = `sidebar-agent-run-item status-${run.status || 'unknown'}`;
-
-            const top = document.createElement('div');
-            top.className = 'sidebar-agent-run-top';
-
-            const status = document.createElement('div');
-            status.className = 'sidebar-agent-run-status';
-            status.innerHTML = `<span class="sidebar-agent-run-dot"></span><span>${formatAgentRunStatus(run.status)}</span>`;
-
-            const meta = document.createElement('div');
-            meta.className = 'sidebar-agent-run-meta';
-            meta.textContent = `${run.backend || 'ollama'} · ${formatRelativeTime(run.updatedAt)}`;
-
-            const actions = document.createElement('div');
-            actions.className = 'sidebar-agent-run-actions';
-
-            const openBtn = document.createElement('button');
-            openBtn.className = 'sidebar-agent-run-action';
-            openBtn.textContent = ['running', 'waiting_permission'].includes(run.status) ? 'Reconnect' : 'Replay';
-            openBtn.addEventListener('click', () => replayAgentRun(run));
-            actions.appendChild(openBtn);
-
-            if (['running', 'waiting_permission'].includes(run.status)) {
-                const cancelBtn = document.createElement('button');
-                cancelBtn.className = 'sidebar-agent-run-action danger';
-                cancelBtn.textContent = 'Cancel';
-                cancelBtn.addEventListener('click', async () => {
-                    await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(run.id)}/cancel`, { method: 'POST' }).catch(() => {});
-                    await refreshAgentRunsPanelData();
-                });
-                actions.appendChild(cancelBtn);
-            }
-
-            top.append(status, actions);
-            item.append(top, meta);
-            agentRunsList.appendChild(item);
-        });
-    }
-
-    async function refreshAgentRunsPanelData() {
-        if (!agentRunsPanel) return;
-        try {
-            const response = await fetch(`${PROXY_BASE}/api/agent/runs?limit=12`);
-            recentAgentRuns = response.ok ? await response.json() : [];
-        } catch {
-            recentAgentRuns = [];
-        }
-        renderAgentRunsPanel();
     }
 
     async function maybeReconnectActiveAgentRun() {
@@ -665,7 +596,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const label = !approved ? '✗ Denied' : scope === 'session' ? '✓ Allowed (session)' : scope === 'path' ? '✓ Allowed (folder)' : '✓ Allowed';
                     btnRow.innerHTML = `<span class="agent-perm-result">${label}</span>`;
                     countdownEl.remove();
-                    refreshAgentRunsPanelData();
                 } catch (e) {
                     console.warn('[Agent] Permission POST failed:', e);
                     [allowBtn, sessionBtn, pathBtn, denyBtn].forEach(b => b.disabled = false);
@@ -697,7 +627,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const label = !approved ? '✗ Denied' : scope === 'session' ? '✓ Allowed (session)' : '✓ Allowed';
                     btnRow.innerHTML = `<span class="agent-perm-result">${label}</span>`;
                     countdownEl.remove();
-                    refreshAgentRunsPanelData();
                 } catch (e) {
                     console.warn('[Agent] Permission POST failed:', e);
                     [allowBtn, sessionBtn, denyBtn].forEach(b => b.disabled = false);
@@ -809,7 +738,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const contReader = streamResp.body.getReader();
                         const contResult = await handleAgentStream(botTextElement, botMessageDiv, contReader, { ...handlers, runId: resumedRunId });
                         if (contResult?.text) currentContentText = contResult.text;
-                        await refreshAgentRunsPanelData();
                     } catch (e) {
                         const errDiv = document.createElement('div');
                         errDiv.className = 'agent-error';
@@ -1048,7 +976,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentAbortController = null;
             currentAgentRunId = null;
             isStreaming = false;
-            refreshAgentRunsPanelData();
         }
     }
 
@@ -1279,7 +1206,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     let isUserScrolledUp = false;
     let scrollThreshold = 100; // pixels from bottom to consider "at bottom"
     let isStreaming = false;
-    let recentAgentRuns = [];
     let showFullHistory = false;
 
     // Smart scroll functions
@@ -3324,7 +3250,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Update context indicator
         await updateContextIndicator(messages, modelData.systemPrompt, modelData);
-        updateRegenerateButton();
+        await updateRegenerateButton();
     }
 
     async function startNewConversation(modelForNewChat = currentModelName) {
@@ -6075,7 +6001,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const runRecord = await runResponse.json();
                 currentConversation.activeAgentRunId = runRecord.id;
                 await saveModelChatState(currentModelName, modelData);
-                await refreshAgentRunsPanelData();
                 if (loadingIndicator) loadingIndicator.style.display = 'none';
                 contentHasStarted = true;
                 const agentResult = await streamAgentRun(runRecord.id, botTextElement, botMessageDiv, {
@@ -6094,14 +6019,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 sendButton.style.display = 'flex';
                 if (botMessageDiv) botMessageDiv.classList.remove('streaming');
 
-                if (agentFinalState === 'cancelled') {
-                    currentConversation.activeAgentRunId = null;
-                    await saveModelChatState(currentModelName, modelData);
-                    await refreshAgentRunsPanelData();
-                    return;
+                const wasCancelled = agentFinalState === 'cancelled';
+                const messageToSave = {
+                    role: 'assistant',
+                    content: finalText || (wasCancelled ? '*(Agent run cancelled.)*' : '*(Agent response — see steps above)*')
+                };
+                if (wasCancelled) {
+                    messageToSave.metadata = {
+                        ...(messageToSave.metadata || {}),
+                        agentRunState: 'cancelled',
+                        partial: !!finalText,
+                    };
                 }
-
-                const messageToSave = { role: 'assistant', content: finalText || '*(Agent response — see steps above)*' };
                 if (agentMemoryMeta?.used?.length) {
                     messageToSave.metadata = {
                         ...(messageToSave.metadata || {}),
@@ -6121,15 +6050,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                     addMemoryUsageToMessage(botMessageDiv, agentMemoryMeta.used);
                 }
 
+                if (wasCancelled && botTextElement && !finalText) {
+                    botTextElement.innerHTML = '';
+                    botTextElement.appendChild(renderMarkdownWithThinking(messageToSave.content, false));
+                }
+
                 // Auto-extract memories from agent exchange (fire-and-forget)
-                if (memoryPolicy === 'inject_and_extract' && lastUserMsg && finalText) {
+                if (!wasCancelled && memoryPolicy === 'inject_and_extract' && lastUserMsg && finalText) {
                     triggerMemoryExtraction(lastUserMsg.content, finalText);
                 }
 
                 currentConversation.activeAgentRunId = null;
 
                 await updateContextIndicator(currentConversation.messages, modelData.systemPrompt, modelData);
-                await refreshAgentRunsPanelData();
                 return;
             }
             // --- End Agent Mode Branch ---
@@ -6451,9 +6384,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             await saveModelChatState(currentModelName, modelData);
             populateConversationSidebar(currentModelName, modelData);
-            await refreshAgentRunsPanelData();
             console.log('UI unlocked, state saved, sidebar repopulated in finally block.');
-            updateRegenerateButton();
+            await updateRegenerateButton();
         }
     }
 
@@ -6634,30 +6566,48 @@ document.addEventListener('DOMContentLoaded', async () => {
         await triggerLLMCompletion(modelData);
     }
 
-    async function regenerateLastResponse() {
+    async function regenerateResponseAtIndex(messageIndex) {
         if (isStreaming) return;
         let modelData = await loadModelChatState(currentModelName);
         const activeConvId = modelData.activeConversationId;
         if (!activeConvId || !modelData.conversations[activeConvId]) return;
         const conversation = modelData.conversations[activeConvId];
         const messages = conversation.messages;
-        if (messages.length === 0 || messages[messages.length - 1].role !== 'assistant') return;
+        if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex >= messages.length) return;
+        if (messages[messageIndex].role !== 'assistant') return;
 
-        const previousVersions = getAllMessageVersions(messages[messages.length - 1]);
+        const previousVersions = getAllMessageVersions(messages[messageIndex]);
 
-        conversation.messages = messages.slice(0, messages.length - 1);
+        conversation.messages = messages.slice(0, messageIndex);
+        conversation.summary = getConversationSummary(conversation.messages);
         conversation.lastMessageTime = Date.now();
         await saveModelChatState(currentModelName, modelData);
-        displayConversationMessages(modelData, activeConvId);
+        await displayConversationMessages(modelData, activeConvId);
         await triggerLLMCompletion(modelData, { alternatives: previousVersions });
     }
 
-    function updateRegenerateButton() {
+    async function regenerateLastResponse() {
+        if (isStreaming) return;
+        const modelData = await loadModelChatState(currentModelName);
+        const activeConvId = modelData.activeConversationId;
+        if (!activeConvId || !modelData.conversations[activeConvId]) return;
+        const conversation = modelData.conversations[activeConvId];
+        const lastAssistantIndex = conversation.messages.length - 1;
+        await regenerateResponseAtIndex(lastAssistantIndex);
+    }
+
+    async function updateRegenerateButton() {
         document.querySelectorAll('.regenerate-button').forEach(btn => btn.remove());
         if (isStreaming) return;
-        const allBotMessages = chatContainer.querySelectorAll('.bot-message');
-        if (allBotMessages.length === 0) return;
-        const lastBotMessage = allBotMessages[allBotMessages.length - 1];
+        const modelData = await loadModelChatState(currentModelName).catch(() => null);
+        const activeConvId = modelData?.activeConversationId;
+        const conversation = activeConvId ? modelData?.conversations?.[activeConvId] : null;
+        const messages = conversation?.messages || [];
+        const lastMessageIndex = messages.length - 1;
+        if (lastMessageIndex < 0 || messages[lastMessageIndex]?.role !== 'assistant') return;
+
+        const lastBotMessage = chatContainer.querySelector(`.bot-message[data-message-index="${lastMessageIndex}"]`);
+        if (!lastBotMessage) return;
         const actionsDiv = lastBotMessage.querySelector('.message-actions');
         if (!actionsDiv) return;
 
@@ -6667,7 +6617,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         regenBtn.appendChild(createLucideIcon('refresh-cw', 16));
         regenBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            regenerateLastResponse();
+            regenerateResponseAtIndex(lastMessageIndex);
         });
         actionsDiv.insertBefore(regenBtn, actionsDiv.firstChild);
     }
@@ -7090,7 +7040,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Start persistent server status indicator
         startServerStatusPoll();
-        await refreshAgentRunsPanelData();
         await maybeReconnectActiveAgentRun();
     }
 
@@ -7175,7 +7124,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Event Listeners
     sendButton.addEventListener('click', () => { pushToHistory(messageInput.value); sendMessageToOllama(messageInput.value); });
-    refreshAgentRunsButton?.addEventListener('click', () => { refreshAgentRunsPanelData(); });
     if (stopButton) {
         stopButton.addEventListener('click', async () => {
             if (currentAgentRunId) {
