@@ -1612,9 +1612,10 @@ function emitRunEvent(runId, payload) {
     }
 }
 
-function createRunWriter(runId) {
+function createRunWriter(runId, options = {}) {
     return {
         runId,
+        yoloMode: options.yoloMode === true,
         writableEnded: false,
         destroyed: false,
         write(chunk) {
@@ -1655,16 +1656,19 @@ function attachRunStream(runId, res) {
 }
 
 async function executeDurableAgentRun(runId, body = {}) {
-    const { messages: initialMessages, model, backend = 'ollama', maxSteps, continueFrom, _skillHint, workspaceRoot } = body;
+    const { messages: initialMessages, model, backend = 'ollama', maxSteps, continueFrom, _skillHint, workspaceRoot, yoloMode } = body;
     const steps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || getAgentMaxSteps()));
     const tools = getEnabledTools();
     const sessionPermissions = new Map();
     const toolCache = createToolCache();
-    const writer = createRunWriter(runId);
+    const writer = createRunWriter(runId, { yoloMode: yoloMode === true });
     let previousStepUsedTools = false;
     let messages = continueFrom ? [...continueFrom] : [...(initialMessages || [])];
 
     setRunStatus(runId, 'running', { maxSteps: steps, latestMessages: messages, pendingPermission: null, pendingPlan: null, approvedPlans: [], lastError: null });
+    if (yoloMode === true) {
+        writer.write(JSON.stringify({ type: 'yolo_mode', enabled: true, text: 'YOLO mode enabled: plan and permission prompts will be auto-approved for this run.' }));
+    }
 
     if (!continueFrom) {
         const _platform = os.platform();

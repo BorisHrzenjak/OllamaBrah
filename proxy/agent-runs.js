@@ -37,6 +37,7 @@ function createRun(body = {}) {
         backend: body.backend || 'ollama',
         maxSteps: body.maxSteps || null,
         workspaceRoot: body.workspaceRoot || null,
+        yoloMode: body.yoloMode === true,
         pendingPermission: null,
         pendingPlan: null,
         approvedPlans: [],

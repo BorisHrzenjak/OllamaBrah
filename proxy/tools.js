@@ -642,6 +642,13 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
     if (perm === 'auto') return true;
     if (perm === 'disabled') return false;
 
+    if (res?.yoloMode === true) {
+        if (typeof res.write === 'function' && !res.writableEnded) {
+            res.write(JSON.stringify({ type: 'permission_auto_approved', tool, args, risk, mode: 'yolo' }) + '\n');
+        }
+        return true;
+    }
+
     // Check session-level grants before prompting the user
     if (sessionPermissions.has(tool)) return true;
     if (args && args.path) {
@@ -696,6 +703,13 @@ async function requestPlanApproval(res, plan, sessionPermissions) {
     if (!plan || !Array.isArray(plan.actions) || !plan.actions.length) return true;
     const sessionPlanKey = `plan:${stableHash(JSON.stringify(plan.actions.map(action => ({ tool: action.tool, files: action.files, commands: action.commands }))))}`;
     if (sessionPermissions.has(sessionPlanKey)) return true;
+
+    if (res?.yoloMode === true) {
+        if (typeof res.write === 'function' && !res.writableEnded) {
+            res.write(JSON.stringify({ type: 'plan_auto_approved', approved: true, scope: 'yolo', plan, mode: 'yolo' }) + '\n');
+        }
+        return true;
+    }
 
     const id = generatePermissionId();
     res.write(JSON.stringify({ type: 'plan_request', id, plan, runId: res.runId || null }) + '\n');

@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.16.0
+## What's New - v1.17.0
 
-- **Phase 5 workspace UX landed** — Agent Mode now shows the selected workspace in the composer, runs shell commands from that workspace by default, and keeps file tools scoped to the active project root
-- **Run output is split into workspace-style panels** — each agent run now groups reasoning/timeline events, file edits, diff previews, shell output, and a final summary instead of burying everything in one transcript stream
-- **Changed files stay visible during the run** — durable runs now emit live `files_touched` updates so the UI can keep the current run's changed-files panel and final summary in sync
+- **YOLO mode for agent runs** — Agent Mode now has a prominent `YOLO` checkbox that skips plan approval and tool permission prompts for the current run after an explicit warning
+- **YOLO stays visible in run history** — runs persist whether YOLO mode was enabled, and the timeline/final summary show when risky actions were auto-approved instead of manually confirmed
+- **Safety boundaries still apply** — blocked paths, allowed-directory limits, and workspace-root guardrails remain active even when YOLO mode is enabled
 
 ---
 
@@ -69,6 +69,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Durable agent run APIs** — persisted run metadata plus event log streaming, cancel, and resume endpoints for longer-lived agent workflows
 - **Renderer run recovery** — the desktop UI can reconnect to active runs, replay recent runs, and resume from max-step limits through the durable run API
 - **Workspace-aware run panels** — Agent workflow shows the active workspace, a dedicated changed-files panel, diff previews when patches are available, shell output separated from chat text, and a per-run final summary
+- **Optional YOLO mode** — Agent workflow can skip permission and plan prompts for a run while still keeping blocked-path and workspace safety boundaries in place
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
 - Semantic memory search in the memory manager, with provenance like source type, extraction mode, and linked conversation/message metadata
 - Auto-extracted memories save directly with provenance and deduplication, and replies can show which memories were used in context

@@ -144,6 +144,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const AGENT_RESEARCH_MODE_KEY = 'agentResearchMode';
     const AGENT_MEMORY_MODE_KEY = 'agentMemoryMode';
     const AGENT_SKILLS_MODE_KEY = 'agentSkillsMode';
+    const AGENT_YOLO_MODE_KEY = 'agentYoloMode';
 
     // Web search state
     let webSearchEnabled = false;
@@ -151,6 +152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let agentResearchMode = 'auto';
     let agentMemoryMode = 'inject';
     let agentSkillsMode = 'auto';
+    let agentYoloMode = false;
 
     // Slash command state
     const SLASH_COMMANDS_KEY = 'slashCommands';
@@ -194,6 +196,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             [AGENT_RESEARCH_MODE_KEY]: agentResearchMode,
             [AGENT_MEMORY_MODE_KEY]: agentMemoryMode,
             [AGENT_SKILLS_MODE_KEY]: agentSkillsMode,
+            [AGENT_YOLO_MODE_KEY]: agentYoloMode,
         }).catch(err => console.warn('[Workflow] Failed to persist workflow state:', err));
     }
 
@@ -255,6 +258,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const allowed = ['auto', 'manual'];
         agentSkillsMode = allowed.includes(mode) ? mode : 'auto';
         refreshAgentCtrlBtn('agentSkillsBtn', 'agentSkillsDropdown', 'agentSkillsValue', 'skills-active', agentSkillsMode, null);
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setAgentYoloMode(enabled, { persist = true } = {}) {
+        agentYoloMode = !!enabled;
+        const settingsToggle = document.getElementById('agentYoloSettingsToggle');
+        if (settingsToggle) settingsToggle.checked = agentYoloMode;
         if (persist) persistWorkflowPreferences();
     }
 
@@ -520,6 +530,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setAgentResearchMode('auto', { persist: false });
     setAgentMemoryMode('inject', { persist: false });
     setAgentSkillsMode('auto', { persist: false });
+    setAgentYoloMode(false, { persist: false });
     setWorkflowMode('chat', { persist: false });
 
     async function loadWorkflowPreferences() {
@@ -532,6 +543,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             [AGENT_RESEARCH_MODE_KEY]: 'auto',
             [AGENT_MEMORY_MODE_KEY]: 'inject',
             [AGENT_SKILLS_MODE_KEY]: 'auto',
+            [AGENT_YOLO_MODE_KEY]: false,
         });
 
         setChatWebSearchEnabled(!!stored.webSearchEnabled, { persist: false });
@@ -540,6 +552,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         setAgentResearchMode(stored[AGENT_RESEARCH_MODE_KEY], { persist: false });
         setAgentMemoryMode(stored[AGENT_MEMORY_MODE_KEY], { persist: false });
         setAgentSkillsMode(stored[AGENT_SKILLS_MODE_KEY], { persist: false });
+        setAgentYoloMode(!!stored[AGENT_YOLO_MODE_KEY], { persist: false });
         setWorkflowMode(stored[CHAT_WORKFLOW_MODE_KEY] || (stored.agentModeEnabled ? 'agent' : 'chat'), { persist: false });
     }
 
@@ -966,6 +979,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             root,
             sections,
             workspaceRoot: workspaceRoot || null,
+            yoloMode: false,
             touchedPaths: new Set(),
             touchedCard: null,
             finalSummaryCard: null,
@@ -995,6 +1009,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const lines = [
             `State: ${finalState || 'completed'}`,
             `Workspace: ${panels.workspaceRoot || 'Not set'}`,
+            `Approvals: ${panels.yoloMode ? 'YOLO (skip prompts)' : 'Standard prompts'}`,
             `Files touched: ${files.length}`,
         ];
         if (files.length) lines.push('', summarizeAgentPaths(files));
@@ -1028,6 +1043,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const onMemoryEvent = typeof handlers.onMemoryEvent === 'function' ? handlers.onMemoryEvent : null;
         const onContextBreakdown = typeof handlers.onContextBreakdown === 'function' ? handlers.onContextBreakdown : null;
         const panels = createAgentRunPanels(handlers.workspaceRoot || null);
+        panels.yoloMode = handlers.yoloMode === true;
 
         const queueToolBlock = (name, entry) => {
             const queue = pendingToolBlocks.get(name) || [];
@@ -1102,6 +1118,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             ...handlers,
                             runId: resumedRunId,
                             workspaceRoot: resumedRun?.run?.workspaceRoot || handlers.workspaceRoot || null,
+                            yoloMode: resumedRun?.run?.yoloMode === true,
                         });
                         if (contResult?.text) currentContentText = contResult.text;
                     } catch (e) {
@@ -1140,6 +1157,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     appendAgentSectionItem(panels.sections.timeline, createAgentRunCard('Status', chunk.text));
                     lastTimelineStatus = chunk.text;
                 }
+                return false;
+            }
+
+            if (chunk.type === 'yolo_mode') {
+                panels.yoloMode = chunk.enabled === true;
+                appendAgentSectionItem(panels.sections.timeline, createAgentRunCard('YOLO Mode', chunk.text || 'YOLO mode enabled for this run.', 'warning'));
                 return false;
             }
 
@@ -1244,6 +1267,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 note.innerHTML = `<span class="compress-icon">${chunk.approved ? '✓' : '✗'}</span><span>${chunk.approved ? 'Plan approved' : 'Plan rejected'}${chunk.plan?.summary ? `: ${chunk.plan.summary}` : ''}</span>`;
                 appendAgentSectionItem(panels.sections.timeline, note);
                 setLiveStatus(chunk.approved ? 'Plan approved. Continuing...' : 'Plan rejected.', chunk.approved ? 'working' : 'waiting');
+            }
+
+            if (chunk.type === 'plan_auto_approved') {
+                panels.yoloMode = true;
+                const note = document.createElement('div');
+                note.className = 'agent-context-compressed';
+                note.innerHTML = `<span class="compress-icon">⚠</span><span>YOLO auto-approved plan${chunk.plan?.summary ? `: ${chunk.plan.summary}` : ''}</span>`;
+                appendAgentSectionItem(panels.sections.timeline, note);
+                setLiveStatus('YOLO auto-approved the current plan. Continuing...');
+            }
+
+            if (chunk.type === 'permission_auto_approved') {
+                panels.yoloMode = true;
+                const note = document.createElement('div');
+                note.className = 'agent-context-compressed';
+                note.innerHTML = `<span class="compress-icon">⚠</span><span>YOLO auto-approved ${chunk.tool}</span>`;
+                appendAgentSectionItem(panels.sections.timeline, note);
+                setLiveStatus(`YOLO auto-approved ${chunk.tool}. Continuing...`);
             }
 
             if (chunk.type === 'files_touched') {
@@ -1385,6 +1426,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             const result = await streamAgentRun(run.id, botTextElement, botMessageDiv, {
                 onContextBreakdown: (breakdown) => { lastContextBreakdown = breakdown; },
                 workspaceRoot: run.workspaceRoot || null,
+                yoloMode: run.yoloMode === true,
             });
             if (persistResult && result?.text) {
                 const latest = await loadModelChatState(currentModelName);
@@ -6416,6 +6458,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                     backend: currentModelBackend,
                     maxSteps: configuredMaxSteps,
                     workspaceRoot: agentWorkspaceRoot || null,
+                    yoloMode: agentYoloMode === true,
                     _researchPolicy: researchPolicy,
                     _memoryPolicy: memoryPolicy,
                     _skillsPolicy: pendingSkillName ? 'manual' : getActiveSkillsPolicy()
@@ -6450,6 +6493,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                         lastContextBreakdown = breakdown;
                     },
                     workspaceRoot: runRecord.workspaceRoot || agentWorkspaceRoot || null,
+                    yoloMode: runRecord.yoloMode === true,
                 });
                 const finalText = agentResult?.text || '';
                 const agentMemoryMeta = agentResult?.memoryUsageMeta || null;
@@ -7825,8 +7869,10 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         // Max steps slider
         const slider = document.getElementById('agentMaxStepsSlider');
         const sliderVal = document.getElementById('agentMaxStepsValue');
+        const yoloToggle = document.getElementById('agentYoloSettingsToggle');
         if (slider) { slider.value = agentConfig.maxSteps; }
         if (sliderVal) sliderVal.textContent = agentConfig.maxSteps;
+        if (yoloToggle) yoloToggle.checked = !!agentYoloMode;
 
         // Tool permissions
         const permContainer = document.getElementById('agentToolPermissions');
@@ -7897,6 +7943,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
         const slider = document.getElementById('agentMaxStepsSlider');
         if (slider) agentConfig.maxSteps = parseInt(slider.value, 10);
+        const yoloToggle = document.getElementById('agentYoloSettingsToggle');
+        if (yoloToggle) setAgentYoloMode(yoloToggle.checked);
 
         const statusEl = document.getElementById('agentConfigStatus');
         try {
@@ -7932,6 +7980,20 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
         const saveBtn = document.getElementById('saveAgentConfig');
         if (saveBtn) saveBtn.addEventListener('click', saveAgentConfig);
+
+        const yoloToggle = document.getElementById('agentYoloSettingsToggle');
+        if (yoloToggle) {
+            yoloToggle.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    const approved = confirm('Enable YOLO mode by default?\n\nThis skips plan approval and tool permission prompts for agent runs. The agent may edit files and run commands without asking again. Blocked paths, disabled tools, allowed-directory limits, and workspace boundaries still apply.');
+                    if (!approved) {
+                        e.target.checked = false;
+                        return;
+                    }
+                }
+                setAgentYoloMode(e.target.checked, { persist: false });
+            });
+        }
 
         const addDirBtn = document.getElementById('agentAddAllowedDir');
         if (addDirBtn) {
@@ -10198,6 +10260,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                 agentResearchMode: typeof agentResearchMode !== 'undefined' ? agentResearchMode : 'auto',
                 agentMemoryMode: typeof agentMemoryMode !== 'undefined' ? agentMemoryMode : 'inject',
                 agentSkillsMode: typeof agentSkillsMode !== 'undefined' ? agentSkillsMode : 'auto',
+                agentYoloMode: typeof agentYoloMode !== 'undefined' ? agentYoloMode : false,
             };
         }
 
@@ -10229,6 +10292,9 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             }
             if (typeof state.agentSkillsMode !== 'undefined') {
                 setAgentSkillsMode(state.agentSkillsMode, { persist: false });
+            }
+            if (typeof state.agentYoloMode !== 'undefined') {
+                setAgentYoloMode(state.agentYoloMode, { persist: false });
             }
             if (typeof state.chatWorkflowMode !== 'undefined') {
                 setWorkflowMode(state.chatWorkflowMode, { persist: false });

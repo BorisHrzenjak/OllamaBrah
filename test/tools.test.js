@@ -7,6 +7,7 @@ const tools = require('../proxy/tools');
 
 let passed = 0;
 let failed = 0;
+const pendingAsyncTests = [];
 
 function test(name, fn) {
     try {
@@ -30,6 +31,10 @@ async function testAsync(name, fn) {
         console.log(`  ✗ ${name}`);
         console.log(`    ${err.message}`);
     }
+}
+
+function queueAsyncTest(name, fn) {
+    pendingAsyncTests.push(testAsync(name, fn));
 }
 
 const tmpDir = path.join(os.tmpdir(), `ollamabrah-test-${Date.now()}`);
@@ -321,6 +326,25 @@ test('validateShellCommandForWorkspace rejects absolute paths outside workspace'
     }, /outside the selected workspace/i);
 });
 
+queueAsyncTest('requestPermission auto-approves in yolo mode', async () => {
+    const events = [];
+    const fakeRes = { yoloMode: true, writableEnded: false, write: (line) => events.push(JSON.parse(String(line).trim())) };
+    const approved = await tools.requestPermission(fakeRes, 'runShell', { cmd: 'npm test' }, 'critical', new Map());
+    assert.strictEqual(approved, true);
+    assert(events.some(event => event.type === 'permission_auto_approved' && event.tool === 'runShell'));
+});
+
+queueAsyncTest('requestPlanApproval auto-approves in yolo mode', async () => {
+    const events = [];
+    const fakeRes = { yoloMode: true, writableEnded: false, write: (line) => events.push(JSON.parse(String(line).trim())) };
+    const approved = await tools.requestPlanApproval(fakeRes, {
+        summary: 'Run risky command',
+        actions: [{ tool: 'runShell', commands: ['npm test'] }],
+    }, new Map());
+    assert.strictEqual(approved, true);
+    assert(events.some(event => event.type === 'plan_auto_approved'));
+});
+
 test('writeFile returns a diff preview for completed edits', async () => {
     const workspace = path.join(tmpDir, 'workspace-diff');
     fs.mkdirSync(workspace, { recursive: true });
@@ -344,7 +368,8 @@ test('replaceInFile returns a diff preview for completed edits', async () => {
     assert(result.diffPreview.includes('+gamma'));
 });
 
-fs.rmSync(tmpDir, { recursive: true, force: true });
-
-console.log(`\nResults: ${passed} passed, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+Promise.allSettled(pendingAsyncTests).finally(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    console.log(`\nResults: ${passed} passed, ${failed} failed`);
+    process.exit(failed > 0 ? 1 : 0);
+});

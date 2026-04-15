@@ -6464,6 +6464,14 @@ body {
                         <p class="modal-description">Configure the coding and automation workflow: which tools the agent can use and what
                             permissions are required before each action.</p>
 
+                        <div class="llamacpp-field" style="margin-top:var(--space-sm)">
+                            <label class="llamacpp-field-label" style="display:flex;align-items:center;gap:8px">
+                                <input type="checkbox" id="agentYoloSettingsToggle">
+                                Enable YOLO mode by default
+                            </label>
+                            <p class="modal-description" style="margin:3px 0 0 22px">Skips plan approval and tool permission prompts for agent runs. Blocked paths, allowed-directory limits, disabled tools, and workspace boundaries still apply.</p>
+                        </div>
+
                         <div class="llamacpp-field">
                             <label class="llamacpp-field-label">Max Steps</label>
                             <div style="display:flex;align-items:center;gap:var(--space-sm)">
