@@ -8,10 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.9.9
+## What's New - v1.18.0
 
-- **Model Management now accepts pasted `ollama pull ...` and `ollama run ...` commands** - the app strips the CLI prefix and sends the actual model name to Ollama, avoiding the previous `400` failure
-- **Pulling models through the desktop UI is more forgiving** - you can paste from terminal docs or your shell history without manually editing the command first
+- **YOLO setting now persists correctly** — enabling YOLO in `Settings > Agent Mode` now survives app restarts instead of silently resetting
+- **Active agent progress stays visible near the bottom** — long runs now keep a bottom step/status strip updated so you can see current progress without scrolling back to the top of the response
+- **Run completion is clearer** — the UI no longer shows a run as finished before late buffered events land, and step-limit pauses are labeled as waiting for continuation instead of looking completed
 
 ---
 
@@ -56,9 +57,20 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Context meter showing token breakdown (system prompt / search / conversation)
 
 ### Input Modes
+- **Top-bar `Chat` / `Agent` workflow switcher** — quickly move between normal conversation and the coding/automation workflow
 - **Web search** — augment responses with live Tavily search results
 - **Deep research** — multi-step Exa research pipeline before answering
 - **Agent mode** — autonomous tool-use loop with step-by-step visualization, live in-progress status feedback between tool phases, configurable max steps and permissions, and support for web search, deep research, memory injection, and skill hints in a single run
+- **Agent capabilities strip** — in Agent workflow, pick research mode (`Off / Web / Deep / Auto`), memory mode (`Off / Inject / Inject + Save`), and skills mode (`Auto / Manual`)
+- **Coding-oriented agent tools** — targeted file range reads, codebase search, globbing, in-file replace, single-file patch application, and file system helpers for repo work
+- **Per-run tool cache** — search, glob, and directory results are cached per run and auto-invalidated on writes to avoid redundant rescans
+- **Agent run history** — sidebar shows past and active runs with status indicators and click-to-replay when in Agent mode
+- **Plan-first approvals** — risky shell and file-changing actions now require a plan approval step before execution
+- **Durable agent run APIs** — persisted run metadata plus event log streaming, cancel, and resume endpoints for longer-lived agent workflows
+- **Renderer run recovery** — the desktop UI can reconnect to active runs, replay recent runs, and resume from max-step limits through the durable run API
+- **Workspace-aware run panels** — Agent workflow shows the active workspace, a dedicated changed-files panel, diff previews when patches are available, shell output separated from chat text, and a per-run final summary
+- **Optional YOLO mode** — Agent workflow can skip permission and plan prompts for a run while still keeping blocked-path and workspace safety boundaries in place
+- **Persistent agent progress strip** — active runs keep the current step and status visible at the bottom of the response so long multi-step tasks are easier to monitor
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
 - Semantic memory search in the memory manager, with provenance like source type, extraction mode, and linked conversation/message metadata
 - Auto-extracted memories save directly with provenance and deduplication, and replies can show which memories were used in context
@@ -91,7 +103,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 | Add file | `Ctrl+I` |
 | Toggle web search | `Alt+W` |
 | Toggle deep research | `Alt+R` |
-| Toggle agent mode | `Alt+A` |
+| Toggle Agent workflow | `Alt+A` |
 | Toggle memory | `Ctrl+M` |
 
 ---
@@ -116,6 +128,11 @@ npm start
 ```
 
 > `electron-rebuild` is required because `better-sqlite3` is a native addon that must be compiled against Electron's bundled Node version. Skipping this step will cause a crash on startup.
+
+**Run tests**
+```bash
+npm test
+```
 
 **Build a distributable**
 ```bash

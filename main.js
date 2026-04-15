@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, session, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, session, dialog, clipboard } = require('electron');
 const path = require('path');
 const Database = require('better-sqlite3');
 const Store = require('electron-store');
@@ -132,6 +132,10 @@ function initStore() {
             deepResearchEnabled: false,
             agentModeEnabled: false,
             memoryEnabled: false,
+            chatWorkflowMode: 'chat',
+            agentResearchMode: 'auto',
+            agentMemoryMode: 'inject',
+            agentSkillsMode: 'auto',
             updateNotificationsEnabled: true,
             memoryAutoInject: false,
             memoryAutoExtract: false,
@@ -282,6 +286,10 @@ function registerIpcHandlers() {
             throw new Error('Invalid external URL');
         }
         await shell.openExternal(url);
+    });
+    ipcMain.handle('app:writeClipboard', async (_e, text) => {
+        clipboard.writeText(String(text || ''));
+        return true;
     });
 
     // Store
@@ -446,6 +454,11 @@ function registerIpcHandlers() {
 
     // Skills
     ipcMain.handle('skills:pickFolder', async () => {
+        const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+        return result.canceled ? null : result.filePaths[0];
+    });
+
+    ipcMain.handle('workspace:pickFolder', async () => {
         const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
         return result.canceled ? null : result.filePaths[0];
     });

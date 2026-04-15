@@ -978,11 +978,47 @@
             margin-left: var(--space-sm);
         }
 
+        #chatWorkflowSwitcher {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            padding: 3px;
+            margin-left: auto;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-subtle);
+            border-radius: 10px;
+        }
+
+        .workflow-switch-button {
+            min-width: 58px;
+            height: 28px;
+            padding: 0 12px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .workflow-switch-button:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .workflow-switch-button.active {
+            color: var(--text-primary);
+            background: linear-gradient(180deg, rgba(245, 166, 35, 0.22), rgba(245, 166, 35, 0.12));
+            box-shadow: inset 0 0 0 1px rgba(245, 166, 35, 0.16);
+        }
+
         #modelStatusGroup {
             display: flex;
             align-items: center;
             gap: 6px;
-            margin-left: auto;
             margin-right: var(--space-md);
         }
 
@@ -1524,6 +1560,207 @@
 
         #inputCard:focus-within {
             border-color: var(--accent);
+        }
+
+        #agentInlineControls {
+            display: none;
+            align-items: center;
+            gap: 2px;
+        }
+
+        #inputArea[data-workflow-mode="agent"] #agentInlineControls {
+            display: contents;
+        }
+
+        #agentWorkspaceBar {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 10px;
+            border-top: 1px solid var(--border-subtle);
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        #inputArea[data-workflow-mode="agent"] #agentWorkspaceBar {
+            display: flex;
+        }
+
+        #agentWorkspaceMeta {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        #agentWorkspaceLabel {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        #agentWorkspacePath {
+            font-size: var(--font-size-sm);
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+        }
+
+        .agent-workspace-btn {
+            flex-shrink: 0;
+            height: 30px;
+            padding: 0 10px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+
+        .agent-ctrl-divider {
+            width: 1px;
+            height: 18px;
+            background: var(--border-subtle);
+            margin: 0 4px;
+            flex-shrink: 0;
+        }
+
+        .agent-ctrl {
+            position: relative;
+        }
+
+        .agent-ctrl-btn {
+            height: 28px;
+            padding: 0 8px;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 7px;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all var(--transition);
+            white-space: nowrap;
+        }
+
+        .agent-ctrl-btn i {
+            width: 14px;
+            height: 14px;
+            flex-shrink: 0;
+        }
+
+        .agent-ctrl-chevron {
+            width: 10px !important;
+            height: 10px !important;
+            opacity: 0.45;
+            transition: transform var(--transition);
+        }
+
+        .agent-ctrl-btn.open .agent-ctrl-chevron {
+            transform: rotate(180deg);
+        }
+
+        .agent-ctrl-name {
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .agent-ctrl-value {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 1px 5px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.07);
+            opacity: 0.8;
+        }
+
+        .agent-ctrl-btn:hover {
+            background: var(--bg-quaternary);
+            color: var(--text-secondary);
+        }
+
+        .agent-ctrl-btn.research-active {
+            color: var(--accent);
+            background: var(--accent-subtle);
+            border-color: rgba(245, 166, 35, 0.18);
+        }
+
+        .agent-ctrl-btn.memory-active {
+            color: #10b981;
+            background: rgba(16, 185, 129, 0.1);
+            border-color: rgba(16, 185, 129, 0.18);
+        }
+
+        .agent-ctrl-btn.skills-active {
+            color: #8b5cf6;
+            background: rgba(139, 92, 246, 0.1);
+            border-color: rgba(139, 92, 246, 0.18);
+        }
+
+        .agent-ctrl-dropdown {
+            position: fixed;
+            z-index: 9999;
+            min-width: 134px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 4px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+            display: none;
+            flex-direction: column;
+            gap: 1px;
+        }
+
+        .agent-ctrl-dropdown.open {
+            display: flex;
+        }
+
+        .agent-ctrl-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            cursor: pointer;
+            background: none;
+            border: none;
+            width: 100%;
+            text-align: left;
+            transition: background var(--transition), color var(--transition);
+        }
+
+        .agent-ctrl-option:hover {
+            background: var(--bg-quaternary);
+            color: var(--text-primary);
+        }
+
+        .agent-ctrl-option.selected {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .opt-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: var(--border);
+        }
+
+        .agent-ctrl-option.selected .opt-dot {
+            background: currentColor;
+        }
+
+        #inputArea[data-workflow-mode="agent"] #inputCard {
+            border-color: rgba(245, 166, 35, 0.24);
+            box-shadow: inset 0 1px 0 rgba(245, 166, 35, 0.04);
         }
 
         #inputToolbar {
@@ -3700,11 +3937,146 @@
             margin: 0 0 var(--space-sm) 0;
         }
 
+        /* Agent Run History */
+        #agentRunHistory {
+            display: none;
+            flex-direction: column;
+            border-top: 1px solid var(--border-subtle);
+            max-height: 40%;
+            min-height: 0;
+        }
+
+        #conversationSidebar[data-show-runs="true"] #agentRunHistory {
+            display: flex;
+        }
+
+        #agentRunHistoryHeader {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        #agentRunHistoryHeader:hover {
+            color: var(--text-primary);
+        }
+
+        #agentRunHistoryToggle {
+            display: flex;
+            align-items: center;
+            transition: transform var(--transition);
+            flex-shrink: 0;
+        }
+
+        #agentRunHistoryHeader > span:nth-child(2) {
+            flex: 1;
+        }
+
+        #agentRunHistory.collapsed #agentRunHistoryToggle {
+            transform: rotate(-90deg);
+        }
+
+        #agentRunHistory.collapsed #agentRunHistoryList {
+            display: none;
+        }
+
+        #agentRunHistoryRefresh {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            transition: color var(--transition);
+        }
+
+        #agentRunHistoryRefresh:hover {
+            color: var(--text-primary);
+        }
+
+        #agentRunHistoryList {
+            overflow-y: auto;
+            flex: 1;
+            min-height: 0;
+            padding: 0 6px 6px;
+        }
+
+        .agent-run-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: var(--font-size-sm);
+            color: var(--text-secondary);
+            transition: background-color var(--transition);
+            position: relative;
+        }
+
+        .agent-run-item:hover {
+            background-color: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .agent-run-status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .agent-run-status-dot.completed { background-color: #22c55e; }
+        .agent-run-status-dot.running { background-color: var(--accent); animation: pulse-dot 1.5s infinite; }
+        .agent-run-status-dot.waiting_permission { background-color: #eab308; animation: pulse-dot 1.5s infinite; }
+        .agent-run-status-dot.failed { background-color: #ef4444; }
+        .agent-run-status-dot.cancelled { background-color: var(--text-muted); }
+        .agent-run-status-dot.queued { background-color: var(--text-muted); }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .agent-run-label {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .agent-run-time {
+            font-size: 10px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .agent-run-empty {
+            padding: 12px;
+            text-align: center;
+            font-size: var(--font-size-sm);
+            color: var(--text-muted);
+        }
+
         /* Sidebar Footer */
         #sidebarFooter {
             padding: var(--space-md);
             border-top: 1px solid var(--border);
             flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
         }
 
         .sidebar-footer-button {
@@ -4664,6 +5036,43 @@
             animation-duration: 0.5s;
         }
 
+        .agent-bottom-progress {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-top: 10px;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: color-mix(in srgb, var(--bg-tertiary) 88%, transparent);
+            font-size: var(--font-size-xs);
+        }
+
+        .agent-bottom-progress.visible {
+            display: flex;
+        }
+
+        .agent-bottom-progress.waiting {
+            border-color: color-mix(in srgb, #f59e0b 35%, var(--border));
+        }
+
+        .agent-bottom-progress.done {
+            border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+        }
+
+        .agent-bottom-progress-step {
+            color: var(--text-primary);
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .agent-bottom-progress-status {
+            color: var(--text-secondary);
+            text-align: right;
+            flex: 1;
+        }
+
         @keyframes agentStatusPulse {
             0% {
                 transform: scale(0.9);
@@ -4765,6 +5174,84 @@
 
         .agent-content-block {
             margin: 4px 0;
+        }
+
+        .agent-run-sections {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .agent-run-section {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            background: color-mix(in srgb, var(--bg-secondary) 82%, transparent);
+            overflow: hidden;
+        }
+
+        .agent-run-section-header {
+            padding: 10px 12px 8px 12px;
+            border-bottom: 1px solid var(--border-subtle);
+            background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent);
+        }
+
+        .agent-run-section-title {
+            font-size: var(--font-size-sm);
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .agent-run-section-description {
+            margin-top: 2px;
+            font-size: var(--font-size-xs);
+            color: var(--text-muted);
+            word-break: break-word;
+        }
+
+        .agent-run-section-body {
+            padding: 10px 12px 12px 12px;
+        }
+
+        .agent-run-section-body > * + * {
+            margin-top: 8px;
+        }
+
+        .agent-run-card {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-tertiary);
+            padding: 8px 10px;
+        }
+
+        .agent-run-card-success {
+            border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+        }
+
+        .agent-run-card-warning {
+            border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+        }
+
+        .agent-run-card-error {
+            border-color: color-mix(in srgb, var(--error-text) 45%, var(--border));
+        }
+
+        .agent-run-card-title {
+            font-size: var(--font-size-xs);
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .agent-run-card-body {
+            margin: 0;
+            font-size: var(--font-size-xs);
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 260px;
+            overflow-y: auto;
+            font-family: inherit;
         }
 
         .agent-continue-row {
@@ -5273,6 +5760,18 @@ body {
             </div>
             <div id="tagFilterBar"></div>
             <div id="conversationList"></div>
+            <div id="agentRunHistory">
+                <div id="agentRunHistoryHeader">
+                    <span id="agentRunHistoryToggle" title="Collapse run history">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    </span>
+                    <span>Agent Runs</span>
+                    <button id="agentRunHistoryRefresh" title="Refresh run list">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+                    </button>
+                </div>
+                <div id="agentRunHistoryList"></div>
+            </div>
             <div id="sidebarFooter">
                 <button id="dashboardButton" class="sidebar-footer-button" title="Usage Dashboard">
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
@@ -5295,6 +5794,10 @@ body {
                 </button>
                 <h1>Ollama<span style="color:var(--accent)">Brah</span></h1>
                 <span id="appVersion" class="app-version"></span>
+                <div id="chatWorkflowSwitcher" aria-label="Conversation workflow">
+                    <button id="chatWorkflowButton" class="workflow-switch-button active" title="Use standard chat mode">Chat</button>
+                    <button id="agentWorkflowButton" class="workflow-switch-button" title="Use agent mode for coding and automation">Agent</button>
+                </div>
                 <div id="modelStatusGroup">
                     <div id="modelNameDisplay">Loading...</div>
                     <span id="personaBadge" class="persona-badge" style="display: none;" title="Active persona"></span>
@@ -5340,7 +5843,7 @@ body {
                 <input type="file" id="fileInput" accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.jsx,.tsx,.json,.html,.css,.sql,.sh,.yml,.yaml,.xml,.log,.csv" multiple style="display: none;">
                 <div id="inputCard">
                     <div id="messageInputWrapper">
-                        <textarea id="messageInput" placeholder="Message..." rows="1" autofocus></textarea>
+                        <textarea id="messageInput" placeholder="Ask anything..." rows="1" autofocus></textarea>
                     </div>
                     <div id="inputToolbar">
                         <div id="inputToolsLeft">
@@ -5350,6 +5853,51 @@ body {
                             <button id="micButton" class="input-icon-button" title="Voice Input">
                                 <i data-lucide="mic"></i>
                             </button>
+                            <div id="agentInlineControls">
+                                <div class="agent-ctrl-divider"></div>
+                                <!-- Research -->
+                                <div class="agent-ctrl">
+                                    <button class="agent-ctrl-btn research-active" id="agentResearchBtn" title="Research: controls web search during agent tasks">
+                                        <i data-lucide="globe"></i>
+                                        <span class="agent-ctrl-name">Research</span>
+                                        <span class="agent-ctrl-value" id="agentResearchValue">Auto</span>
+                                        <i data-lucide="chevron-down" class="agent-ctrl-chevron"></i>
+                                    </button>
+                                    <div class="agent-ctrl-dropdown" id="agentResearchDropdown">
+                                        <button class="agent-ctrl-option" data-value="off"><span class="opt-dot"></span>Off</button>
+                                        <button class="agent-ctrl-option" data-value="web"><span class="opt-dot"></span>Web</button>
+                                        <button class="agent-ctrl-option" data-value="deep"><span class="opt-dot"></span>Deep</button>
+                                        <button class="agent-ctrl-option selected" data-value="auto"><span class="opt-dot"></span>Auto</button>
+                                    </div>
+                                </div>
+                                <!-- Memory -->
+                                <div class="agent-ctrl">
+                                    <button class="agent-ctrl-btn memory-active" id="agentMemoryBtn" title="Memory: controls how agent reads and saves memories">
+                                        <i data-lucide="brain"></i>
+                                        <span class="agent-ctrl-name">Memory</span>
+                                        <span class="agent-ctrl-value" id="agentMemoryValue">Inject</span>
+                                        <i data-lucide="chevron-down" class="agent-ctrl-chevron"></i>
+                                    </button>
+                                    <div class="agent-ctrl-dropdown" id="agentMemoryDropdown">
+                                        <button class="agent-ctrl-option" data-value="off"><span class="opt-dot"></span>Off</button>
+                                        <button class="agent-ctrl-option selected" data-value="inject"><span class="opt-dot"></span>Inject</button>
+                                        <button class="agent-ctrl-option" data-value="inject_and_extract"><span class="opt-dot"></span>Inject + Save</button>
+                                    </div>
+                                </div>
+                                <!-- Skills -->
+                                <div class="agent-ctrl">
+                                    <button class="agent-ctrl-btn skills-active" id="agentSkillsBtn" title="Skills: controls how agent selects and runs skills">
+                                        <i data-lucide="zap"></i>
+                                        <span class="agent-ctrl-name">Skills</span>
+                                        <span class="agent-ctrl-value" id="agentSkillsValue">Auto</span>
+                                        <i data-lucide="chevron-down" class="agent-ctrl-chevron"></i>
+                                    </button>
+                                    <div class="agent-ctrl-dropdown" id="agentSkillsDropdown">
+                                        <button class="agent-ctrl-option selected" data-value="auto"><span class="opt-dot"></span>Auto</button>
+                                        <button class="agent-ctrl-option" data-value="manual"><span class="opt-dot"></span>Manual</button>
+                                    </div>
+                                </div>
+                            </div>
                             <button id="webSearchButton" class="input-icon-button" title="Web Search: OFF">
                                 <i data-lucide="globe"></i>
                             </button>
@@ -5373,6 +5921,13 @@ body {
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-square"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>
                             </button>
                         </div>
+                    </div>
+                    <div id="agentWorkspaceBar">
+                        <div id="agentWorkspaceMeta">
+                            <span id="agentWorkspaceLabel">Workspace</span>
+                            <span id="agentWorkspacePath">No workspace selected</span>
+                        </div>
+                        <button id="agentWorkspaceButton" class="agent-workspace-btn" title="Select workspace folder">Select Folder</button>
                     </div>
                 </div>
             </div>
@@ -5655,7 +6210,7 @@ body {
                         <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
                     </button>
                     <div id="skillsSectionBody" class="settings-section-body">
-                        <p class="modal-description">Skills give the agent specialized instructions. Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">/skill-name</code> in the message box to activate a skill. Requires <strong>Agent Mode</strong>.</p>
+                        <p class="modal-description">Skills give the agent specialized instructions. Type <code style="font-size:11px;background:var(--bg-quaternary);padding:1px 5px;border-radius:3px;">/skill-name</code> in the message box to activate a skill. Requires the <strong>Agent</strong> workflow.</p>
                         <div id="skillsList" class="persona-presets-list"></div>
                         <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px;">
                             <input type="text" id="skillInstallInput"
@@ -5943,8 +6498,16 @@ body {
                         <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
                     </button>
                     <div id="agentSectionBody" class="settings-section-body">
-                        <p class="modal-description">Configure the agentic loop: which tools the AI can use and what
+                        <p class="modal-description">Configure the coding and automation workflow: which tools the agent can use and what
                             permissions are required before each action.</p>
+
+                        <div class="llamacpp-field" style="margin-top:var(--space-sm)">
+                            <label class="llamacpp-field-label" style="display:flex;align-items:center;gap:8px">
+                                <input type="checkbox" id="agentYoloSettingsToggle">
+                                Enable YOLO mode by default
+                            </label>
+                            <p class="modal-description" style="margin:3px 0 0 22px">Skips plan approval and tool permission prompts for agent runs. Blocked paths, allowed-directory limits, disabled tools, and workspace boundaries still apply.</p>
+                        </div>
 
                         <div class="llamacpp-field">
                             <label class="llamacpp-field-label">Max Steps</label>
@@ -6210,7 +6773,7 @@ body {
                         <div class="shortcut-keys"><kbd>Alt</kbd><kbd>R</kbd></div>
                     </div>
                     <div class="shortcut-item">
-                        <span class="shortcut-desc">Toggle agent mode</span>
+                        <span class="shortcut-desc">Toggle Agent workflow</span>
                         <div class="shortcut-keys"><kbd>Alt</kbd><kbd>A</kbd></div>
                     </div>
                     <div class="shortcut-item">

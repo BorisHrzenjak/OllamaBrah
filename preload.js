@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
     checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
     openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+    writeClipboard: (text) => ipcRenderer.invoke('app:writeClipboard', text),
 
     store: {
         get:    (key, def) => ipcRenderer.invoke('store:get', key, def),
@@ -48,6 +49,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     skills: {
         pickFolder: () => ipcRenderer.invoke('skills:pickFolder'),
+    },
+
+    workspace: {
+        pickFolder: () => ipcRenderer.invoke('workspace:pickFolder'),
     },
 
     on:  (ch, cb) => ipcRenderer.on(ch, (_e, ...a) => cb(...a)),

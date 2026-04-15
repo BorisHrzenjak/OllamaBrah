@@ -88,6 +88,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const conversationSearchInput = document.getElementById('conversationSearchInput');
     const clearSearchButton = document.getElementById('clearSearchButton');
 
+
     // Settings modal elements
     const settingsButton = document.getElementById('settingsButton');
     const settingsModal = document.getElementById('settingsModal');
@@ -132,23 +133,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     const fileInput = document.getElementById('fileInput');
     const imagePreviewArea = document.getElementById('imagePreviewArea');
     const dragDropOverlay = document.getElementById('dragDropOverlay');
+    const inputArea = document.getElementById('inputArea');
     const micButton = document.getElementById('micButton');
     const webSearchButton = document.getElementById('webSearchButton');
+    const chatWorkflowButton = document.getElementById('chatWorkflowButton');
+    const agentWorkflowButton = document.getElementById('agentWorkflowButton');
+
+
+    const CHAT_WORKFLOW_MODE_KEY = 'chatWorkflowMode';
+    const AGENT_RESEARCH_MODE_KEY = 'agentResearchMode';
+    const AGENT_MEMORY_MODE_KEY = 'agentMemoryMode';
+    const AGENT_SKILLS_MODE_KEY = 'agentSkillsMode';
+    const AGENT_YOLO_MODE_KEY = 'agentYoloMode';
 
     // Web search state
     let webSearchEnabled = false;
-
-    webSearchButton.addEventListener('click', () => {
-        webSearchEnabled = !webSearchEnabled;
-        webSearchButton.classList.toggle('active', webSearchEnabled);
-        webSearchButton.title = webSearchEnabled ? 'Web Search: ON' : 'Web Search: OFF';
-        // Disable deep research when web search is enabled (mutually exclusive)
-        if (webSearchEnabled && deepResearchEnabled) {
-            deepResearchEnabled = false;
-            deepResearchButton.classList.remove('active');
-            deepResearchButton.title = 'Deep Research: OFF';
-        }
-    });
+    let chatWorkflowMode = 'chat';
+    let agentResearchMode = 'auto';
+    let agentMemoryMode = 'inject';
+    let agentSkillsMode = 'auto';
+    let agentYoloMode = false;
 
     // Slash command state
     const SLASH_COMMANDS_KEY = 'slashCommands';
@@ -174,37 +178,408 @@ document.addEventListener('DOMContentLoaded', async () => {
     const deepResearchButton = document.getElementById('deepResearchButton');
     let deepResearchEnabled = false;
 
-    deepResearchButton.addEventListener('click', () => {
-        deepResearchEnabled = !deepResearchEnabled;
-        deepResearchButton.classList.toggle('active', deepResearchEnabled);
-        deepResearchButton.title = deepResearchEnabled ? 'Deep Research: ON' : 'Deep Research: OFF';
-        // Disable web search when deep research is enabled (mutually exclusive)
-        if (deepResearchEnabled && webSearchEnabled) {
-            webSearchEnabled = false;
-            webSearchButton.classList.remove('active');
-            webSearchButton.title = 'Web Search: OFF';
-        }
-    });
-
     // Agent mode state
     const agentModeButton = document.getElementById('agentModeButton');
     let agentModeEnabled = false;
-
-    agentModeButton.addEventListener('click', () => {
-        agentModeEnabled = !agentModeEnabled;
-        agentModeButton.classList.toggle('active', agentModeEnabled);
-        agentModeButton.title = agentModeEnabled ? 'Agent Mode: ON' : 'Agent Mode: OFF';
-    });
 
     // Memory state
     const memoryButton = document.getElementById('memoryButton');
     let memoryEnabled = false;
 
-    memoryButton.addEventListener('click', () => {
-        memoryEnabled = !memoryEnabled;
+    function persistWorkflowPreferences() {
+        return chrome.storage.local.set({
+            webSearchEnabled,
+            deepResearchEnabled,
+            agentModeEnabled,
+            memoryEnabled,
+            [CHAT_WORKFLOW_MODE_KEY]: chatWorkflowMode,
+            [AGENT_RESEARCH_MODE_KEY]: agentResearchMode,
+            [AGENT_MEMORY_MODE_KEY]: agentMemoryMode,
+            [AGENT_SKILLS_MODE_KEY]: agentSkillsMode,
+            [AGENT_YOLO_MODE_KEY]: agentYoloMode,
+        }).catch(err => console.warn('[Workflow] Failed to persist workflow state:', err));
+    }
+
+    function formatCapabilityLabel(value) {
+        const labels = {
+            off: 'Off',
+            web: 'Web',
+            deep: 'Deep',
+            auto: 'Auto',
+            inject: 'Inject',
+            inject_and_extract: 'Inject + Save',
+            manual: 'Manual',
+        };
+        return labels[value] || value;
+    }
+
+    function setChatWebSearchEnabled(enabled, { persist = true } = {}) {
+        webSearchEnabled = !!enabled;
+        if (webSearchEnabled) deepResearchEnabled = false;
+        webSearchButton.classList.toggle('active', webSearchEnabled);
+        webSearchButton.title = webSearchEnabled ? 'Web Search: ON' : 'Web Search: OFF';
+        deepResearchButton.classList.toggle('active', deepResearchEnabled);
+        deepResearchButton.title = deepResearchEnabled ? 'Deep Research: ON' : 'Deep Research: OFF';
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setChatDeepResearchEnabled(enabled, { persist = true } = {}) {
+        deepResearchEnabled = !!enabled;
+        if (deepResearchEnabled) webSearchEnabled = false;
+        deepResearchButton.classList.toggle('active', deepResearchEnabled);
+        deepResearchButton.title = deepResearchEnabled ? 'Deep Research: ON' : 'Deep Research: OFF';
+        webSearchButton.classList.toggle('active', webSearchEnabled);
+        webSearchButton.title = webSearchEnabled ? 'Web Search: ON' : 'Web Search: OFF';
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setChatMemoryEnabled(enabled, { persist = true } = {}) {
+        memoryEnabled = !!enabled;
         memoryButton.classList.toggle('active', memoryEnabled);
         memoryButton.title = memoryEnabled ? 'Memory: ON' : 'Memory: OFF';
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setAgentResearchMode(mode, { persist = true } = {}) {
+        const allowed = ['off', 'web', 'deep', 'auto'];
+        agentResearchMode = allowed.includes(mode) ? mode : 'auto';
+        refreshAgentCtrlBtn('agentResearchBtn', 'agentResearchDropdown', 'agentResearchValue', 'research-active', agentResearchMode, 'off');
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setAgentMemoryMode(mode, { persist = true } = {}) {
+        const allowed = ['off', 'inject', 'inject_and_extract'];
+        agentMemoryMode = allowed.includes(mode) ? mode : 'inject';
+        refreshAgentCtrlBtn('agentMemoryBtn', 'agentMemoryDropdown', 'agentMemoryValue', 'memory-active', agentMemoryMode, 'off');
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setAgentSkillsMode(mode, { persist = true } = {}) {
+        const allowed = ['auto', 'manual'];
+        agentSkillsMode = allowed.includes(mode) ? mode : 'auto';
+        refreshAgentCtrlBtn('agentSkillsBtn', 'agentSkillsDropdown', 'agentSkillsValue', 'skills-active', agentSkillsMode, null);
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setAgentYoloMode(enabled, { persist = true } = {}) {
+        agentYoloMode = !!enabled;
+        const settingsToggle = document.getElementById('agentYoloSettingsToggle');
+        if (settingsToggle) settingsToggle.checked = agentYoloMode;
+        if (persist) persistWorkflowPreferences();
+    }
+
+    function setWorkflowMode(mode, { persist = true } = {}) {
+        chatWorkflowMode = mode === 'agent' ? 'agent' : 'chat';
+        agentModeEnabled = chatWorkflowMode === 'agent';
+
+        if (inputArea) inputArea.dataset.workflowMode = chatWorkflowMode;
+
+        chatWorkflowButton?.classList.toggle('active', chatWorkflowMode === 'chat');
+        agentWorkflowButton?.classList.toggle('active', chatWorkflowMode === 'agent');
+
+        if (conversationSidebar) conversationSidebar.dataset.showRuns = chatWorkflowMode === 'agent' ? 'true' : 'false';
+        if (chatWorkflowMode === 'agent') refreshAgentRunHistory();
+
+        messageInput.placeholder = chatWorkflowMode === 'agent'
+            ? 'Ask Agent to code, automate, or work in your repo...'
+            : 'Ask anything...';
+
+        webSearchButton.style.display = chatWorkflowMode === 'chat' ? '' : 'none';
+        deepResearchButton.style.display = chatWorkflowMode === 'chat' ? '' : 'none';
+        memoryButton.style.display = chatWorkflowMode === 'chat' ? '' : 'none';
+        agentModeButton.style.display = 'none';
+        agentModeButton.classList.toggle('active', agentModeEnabled);
+        agentModeButton.title = agentModeEnabled ? 'Agent Workflow: ON' : 'Agent Workflow: OFF';
+
+        if (persist) persistWorkflowPreferences();
+    }
+
+    const agentRunHistoryList = document.getElementById('agentRunHistoryList');
+    const agentRunHistoryRefresh = document.getElementById('agentRunHistoryRefresh');
+    const agentWorkspacePathEl = document.getElementById('agentWorkspacePath');
+    const agentWorkspaceButton = document.getElementById('agentWorkspaceButton');
+    const AGENT_WORKSPACE_KEY = 'agentWorkspaceRoot';
+    let agentWorkspaceRoot = null;
+
+    function renderAgentWorkspace() {
+        if (!agentWorkspacePathEl) return;
+        agentWorkspacePathEl.textContent = agentWorkspaceRoot || 'No workspace selected';
+        agentWorkspacePathEl.title = agentWorkspaceRoot || 'No workspace selected';
+    }
+
+    async function loadAgentWorkspacePreference() {
+        try {
+            agentWorkspaceRoot = await window.electronAPI?.store?.get(AGENT_WORKSPACE_KEY, null);
+        } catch {}
+        renderAgentWorkspace();
+    }
+
+    async function setAgentWorkspaceRoot(nextPath) {
+        agentWorkspaceRoot = nextPath || null;
+        renderAgentWorkspace();
+        try {
+            await window.electronAPI?.store?.set(AGENT_WORKSPACE_KEY, agentWorkspaceRoot);
+        } catch {}
+    }
+
+    function formatRunTimestamp(ts) {
+        if (!ts) return '';
+        const d = new Date(ts);
+        const now = new Date();
+        const diffMs = now - d;
+        if (diffMs < 60000) return 'just now';
+        if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}m ago`;
+        if (diffMs < 86400000) return `${Math.floor(diffMs / 3600000)}h ago`;
+        return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+
+    function escapeHTML(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function getRunLabel(run) {
+        const msgs = run.latestMessages || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'user') {
+                const text = typeof msgs[i].content === 'string' ? msgs[i].content : '';
+                return text.slice(0, 60) || 'Agent run';
+            }
+        }
+        return 'Agent run';
+    }
+
+    async function refreshAgentRunHistory() {
+        if (!agentRunHistoryList) return;
+        try {
+            const resp = await fetch(`${PROXY_BASE}/api/agent/runs?limit=20`);
+            if (!resp.ok) return;
+            const runs = await resp.json();
+            if (!runs.length) {
+                agentRunHistoryList.innerHTML = '<div class="agent-run-empty">No agent runs yet</div>';
+                return;
+            }
+            agentRunHistoryList.innerHTML = runs.map(run => {
+                const statusClass = run.status || 'queued';
+                return `<div class="agent-run-item" data-run-id="${run.id}" data-run-status="${statusClass}" title="${run.status} — ${run.model || ''}">
+                    <span class="agent-run-status-dot ${statusClass}"></span>
+                    <span class="agent-run-label">${escapeHTML(getRunLabel(run))}</span>
+                    <span class="agent-run-time">${formatRunTimestamp(run.updatedAt)}</span>
+                </div>`;
+            }).join('');
+        } catch {
+            agentRunHistoryList.innerHTML = '<div class="agent-run-empty">Could not load runs</div>';
+        }
+    }
+
+    agentRunHistoryList?.addEventListener('click', async (e) => {
+        const item = e.target.closest('.agent-run-item');
+        if (!item) return;
+        const runId = item.dataset.runId;
+        const status = item.dataset.runStatus;
+        if (!runId) return;
+
+        if (status === 'running' || status === 'waiting_permission') {
+            if (currentAgentRunId === runId) return;
+            try {
+                const resp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}`);
+                if (!resp.ok) return;
+                const run = await resp.json();
+                await replayAgentRun(run, { persistResult: false });
+            } catch {}
+            return;
+        }
+
+        try {
+            const resp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}`);
+            if (!resp.ok) return;
+            const run = await resp.json();
+            const msgs = run.latestMessages || [];
+            let text = '';
+            for (let i = msgs.length - 1; i >= 0; i--) {
+                if (msgs[i].role === 'assistant' && typeof msgs[i].content === 'string' && msgs[i].content.trim()) {
+                    text = msgs[i].content;
+                    break;
+                }
+            }
+            if (text) {
+                const modelData = await loadModelChatState(currentModelName);
+                const botTextElement = addMessageToChatUI(currentModelName, '', 'bot-message', modelData);
+                botTextElement.appendChild(renderMarkdownWithThinking(text, false));
+                botTextElement.parentElement.classList.remove('streaming');
+            }
+        } catch {}
     });
+
+    agentRunHistoryRefresh?.addEventListener('click', (e) => { e.stopPropagation(); refreshAgentRunHistory(); });
+
+    const agentRunHistory = document.getElementById('agentRunHistory');
+    const agentRunHistoryHeader = document.getElementById('agentRunHistoryHeader');
+    agentRunHistoryHeader?.addEventListener('click', () => {
+        agentRunHistory?.classList.toggle('collapsed');
+    });
+
+    agentWorkspaceButton?.addEventListener('click', async () => {
+        const picked = await window.electronAPI?.workspace?.pickFolder?.();
+        if (picked) await setAgentWorkspaceRoot(picked);
+    });
+
+    loadAgentWorkspacePreference();
+
+    function getActiveResearchMode() {
+        if (chatWorkflowMode === 'agent') return agentResearchMode;
+        if (deepResearchEnabled) return 'deep';
+        if (webSearchEnabled) return 'web';
+        return 'off';
+    }
+
+    function getActiveMemoryMode() {
+        if (chatWorkflowMode === 'agent') return agentMemoryMode;
+        return memoryEnabled ? 'inject' : 'off';
+    }
+
+    function getActiveSkillsPolicy() {
+        return chatWorkflowMode === 'agent' ? agentSkillsMode : 'auto';
+    }
+
+    webSearchButton.addEventListener('click', () => setChatWebSearchEnabled(!webSearchEnabled));
+    deepResearchButton.addEventListener('click', () => setChatDeepResearchEnabled(!deepResearchEnabled));
+    agentModeButton.addEventListener('click', () => setWorkflowMode(chatWorkflowMode === 'agent' ? 'chat' : 'agent'));
+    memoryButton.addEventListener('click', () => setChatMemoryEnabled(!memoryEnabled));
+    chatWorkflowButton?.addEventListener('click', () => setWorkflowMode('chat'));
+    agentWorkflowButton?.addEventListener('click', () => setWorkflowMode('agent'));
+
+    // ─── Agent Inline Controls — icon-button dropdowns ───────────────────────
+    const agentCtrlConfigs = [
+        {
+            btnId: 'agentResearchBtn', dropId: 'agentResearchDropdown',
+            valueId: 'agentResearchValue', activeClass: 'research-active',
+            setter: (v) => setAgentResearchMode(v),
+        },
+        {
+            btnId: 'agentMemoryBtn', dropId: 'agentMemoryDropdown',
+            valueId: 'agentMemoryValue', activeClass: 'memory-active',
+            setter: (v) => setAgentMemoryMode(v),
+        },
+        {
+            btnId: 'agentSkillsBtn', dropId: 'agentSkillsDropdown',
+            valueId: 'agentSkillsValue', activeClass: 'skills-active',
+            setter: (v) => setAgentSkillsMode(v),
+        },
+    ];
+
+    function refreshAgentCtrlBtn(btnId, dropId, valueId, activeClass, value, offValue) {
+        const btn = document.getElementById(btnId);
+        const drop = document.getElementById(dropId);
+        const valEl = document.getElementById(valueId);
+        if (!btn) return;
+        if (valEl) valEl.textContent = formatCapabilityLabel(value);
+        btn.classList.toggle(activeClass, value !== offValue);
+        if (drop) {
+            drop.querySelectorAll('.agent-ctrl-option').forEach(opt => {
+                opt.classList.toggle('selected', opt.dataset.value === value);
+            });
+        }
+    }
+
+    function closeAllAgentDropdowns(exceptDropId) {
+        agentCtrlConfigs.forEach(cfg => {
+            if (cfg.dropId === exceptDropId) return;
+            const drop = document.getElementById(cfg.dropId);
+            const btn = document.getElementById(cfg.btnId);
+            if (drop) drop.classList.remove('open');
+            if (btn) btn.classList.remove('open');
+        });
+    }
+
+    agentCtrlConfigs.forEach(cfg => {
+        const btn = document.getElementById(cfg.btnId);
+        const drop = document.getElementById(cfg.dropId);
+        if (!btn || !drop) return;
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = drop.classList.contains('open');
+            closeAllAgentDropdowns(cfg.dropId);
+            if (!isOpen) {
+                const rect = btn.getBoundingClientRect();
+                const dropWidth = drop.offsetWidth || 134;
+                const left = Math.min(rect.left, window.innerWidth - dropWidth - 8);
+                drop.style.left = Math.max(8, left) + 'px';
+                drop.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+                drop.classList.add('open');
+                btn.classList.add('open');
+            }
+        });
+
+        drop.addEventListener('click', (e) => {
+            const opt = e.target.closest('[data-value]');
+            if (!opt) return;
+            cfg.setter(opt.dataset.value);
+            drop.classList.remove('open');
+            btn.classList.remove('open');
+        });
+    });
+
+    document.addEventListener('click', () => closeAllAgentDropdowns(null));
+
+    setChatWebSearchEnabled(false, { persist: false });
+    setChatDeepResearchEnabled(false, { persist: false });
+    setChatMemoryEnabled(false, { persist: false });
+    setAgentResearchMode('auto', { persist: false });
+    setAgentMemoryMode('inject', { persist: false });
+    setAgentSkillsMode('auto', { persist: false });
+    setAgentYoloMode(false, { persist: false });
+    setWorkflowMode('chat', { persist: false });
+
+    async function loadWorkflowPreferences() {
+        const stored = await chrome.storage.local.get({
+            webSearchEnabled: false,
+            deepResearchEnabled: false,
+            agentModeEnabled: false,
+            memoryEnabled: false,
+            [CHAT_WORKFLOW_MODE_KEY]: null,
+            [AGENT_RESEARCH_MODE_KEY]: 'auto',
+            [AGENT_MEMORY_MODE_KEY]: 'inject',
+            [AGENT_SKILLS_MODE_KEY]: 'auto',
+            [AGENT_YOLO_MODE_KEY]: false,
+        });
+
+        setChatWebSearchEnabled(!!stored.webSearchEnabled, { persist: false });
+        setChatDeepResearchEnabled(!!stored.deepResearchEnabled, { persist: false });
+        setChatMemoryEnabled(!!stored.memoryEnabled, { persist: false });
+        setAgentResearchMode(stored[AGENT_RESEARCH_MODE_KEY], { persist: false });
+        setAgentMemoryMode(stored[AGENT_MEMORY_MODE_KEY], { persist: false });
+        setAgentSkillsMode(stored[AGENT_SKILLS_MODE_KEY], { persist: false });
+        setAgentYoloMode(!!stored[AGENT_YOLO_MODE_KEY], { persist: false });
+        setWorkflowMode(stored[CHAT_WORKFLOW_MODE_KEY] || (stored.agentModeEnabled ? 'agent' : 'chat'), { persist: false });
+    }
+
+    async function maybeReconnectActiveAgentRun() {
+        if (!currentModelName || isStreaming) return;
+        const modelData = await loadModelChatState(currentModelName).catch(() => null);
+        const convId = modelData?.activeConversationId;
+        const conversation = convId ? modelData?.conversations?.[convId] : null;
+        const runId = conversation?.activeAgentRunId;
+        if (!runId) return;
+
+        let run;
+        try {
+            const response = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}`);
+            if (!response.ok) return;
+            run = await response.json();
+        } catch {
+            return;
+        }
+
+        if (!['running', 'waiting_permission'].includes(run.status)) {
+            conversation.activeAgentRunId = null;
+            await saveModelChatState(currentModelName, modelData);
+            return;
+        }
+        await replayAgentRun(run, { persistResult: true });
+    }
 
     // Keyword patterns that trigger auto-save to memory
     const MEMORY_SAVE_PATTERNS = [
@@ -292,7 +667,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     function createPermissionCard(chunk) {
         const riskColors = { low: '#22c55e', medium: '#f59e0b', high: '#ef4444', critical: '#dc2626' };
         const borderColor = riskColors[chunk.risk] || '#f59e0b';
-        const FILE_TOOLS = new Set(['readFile', 'writeFile', 'listDirectory', 'findFiles', 'deleteFile']);
+        const FILE_TOOLS = new Set(['readFile', 'readFileRange', 'writeFile', 'replaceInFile', 'applyPatch', 'listDirectory', 'findFiles', 'searchInFiles', 'globFiles', 'mkdir', 'copyFile', 'moveFile', 'deleteFile']);
         const isFileTool = FILE_TOOLS.has(chunk.tool);
 
         const card = document.createElement('div');
@@ -445,20 +820,254 @@ document.addEventListener('DOMContentLoaded', async () => {
         return card;
     }
 
+    function createPlanCard(chunk) {
+        const plan = chunk.plan || {};
+        const card = document.createElement('div');
+        card.className = 'agent-permission-card';
+        card.style.borderColor = '#f59e0b';
+
+        const header = document.createElement('div');
+        header.className = 'agent-perm-header';
+        header.innerHTML = `<span class="agent-perm-tool">Plan Approval Required</span><span class="agent-perm-risk">[${plan.risk || 'medium'}]</span>`;
+        card.appendChild(header);
+
+        const summary = document.createElement('div');
+        summary.className = 'agent-perm-args';
+        const actionLines = Array.isArray(plan.actions) && plan.actions.length
+            ? plan.actions.map(action => `- ${action.summary}`).join('\n')
+            : '';
+        const fileLines = plan.files?.length ? `\nFiles:\n${plan.files.join('\n')}` : '';
+        const commandLines = plan.commands?.length ? `\nCommands:\n${plan.commands.join('\n')}` : '';
+        summary.textContent = `${plan.summary || 'Planned action'}${actionLines ? `\n\nActions:\n${actionLines}` : ''}${fileLines}${commandLines}`.trim();
+        card.appendChild(summary);
+
+        const btnRow = document.createElement('div');
+        btnRow.className = 'agent-perm-buttons';
+
+        const allowBtn = document.createElement('button');
+        allowBtn.className = 'agent-perm-allow';
+        allowBtn.textContent = 'Approve once';
+
+        const sessionBtn = document.createElement('button');
+        sessionBtn.className = 'agent-perm-session';
+        sessionBtn.textContent = 'Approve session';
+
+        const denyBtn = document.createElement('button');
+        denyBtn.className = 'agent-perm-deny';
+        denyBtn.textContent = 'Reject';
+
+        btnRow.append(allowBtn, sessionBtn, denyBtn);
+        card.appendChild(btnRow);
+
+        const respond = async (approved, scope) => {
+            [allowBtn, sessionBtn, denyBtn].forEach(b => b.disabled = true);
+            try {
+                await fetch(`${PROXY_BASE}/api/agent/plan`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: chunk.id, approved, scope })
+                });
+                btnRow.innerHTML = `<span class="agent-perm-result">${approved ? '✓ Plan approved' : '✗ Plan rejected'}</span>`;
+            } catch {
+                [allowBtn, sessionBtn, denyBtn].forEach(b => b.disabled = false);
+            }
+        };
+
+        allowBtn.addEventListener('click', () => respond(true, 'once'));
+        sessionBtn.addEventListener('click', () => respond(true, 'session'));
+        denyBtn.addEventListener('click', () => respond(false, 'once'));
+        return card;
+    }
+
+    const FILE_EDIT_TOOL_NAMES = new Set([
+        'writeFile',
+        'replaceInFile',
+        'applyPatch',
+        'appendFile',
+        'deleteFile',
+        'mkdir',
+        'copyFile',
+        'moveFile',
+    ]);
+    const SHELL_OUTPUT_TOOL_NAMES = new Set(['runShell', 'runCode']);
+
+    function getAgentToolPanel(name) {
+        if (SHELL_OUTPUT_TOOL_NAMES.has(name)) return 'shell';
+        if (FILE_EDIT_TOOL_NAMES.has(name)) return 'files';
+        return 'timeline';
+    }
+
+    function summarizeAgentPaths(paths, limit = 6) {
+        const safePaths = Array.isArray(paths) ? paths.filter(Boolean) : [];
+        if (!safePaths.length) return 'No files touched yet';
+        const preview = safePaths.slice(0, limit).join('\n');
+        const extra = safePaths.length > limit ? `\n... and ${safePaths.length - limit} more` : '';
+        return `${safePaths.length} file${safePaths.length === 1 ? '' : 's'} touched\n${preview}${extra}`;
+    }
+
+    function extractDiffPreview(text, limit = 8000) {
+        const raw = String(text || '');
+        if (!raw) return '';
+        if (!(raw.includes('@@') && (raw.includes('---') || raw.includes('+++')))) return '';
+        return raw.slice(0, limit);
+    }
+
+    function createAgentRunSection(title, description = '', { visible = false } = {}) {
+        const section = document.createElement('section');
+        section.className = 'agent-run-section';
+        section.style.display = visible ? '' : 'none';
+
+        const header = document.createElement('div');
+        header.className = 'agent-run-section-header';
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'agent-run-section-title';
+        titleEl.textContent = title;
+        header.appendChild(titleEl);
+
+        if (description) {
+            const descEl = document.createElement('div');
+            descEl.className = 'agent-run-section-description';
+            descEl.textContent = description;
+            header.appendChild(descEl);
+        }
+
+        const body = document.createElement('div');
+        body.className = 'agent-run-section-body';
+        section.append(header, body);
+        return { section, body };
+    }
+
+    function appendAgentSectionItem(sectionRef, element) {
+        if (!sectionRef || !element) return element;
+        sectionRef.section.style.display = '';
+        sectionRef.body.appendChild(element);
+        return element;
+    }
+
+    function createAgentRunCard(title, body, tone = 'neutral') {
+        const card = document.createElement('div');
+        card.className = `agent-run-card agent-run-card-${tone}`;
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'agent-run-card-title';
+        titleEl.textContent = title;
+
+        const bodyEl = document.createElement('pre');
+        bodyEl.className = 'agent-run-card-body';
+        bodyEl.textContent = body;
+
+        card.append(titleEl, bodyEl);
+        return card;
+    }
+
+    function createAgentRunPanels(workspaceRoot) {
+        const root = document.createElement('div');
+        root.className = 'agent-run-sections';
+
+        const sections = {
+            timeline: createAgentRunSection('Timeline', 'Reasoning, approvals, and tool activity', { visible: true }),
+            files: createAgentRunSection('File Edits', 'Files changed during this run'),
+            diffs: createAgentRunSection('Diff Preview', 'Patch and diff output when available'),
+            shell: createAgentRunSection('Shell Output', 'Command execution and output'),
+            final: createAgentRunSection('Final Summary', workspaceRoot ? `Workspace: ${workspaceRoot}` : 'Workspace: Not set'),
+        };
+
+        Object.values(sections).forEach(section => root.appendChild(section.section));
+
+        return {
+            root,
+            sections,
+            workspaceRoot: workspaceRoot || null,
+            yoloMode: false,
+            touchedPaths: new Set(),
+            touchedCard: null,
+            finalSummaryCard: null,
+        };
+    }
+
+    function updateAgentTouchedFilesCard(panels, files = []) {
+        if (!panels) return;
+        for (const file of files) {
+            if (file) panels.touchedPaths.add(String(file));
+        }
+
+        const body = summarizeAgentPaths([...panels.touchedPaths]);
+        if (!panels.touchedCard) {
+            panels.touchedCard = createAgentRunCard('Files Touched', body);
+            appendAgentSectionItem(panels.sections.files, panels.touchedCard);
+            return;
+        }
+
+        const bodyEl = panels.touchedCard.querySelector('.agent-run-card-body');
+        if (bodyEl) bodyEl.textContent = body;
+    }
+
+    function upsertAgentFinalSummary(panels, finalState, { continueRunId = null } = {}) {
+        if (!panels) return;
+        const files = [...panels.touchedPaths];
+        const stateLabel = finalState === 'paused' ? 'waiting for continuation' : (finalState || 'completed');
+        const lines = [
+            `State: ${stateLabel}`,
+            `Workspace: ${panels.workspaceRoot || 'Not set'}`,
+            `Approvals: ${panels.yoloMode ? 'YOLO (skip prompts)' : 'Standard prompts'}`,
+            `Files touched: ${files.length}`,
+        ];
+        if (files.length) lines.push('', summarizeAgentPaths(files));
+        if (continueRunId) lines.push('', 'Continuation available: this run hit the current step limit.');
+
+        const tone = finalState === 'failed'
+            ? 'error'
+            : ((finalState === 'cancelled' || finalState === 'paused') ? 'warning' : 'success');
+
+        if (!panels.finalSummaryCard) {
+            panels.finalSummaryCard = createAgentRunCard('Run Summary', lines.join('\n'), tone);
+            appendAgentSectionItem(panels.sections.final, panels.finalSummaryCard);
+            return;
+        }
+
+        panels.finalSummaryCard.className = `agent-run-card agent-run-card-${tone}`;
+        const bodyEl = panels.finalSummaryCard.querySelector('.agent-run-card-body');
+        if (bodyEl) bodyEl.textContent = lines.join('\n');
+    }
+
     async function handleAgentStream(botTextElement, botMessageDiv, reader, handlers = {}) {
         const decoder = new TextDecoder();
         let buf = '';
         let currentContentDiv = null;
         let currentContentText = '';
-        let lastToolCallBlock = {}; // toolName → last block element
-        let savedMessagesForContinue = null;
+        const pendingToolBlocks = new Map();
+        let continueRunId = handlers.runId || null;
         let memoryUsageMeta = null;
         let contextBreakdown = null;
         let pendingToolCalls = 0;
         let lastStatusText = '';
+        let lastTimelineStatus = '';
+        let finalState = 'completed';
         const onSearchEvent = typeof handlers.onSearchEvent === 'function' ? handlers.onSearchEvent : null;
         const onMemoryEvent = typeof handlers.onMemoryEvent === 'function' ? handlers.onMemoryEvent : null;
         const onContextBreakdown = typeof handlers.onContextBreakdown === 'function' ? handlers.onContextBreakdown : null;
+        const panels = createAgentRunPanels(handlers.workspaceRoot || null);
+        panels.yoloMode = handlers.yoloMode === true;
+
+        const queueToolBlock = (name, entry) => {
+            const queue = pendingToolBlocks.get(name) || [];
+            queue.push(entry);
+            pendingToolBlocks.set(name, queue);
+        };
+
+        const shiftToolBlock = (name) => {
+            const queue = pendingToolBlocks.get(name) || [];
+            const next = queue.shift() || null;
+            if (queue.length) pendingToolBlocks.set(name, queue);
+            else pendingToolBlocks.delete(name);
+            return next;
+        };
+
+        const peekToolBlock = (name) => {
+            const queue = pendingToolBlocks.get(name) || [];
+            return queue[0] || null;
+        };
 
         // Step counter line
         const counterEl = document.createElement('span');
@@ -469,6 +1078,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         const liveStatusEl = document.createElement('div');
         liveStatusEl.className = 'agent-live-status';
         botTextElement.appendChild(liveStatusEl);
+        botTextElement.appendChild(panels.root);
+
+        const bottomProgressEl = document.createElement('div');
+        bottomProgressEl.className = 'agent-bottom-progress visible';
+        const bottomStepEl = document.createElement('span');
+        bottomStepEl.className = 'agent-bottom-progress-step';
+        bottomStepEl.textContent = 'Preparing run';
+        const bottomStatusEl = document.createElement('span');
+        bottomStatusEl.className = 'agent-bottom-progress-status';
+        bottomStatusEl.textContent = 'Analyzing your request and planning the first step...';
+        bottomProgressEl.append(bottomStepEl, bottomStatusEl);
+        botTextElement.appendChild(bottomProgressEl);
+
+        const setStepProgress = (text) => {
+            const safeText = text || '';
+            counterEl.textContent = safeText;
+            bottomStepEl.textContent = safeText || 'Run complete';
+        };
+
+        const setBottomProgressState = (statusText, mode = 'working', { stepText = null, completed = false } = {}) => {
+            if (stepText !== null) setStepProgress(stepText);
+            bottomStatusEl.textContent = statusText || '';
+            bottomProgressEl.classList.add('visible');
+            bottomProgressEl.classList.toggle('waiting', mode === 'waiting');
+            bottomProgressEl.classList.toggle('done', completed);
+        };
 
         const setLiveStatus = (text, mode = 'working') => {
             lastStatusText = text || '';
@@ -481,11 +1116,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             liveStatusEl.classList.add('visible');
             liveStatusEl.classList.toggle('waiting', mode === 'waiting');
             liveStatusEl.classList.toggle('streaming', mode === 'streaming');
+            setBottomProgressState(lastStatusText, mode);
         };
 
         setLiveStatus('Analyzing your request and planning the first step...');
 
-        function renderContinueButtons(savedMessages) {
+        function renderContinueButtons(runId) {
             const row = document.createElement('div');
             row.className = 'agent-continue-row';
             for (const extraSteps of [5, 15]) {
@@ -497,30 +1133,35 @@ document.addEventListener('DOMContentLoaded', async () => {
                     currentContentDiv = null;
                     currentContentText = '';
                     try {
-                        const resp = await fetch(`${PROXY_BASE}/api/agent/chat`, {
+                        const resp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}/resume`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                model: currentModelName,
-                                backend: currentModelBackend,
-                                maxSteps: extraSteps,
-                                continueFrom: savedMessages
-                            })
+                            body: JSON.stringify({ maxSteps: extraSteps })
                         });
                         if (!resp.ok) throw new Error(`Agent API Error: ${resp.status}`);
-                        const contReader = resp.body.getReader();
-                        const contResult = await handleAgentStream(botTextElement, botMessageDiv, contReader, handlers);
+                        const resumedRun = await resp.json();
+                        const resumedRunId = resumedRun?.run?.id;
+                        if (!resumedRunId) throw new Error('Resume did not return a run id');
+                        const streamResp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(resumedRunId)}/stream`);
+                        if (!streamResp.ok) throw new Error(`Run stream error: ${streamResp.status}`);
+                        const contReader = streamResp.body.getReader();
+                        const contResult = await handleAgentStream(botTextElement, botMessageDiv, contReader, {
+                            ...handlers,
+                            runId: resumedRunId,
+                            workspaceRoot: resumedRun?.run?.workspaceRoot || handlers.workspaceRoot || null,
+                            yoloMode: resumedRun?.run?.yoloMode === true,
+                        });
                         if (contResult?.text) currentContentText = contResult.text;
                     } catch (e) {
                         const errDiv = document.createElement('div');
                         errDiv.className = 'agent-error';
                         errDiv.textContent = 'Continue failed: ' + e.message;
-                        botTextElement.appendChild(errDiv);
+                        appendAgentSectionItem(panels.sections.final, errDiv);
                     }
                 };
                 row.appendChild(btn);
             }
-            botTextElement.appendChild(row);
+            appendAgentSectionItem(panels.sections.final, row);
         }
 
         const processAgentChunk = (chunk) => {
@@ -543,6 +1184,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (chunk.type === 'status') {
                 setLiveStatus(chunk.text, chunk.phase === 'executing_tools' ? 'working' : 'working');
+                if (chunk.text && chunk.text !== lastTimelineStatus) {
+                    appendAgentSectionItem(panels.sections.timeline, createAgentRunCard('Status', chunk.text));
+                    lastTimelineStatus = chunk.text;
+                }
+                return false;
+            }
+
+            if (chunk.type === 'yolo_mode') {
+                panels.yoloMode = chunk.enabled === true;
+                appendAgentSectionItem(panels.sections.timeline, createAgentRunCard('YOLO Mode', chunk.text || 'YOLO mode enabled for this run.', 'warning'));
                 return false;
             }
 
@@ -561,7 +1212,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!currentContentDiv) {
                     currentContentDiv = document.createElement('div');
                     currentContentDiv.className = 'agent-content-block';
-                    botTextElement.appendChild(currentContentDiv);
+                    appendAgentSectionItem(panels.sections.final, currentContentDiv);
                 }
                 currentContentText += chunk.text;
                 currentContentDiv.innerHTML = '';
@@ -575,18 +1226,38 @@ document.addEventListener('DOMContentLoaded', async () => {
                 setLiveStatus(`Running ${pendingToolCalls} tool${pendingToolCalls === 1 ? '' : 's'}...`);
                 const block = createAgentStepBlock('tool_call', chunk.name, chunk.args);
                 block.dataset.toolName = chunk.name;
-                botTextElement.appendChild(block);
-                lastToolCallBlock[chunk.name] = block;
+                const panelKey = getAgentToolPanel(chunk.name);
+                appendAgentSectionItem(panels.sections[panelKey], block);
+                queueToolBlock(chunk.name, { block, args: chunk.args || {}, panelKey });
+
+                if (chunk.name === 'applyPatch') {
+                    const diffText = extractDiffPreview(chunk.args?.diff || '');
+                    if (diffText) {
+                        appendAgentSectionItem(
+                            panels.sections.diffs,
+                            createAgentRunCard(`Patch Preview${chunk.args?.path ? ` (${chunk.args.path})` : ''}`, diffText)
+                        );
+                    }
+                }
             }
 
             if (chunk.type === 'tool_result') {
-                const block = lastToolCallBlock[chunk.name];
+                const pending = shiftToolBlock(chunk.name);
+                const block = pending?.block;
                 if (block) {
                     appendResultToStepBlock(block, chunk.result, chunk.error);
                     // Change block class to show result type
                     block.classList.remove('agent-step-tool_call');
                     block.classList.add('agent-step-tool_result');
                 }
+
+                if (chunk.name === 'diffFiles') {
+                    const diffText = extractDiffPreview(chunk.result);
+                    if (diffText) {
+                        appendAgentSectionItem(panels.sections.diffs, createAgentRunCard('Diff Output', diffText));
+                    }
+                }
+
                 pendingToolCalls = Math.max(0, pendingToolCalls - 1);
                 if (pendingToolCalls === 0) {
                     setLiveStatus('Tool work finished. Reviewing results and drafting the next response...');
@@ -595,12 +1266,60 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
+            if (chunk.type === 'file_diff') {
+                const diffText = extractDiffPreview(chunk.diff);
+                if (diffText) {
+                    appendAgentSectionItem(
+                        panels.sections.diffs,
+                        createAgentRunCard(`Completed Edit${chunk.path ? ` (${chunk.path})` : ''}`, diffText)
+                    );
+                }
+            }
+
             if (chunk.type === 'permission_request') {
                 currentContentDiv = null;
                 currentContentText = '';
                 setLiveStatus('Waiting for your permission to continue...', 'waiting');
                 const card = createPermissionCard(chunk);
-                botTextElement.appendChild(card);
+                appendAgentSectionItem(panels.sections.timeline, card);
+            }
+
+            if (chunk.type === 'plan_request') {
+                currentContentDiv = null;
+                currentContentText = '';
+                setLiveStatus('Waiting for your plan approval to continue...', 'waiting');
+                const card = createPlanCard(chunk);
+                appendAgentSectionItem(panels.sections.timeline, card);
+            }
+
+            if (chunk.type === 'plan_decision') {
+                const note = document.createElement('div');
+                note.className = 'agent-context-compressed';
+                note.innerHTML = `<span class="compress-icon">${chunk.approved ? '✓' : '✗'}</span><span>${chunk.approved ? 'Plan approved' : 'Plan rejected'}${chunk.plan?.summary ? `: ${chunk.plan.summary}` : ''}</span>`;
+                appendAgentSectionItem(panels.sections.timeline, note);
+                setLiveStatus(chunk.approved ? 'Plan approved. Continuing...' : 'Plan rejected.', chunk.approved ? 'working' : 'waiting');
+            }
+
+            if (chunk.type === 'plan_auto_approved') {
+                panels.yoloMode = true;
+                const note = document.createElement('div');
+                note.className = 'agent-context-compressed';
+                note.innerHTML = `<span class="compress-icon">⚠</span><span>YOLO auto-approved plan${chunk.plan?.summary ? `: ${chunk.plan.summary}` : ''}</span>`;
+                appendAgentSectionItem(panels.sections.timeline, note);
+                setLiveStatus('YOLO auto-approved the current plan. Continuing...');
+            }
+
+            if (chunk.type === 'permission_auto_approved') {
+                panels.yoloMode = true;
+                const note = document.createElement('div');
+                note.className = 'agent-context-compressed';
+                note.innerHTML = `<span class="compress-icon">⚠</span><span>YOLO auto-approved ${chunk.tool}</span>`;
+                appendAgentSectionItem(panels.sections.timeline, note);
+                setLiveStatus(`YOLO auto-approved ${chunk.tool}. Continuing...`);
+            }
+
+            if (chunk.type === 'files_touched') {
+                updateAgentTouchedFilesCard(panels, chunk.files);
             }
 
             if (chunk.type === 'context_compressed') {
@@ -614,43 +1333,67 @@ document.addEventListener('DOMContentLoaded', async () => {
                     <span>Context compressed at step ${chunk.step} — ${kb(chunk.tokensBefore)} → ${kb(chunk.tokensAfter)} tokens (${savedPct}% freed)</span>
                 `;
                 note.title = `${saved} tokens were summarized to free context space. Pinned messages are preserved.`;
-                botTextElement.appendChild(note);
+                appendAgentSectionItem(panels.sections.timeline, note);
                 setLiveStatus('Condensing earlier work to keep enough context for the next step...');
             }
 
             if (chunk.type === 'tool_running') {
-                const block = lastToolCallBlock[chunk.name];
+                const pending = peekToolBlock(chunk.name);
+                const block = pending?.block;
                 if (block) {
                     const statusEl = block.querySelector('.agent-step-status');
                     if (statusEl) statusEl.textContent = 'Executing…';
                 }
-                setLiveStatus(`Executing ${chunk.name}...`);
+                const cwdSuffix = chunk.cwd ? ` in ${chunk.cwd}` : '';
+                setLiveStatus(`Executing ${chunk.name}${cwdSuffix}...`);
             }
 
             if (chunk.type === 'step_done') {
-                counterEl.textContent = `Step ${chunk.step} / ${chunk.maxSteps}`;
+                setStepProgress(`Step ${chunk.step} / ${chunk.maxSteps}`);
                 if (pendingToolCalls === 0 && !currentContentText) {
                     setLiveStatus('Step finished. Thinking through what to do next...');
                 }
             }
 
             if (chunk.type === 'max_steps_reached') {
-                savedMessagesForContinue = chunk.messages;
+                finalState = 'paused';
+                continueRunId = continueRunId || handlers.runId || currentAgentRunId;
+                setBottomProgressState('Step limit reached. Waiting for you to continue the run.', 'waiting', { completed: true });
             }
 
             if (chunk.type === 'error') {
+                finalState = 'failed';
                 setLiveStatus('');
                 const errDiv = document.createElement('div');
                 errDiv.className = 'agent-error';
                 errDiv.textContent = 'Agent error: ' + chunk.text;
-                botTextElement.appendChild(errDiv);
+                appendAgentSectionItem(panels.sections.final, errDiv);
+            }
+
+            if (chunk.type === 'cancel_requested') {
+                setLiveStatus('Cancelling agent run...', 'waiting');
+                appendAgentSectionItem(panels.sections.timeline, createAgentRunCard('Cancellation', 'Cancelling agent run...', 'warning'));
+            }
+
+            if (chunk.type === 'cancelled') {
+                finalState = 'cancelled';
+                setLiveStatus('Agent run cancelled.');
+                setBottomProgressState('Agent run cancelled.', 'waiting', { completed: true });
+                appendAgentSectionItem(panels.sections.final, createAgentRunCard('Run Cancelled', 'The run was cancelled before completion.', 'warning'));
             }
 
             if (chunk.type === 'done') {
-                counterEl.textContent = '';
+                const completionText = finalState === 'paused'
+                    ? 'Waiting for you to continue this run.'
+                    : (finalState === 'cancelled' ? 'Agent run cancelled.' : 'Agent run completed.');
                 setLiveStatus('');
-                if (savedMessagesForContinue) {
-                    renderContinueButtons(savedMessagesForContinue);
+                setBottomProgressState(completionText, finalState === 'paused' ? 'waiting' : 'working', {
+                    stepText: counterEl.textContent || bottomStepEl.textContent,
+                    completed: true,
+                });
+                upsertAgentFinalSummary(panels, finalState, { continueRunId });
+                if (continueRunId) {
+                    renderContinueButtons(continueRunId);
                 }
                 return true; // signal caller to stop
             }
@@ -676,19 +1419,82 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // Flush any bytes remaining in the TextDecoder and process trailing data
-        buf += decoder.decode();
-        for (const line of buf.split('\n')) {
-            if (!line.trim()) continue;
-            let chunk;
-            try { chunk = JSON.parse(line); } catch { continue; }
-            processAgentChunk(chunk);
+        if (!streamDone) {
+            buf += decoder.decode();
+            for (const line of buf.split('\n')) {
+                if (!line.trim()) continue;
+                let chunk;
+                try { chunk = JSON.parse(line); } catch { continue; }
+                if (processAgentChunk(chunk)) break;
+            }
         }
 
         return {
             text: currentContentText,
             memoryUsageMeta,
             contextBreakdown,
+            finalState,
         };
+    }
+
+    async function streamAgentRun(runId, botTextElement, botMessageDiv, handlers = {}) {
+        currentAgentRunId = runId;
+        currentAbortController = new AbortController();
+        const response = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}/stream`, {
+            signal: currentAbortController.signal
+        });
+        if (!response.ok) throw new Error(`Run stream error: ${response.status}`);
+        const reader = response.body.getReader();
+        return handleAgentStream(botTextElement, botMessageDiv, reader, { ...handlers, runId });
+    }
+
+async function replayAgentRun(run, { persistResult = false } = {}) {
+        const modelData = await loadModelChatState(currentModelName);
+        const botTextElement = addMessageToChatUI(currentModelName, '', 'bot-message', modelData);
+        const botMessageDiv = botTextElement.parentElement;
+        botMessageDiv.classList.add('streaming');
+        if (stopButton) stopButton.style.display = ['running', 'waiting_permission'].includes(run.status) ? 'flex' : 'none';
+        sendButton.style.display = ['running', 'waiting_permission'].includes(run.status) ? 'none' : 'flex';
+        isStreaming = ['running', 'waiting_permission'].includes(run.status);
+
+        try {
+            if (Array.isArray(run.approvedPlans) && run.approvedPlans.length) {
+                const audit = document.createElement('div');
+                audit.className = 'agent-context-compressed';
+                const approvedCount = run.approvedPlans.filter(p => p.approved).length;
+                audit.innerHTML = `<span class="compress-icon">📝</span><span>Plan audit: ${approvedCount}/${run.approvedPlans.length} approved</span>`;
+                botTextElement.appendChild(audit);
+            }
+            const result = await streamAgentRun(run.id, botTextElement, botMessageDiv, {
+                onContextBreakdown: (breakdown) => { lastContextBreakdown = breakdown; },
+                workspaceRoot: run.workspaceRoot || null,
+                yoloMode: run.yoloMode === true,
+            });
+            if (persistResult && result?.text) {
+                const latest = await loadModelChatState(currentModelName);
+                const convId = latest.activeConversationId;
+                const conversation = latest.conversations[convId];
+                conversation.messages.push({ role: 'assistant', content: result.text });
+                conversation.activeAgentRunId = null;
+                conversation.summary = getConversationSummary(conversation.messages);
+                conversation.lastMessageTime = Date.now();
+                await saveModelChatState(currentModelName, latest);
+                populateConversationSidebar(currentModelName, latest);
+            }
+        } catch (error) {
+            const errDiv = document.createElement('div');
+            errDiv.className = 'agent-error';
+            errDiv.textContent = `Run replay failed: ${error.message}`;
+            botTextElement.appendChild(errDiv);
+        } finally {
+            botMessageDiv.classList.remove('streaming');
+            if (stopButton) stopButton.style.display = 'none';
+            sendButton.style.display = 'flex';
+            currentAbortController = null;
+            currentAgentRunId = null;
+            isStreaming = false;
+            if (chatWorkflowMode === 'agent') refreshAgentRunHistory();
+        }
     }
 
     // Speech Recognition Setup (local Whisper via proxy)
@@ -890,6 +1696,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentModelBackend = 'ollama'; // 'ollama' | 'llamacpp'
     let currentLlamaCppPath = null;
     let currentAbortController = null; // Track current request for aborting
+    let currentAgentRunId = null;
     let selectedFiles = []; // Store selected files (images and documents) for sending
     let latestReadinessReport = null;
     let readinessPollTimer = null;
@@ -1889,7 +2696,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function copyToClipboard(text, buttonElement) {
         try {
-            await navigator.clipboard.writeText(text);
+            if (isElectron && window.electronAPI?.writeClipboard) {
+                await window.electronAPI.writeClipboard(text);
+            } else if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                throw new Error('Clipboard API unavailable');
+            }
             if (buttonElement) {
                 const originalInnerHTML = buttonElement.innerHTML;
                 buttonElement.textContent = 'Copied!';
@@ -2016,11 +2829,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 copyBtn.className = 'code-copy-button';
                 copyBtn.textContent = 'Copy';
                 copyBtn.addEventListener('click', async () => {
-                    await navigator.clipboard.writeText(code.textContent);
-                    copyBtn.textContent = 'Copied!';
+                    await copyToClipboard(code.textContent, copyBtn);
                     copyBtn.classList.add('copied');
                     setTimeout(() => {
-                        copyBtn.textContent = 'Copy';
                         copyBtn.classList.remove('copied');
                     }, 2000);
                 });
@@ -2961,7 +3772,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Update context indicator
         await updateContextIndicator(messages, modelData.systemPrompt, modelData);
-        updateRegenerateButton();
+        await updateRegenerateButton();
     }
 
     async function startNewConversation(modelForNewChat = currentModelName) {
@@ -5541,10 +6352,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const botTextElement = addMessageToChatUI(currentModelName, '', 'bot-message', modelData);
         const botMessageDiv = botTextElement.parentElement;
 
-        // Show search step indicator if web search or deep research is enabled
+        const activeResearchMode = getActiveResearchMode();
+        const activeMemoryMode = getActiveMemoryMode();
+
+        // Show search step indicator if explicit web or deep research is enabled
         let searchStepEl = null;
-        if (webSearchEnabled || deepResearchEnabled) {
-            searchStepEl = createSearchStepElement(deepResearchEnabled ? 'deep_research' : 'web');
+        if (activeResearchMode === 'web' || activeResearchMode === 'deep') {
+            searchStepEl = createSearchStepElement(activeResearchMode === 'deep' ? 'deep_research' : 'web');
             // Insert before the text content div
             const textContentDiv = botMessageDiv.querySelector('.message-text-content');
             if (textContentDiv) {
@@ -5647,9 +6461,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 requestBody._path = currentLlamaCppPath;
             }
 
-            if (webSearchEnabled) requestBody._webSearch = true;
-            if (deepResearchEnabled) requestBody._deepResearch = true;
-            if (memoryEnabled) requestBody._memory = true;
+            if (activeResearchMode === 'web') requestBody._webSearch = true;
+            if (activeResearchMode === 'deep') requestBody._deepResearch = true;
+            if (activeMemoryMode !== 'off') requestBody._memory = true;
 
             // Detect explicit save-to-memory intent in the last user message
             const lastUserMsg = apiMessages.filter(m => m.role === 'user').at(-1);
@@ -5678,23 +6492,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (agentModeEnabled) {
                 const configuredMaxSteps = Number.isInteger(agentConfig?.maxSteps) && agentConfig.maxSteps > 0
                     ? agentConfig.maxSteps : 15;
-                const researchPolicy = deepResearchEnabled ? 'deep' : webSearchEnabled ? 'web' : 'auto';
-                const memoryPolicy = memoryEnabled
-                    ? (memoryAutoExtract ? 'inject_and_extract' : 'inject')
-                    : 'off';
+                const researchPolicy = activeResearchMode;
+                const memoryPolicy = activeMemoryMode;
                 const agentBody = {
                     messages: apiMessages,
                     model: currentModelName,
                     backend: currentModelBackend,
                     maxSteps: configuredMaxSteps,
+                    workspaceRoot: agentWorkspaceRoot || null,
+                    yoloMode: agentYoloMode === true,
                     _researchPolicy: researchPolicy,
                     _memoryPolicy: memoryPolicy,
-                    _skillsPolicy: pendingSkillName ? 'manual' : 'auto'
+                    _skillsPolicy: pendingSkillName ? 'manual' : getActiveSkillsPolicy()
                 };
-                if (webSearchEnabled) agentBody._webSearch = true;
-                if (deepResearchEnabled) agentBody._deepResearch = true;
-                if (memoryEnabled) agentBody._memory = true;
-                if (memoryAutoExtract) agentBody._memoryAutoExtract = true;
+                if (researchPolicy === 'web') agentBody._webSearch = true;
+                if (researchPolicy === 'deep') agentBody._deepResearch = true;
+                if (memoryPolicy !== 'off') agentBody._memory = true;
+                if (memoryPolicy === 'inject_and_extract') agentBody._memoryAutoExtract = true;
                 if (lastUserMsg && detectMemorySaveIntent(lastUserMsg.content || '')) {
                     agentBody._saveToMemory = lastUserMsg.content;
                 }
@@ -5702,32 +6516,47 @@ document.addEventListener('DOMContentLoaded', async () => {
                     agentBody._skillHint = `Use the ${pendingSkillName} skill — call loadSkill("${pendingSkillName}") first to get the full instructions, then proceed.`;
                     pendingSkillName = null;
                 }
-                const agentResponse = await fetch(`${PROXY_BASE}/api/agent/chat`, {
+                const runResponse = await fetch(`${PROXY_BASE}/api/agent/runs`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(agentBody),
-                    signal: currentAbortController.signal
                 });
-                if (!agentResponse.ok) throw new Error(`Agent API Error: ${agentResponse.status}`);
+                if (!runResponse.ok) throw new Error(`Agent API Error: ${runResponse.status}`);
+                const runRecord = await runResponse.json();
+                currentConversation.activeAgentRunId = runRecord.id;
+                await saveModelChatState(currentModelName, modelData);
                 if (loadingIndicator) loadingIndicator.style.display = 'none';
                 contentHasStarted = true;
-                const agentReader = agentResponse.body.getReader();
-                const agentResult = await handleAgentStream(botTextElement, botMessageDiv, agentReader, {
+                const agentResult = await streamAgentRun(runRecord.id, botTextElement, botMessageDiv, {
                     onSearchEvent: (searchEvent) => {
                         if (searchStepEl) updateSearchStepWithResults(searchStepEl, searchEvent);
                     },
                     onContextBreakdown: (breakdown) => {
                         lastContextBreakdown = breakdown;
-                    }
+                    },
+                    workspaceRoot: runRecord.workspaceRoot || agentWorkspaceRoot || null,
+                    yoloMode: runRecord.yoloMode === true,
                 });
                 const finalText = agentResult?.text || '';
                 const agentMemoryMeta = agentResult?.memoryUsageMeta || null;
+                const agentFinalState = agentResult?.finalState || 'completed';
 
                 if (stopButton) { stopButton.style.display = 'none'; }
                 sendButton.style.display = 'flex';
                 if (botMessageDiv) botMessageDiv.classList.remove('streaming');
 
-                const messageToSave = { role: 'assistant', content: finalText || '*(Agent response — see steps above)*' };
+                const wasCancelled = agentFinalState === 'cancelled';
+                const messageToSave = {
+                    role: 'assistant',
+                    content: finalText || (wasCancelled ? '*(Agent run cancelled.)*' : '*(Agent response — see steps above)*')
+                };
+                if (wasCancelled) {
+                    messageToSave.metadata = {
+                        ...(messageToSave.metadata || {}),
+                        agentRunState: 'cancelled',
+                        partial: !!finalText,
+                    };
+                }
                 if (agentMemoryMeta?.used?.length) {
                     messageToSave.metadata = {
                         ...(messageToSave.metadata || {}),
@@ -5747,10 +6576,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     addMemoryUsageToMessage(botMessageDiv, agentMemoryMeta.used);
                 }
 
+                if (wasCancelled && botTextElement && !finalText) {
+                    botTextElement.innerHTML = '';
+                    botTextElement.appendChild(renderMarkdownWithThinking(messageToSave.content, false));
+                }
+
                 // Auto-extract memories from agent exchange (fire-and-forget)
-                if (memoryAutoExtract && lastUserMsg && finalText) {
+                if (!wasCancelled && memoryPolicy === 'inject_and_extract' && lastUserMsg && finalText) {
                     triggerMemoryExtraction(lastUserMsg.content, finalText);
                 }
+
+                currentConversation.activeAgentRunId = null;
 
                 await updateContextIndicator(currentConversation.messages, modelData.systemPrompt, modelData);
                 return;
@@ -5987,7 +6823,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // Auto-extract memories from this exchange (fire-and-forget)
-            if ((memoryEnabled || memoryAutoExtract) && lastUserMsg) {
+            if ((activeMemoryMode !== 'off' || memoryAutoExtract) && lastUserMsg) {
                 triggerMemoryExtraction(lastUserMsg.content, accumulatedContent);
             }
 
@@ -6056,6 +6892,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (stopButton) { stopButton.style.display = 'none'; }
             sendButton.style.display = 'flex';
             currentAbortController = null;
+            currentAgentRunId = null;
+            if (chatWorkflowMode === 'agent') refreshAgentRunHistory();
             if (botTextElement) botTextElement.dataset.fullMessage = '';
 
             // Remove streaming class from message
@@ -6074,7 +6912,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             await saveModelChatState(currentModelName, modelData);
             populateConversationSidebar(currentModelName, modelData);
             console.log('UI unlocked, state saved, sidebar repopulated in finally block.');
-            updateRegenerateButton();
+            await updateRegenerateButton();
         }
     }
 
@@ -6090,7 +6928,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!agentModeEnabled) {
                 const md = await loadModelChatState(currentModelName);
                 const warningMessage = addMessageToChatUI('System',
-                    `The "${pendingSkillName}" skill requires Agent Mode. Enable it with the Agent Mode button in the toolbar, then resend your message.`,
+                    `The "${pendingSkillName}" skill requires Agent workflow. Switch to Agent in the header, then resend your message.`,
                     'error-message', md);
                 warningMessage.textContent = '';
                 warningMessage.style.display = 'inline-flex';
@@ -6100,9 +6938,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const agentModeIcon = createLucideIcon('bot', 15);
                 agentModeIcon.style.flexShrink = '0';
                 warningMessage.append(
-                    document.createTextNode(`The "${pendingSkillName}" skill requires Agent Mode. Enable it with the `),
+                    document.createTextNode(`The "${pendingSkillName}" skill requires Agent workflow. Switch to `),
                     agentModeIcon,
-                    document.createTextNode(' button in the toolbar, then resend your message.')
+                    document.createTextNode(' in the header, then resend your message.')
                 );
                 pendingSkillName = null;
                 return;
@@ -6255,30 +7093,48 @@ document.addEventListener('DOMContentLoaded', async () => {
         await triggerLLMCompletion(modelData);
     }
 
-    async function regenerateLastResponse() {
+    async function regenerateResponseAtIndex(messageIndex) {
         if (isStreaming) return;
         let modelData = await loadModelChatState(currentModelName);
         const activeConvId = modelData.activeConversationId;
         if (!activeConvId || !modelData.conversations[activeConvId]) return;
         const conversation = modelData.conversations[activeConvId];
         const messages = conversation.messages;
-        if (messages.length === 0 || messages[messages.length - 1].role !== 'assistant') return;
+        if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex >= messages.length) return;
+        if (messages[messageIndex].role !== 'assistant') return;
 
-        const previousVersions = getAllMessageVersions(messages[messages.length - 1]);
+        const previousVersions = getAllMessageVersions(messages[messageIndex]);
 
-        conversation.messages = messages.slice(0, messages.length - 1);
+        conversation.messages = messages.slice(0, messageIndex);
+        conversation.summary = getConversationSummary(conversation.messages);
         conversation.lastMessageTime = Date.now();
         await saveModelChatState(currentModelName, modelData);
-        displayConversationMessages(modelData, activeConvId);
+        await displayConversationMessages(modelData, activeConvId);
         await triggerLLMCompletion(modelData, { alternatives: previousVersions });
     }
 
-    function updateRegenerateButton() {
+    async function regenerateLastResponse() {
+        if (isStreaming) return;
+        const modelData = await loadModelChatState(currentModelName);
+        const activeConvId = modelData.activeConversationId;
+        if (!activeConvId || !modelData.conversations[activeConvId]) return;
+        const conversation = modelData.conversations[activeConvId];
+        const lastAssistantIndex = conversation.messages.length - 1;
+        await regenerateResponseAtIndex(lastAssistantIndex);
+    }
+
+    async function updateRegenerateButton() {
         document.querySelectorAll('.regenerate-button').forEach(btn => btn.remove());
         if (isStreaming) return;
-        const allBotMessages = chatContainer.querySelectorAll('.bot-message');
-        if (allBotMessages.length === 0) return;
-        const lastBotMessage = allBotMessages[allBotMessages.length - 1];
+        const modelData = await loadModelChatState(currentModelName).catch(() => null);
+        const activeConvId = modelData?.activeConversationId;
+        const conversation = activeConvId ? modelData?.conversations?.[activeConvId] : null;
+        const messages = conversation?.messages || [];
+        const lastMessageIndex = messages.length - 1;
+        if (lastMessageIndex < 0 || messages[lastMessageIndex]?.role !== 'assistant') return;
+
+        const lastBotMessage = chatContainer.querySelector(`.bot-message[data-message-index="${lastMessageIndex}"]`);
+        if (!lastBotMessage) return;
         const actionsDiv = lastBotMessage.querySelector('.message-actions');
         if (!actionsDiv) return;
 
@@ -6288,7 +7144,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         regenBtn.appendChild(createLucideIcon('refresh-cw', 16));
         regenBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            regenerateLastResponse();
+            regenerateResponseAtIndex(lastMessageIndex);
         });
         actionsDiv.insertBefore(regenBtn, actionsDiv.firstChild);
     }
@@ -6638,6 +7494,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function init() {
         setComposerAvailability(false);
+        await loadWorkflowPreferences();
         const readiness = await refreshStartupReadiness({ forceRender: true });
         startReadinessRecoveryPoll();
         let startupBlocked = false;
@@ -6710,6 +7567,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Start persistent server status indicator
         startServerStatusPoll();
+        await maybeReconnectActiveAgentRun();
     }
 
     // Message history navigation (persistent via chrome.storage.local)
@@ -6794,7 +7652,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Event Listeners
     sendButton.addEventListener('click', () => { pushToHistory(messageInput.value); sendMessageToOllama(messageInput.value); });
     if (stopButton) {
-        stopButton.addEventListener('click', () => {
+        stopButton.addEventListener('click', async () => {
+            if (currentAgentRunId) {
+                fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(currentAgentRunId)}/cancel`, { method: 'POST' }).catch(() => {});
+            }
             if (currentAbortController) currentAbortController.abort();
         });
     }
@@ -7050,8 +7911,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Max steps slider
         const slider = document.getElementById('agentMaxStepsSlider');
         const sliderVal = document.getElementById('agentMaxStepsValue');
+        const yoloToggle = document.getElementById('agentYoloSettingsToggle');
         if (slider) { slider.value = agentConfig.maxSteps; }
         if (sliderVal) sliderVal.textContent = agentConfig.maxSteps;
+        if (yoloToggle) yoloToggle.checked = !!agentYoloMode;
 
         // Tool permissions
         const permContainer = document.getElementById('agentToolPermissions');
@@ -7122,6 +7985,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const slider = document.getElementById('agentMaxStepsSlider');
         if (slider) agentConfig.maxSteps = parseInt(slider.value, 10);
+        const yoloToggle = document.getElementById('agentYoloSettingsToggle');
+        if (yoloToggle) setAgentYoloMode(yoloToggle.checked);
 
         const statusEl = document.getElementById('agentConfigStatus');
         try {
@@ -7157,6 +8022,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const saveBtn = document.getElementById('saveAgentConfig');
         if (saveBtn) saveBtn.addEventListener('click', saveAgentConfig);
+
+        const yoloToggle = document.getElementById('agentYoloSettingsToggle');
+        if (yoloToggle) {
+            yoloToggle.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    const approved = confirm('Enable YOLO mode by default?\n\nThis skips plan approval and tool permission prompts for agent runs. The agent may edit files and run commands without asking again. Blocked paths, disabled tools, allowed-directory limits, and workspace boundaries still apply.');
+                    if (!approved) {
+                        e.target.checked = false;
+                        return;
+                    }
+                }
+                setAgentYoloMode(e.target.checked);
+            });
+        }
 
         const addDirBtn = document.getElementById('agentAddAllowedDir');
         if (addDirBtn) {
@@ -7457,17 +8336,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const saved = r[MEMORY_AUTO_INJECT_KEY] ?? false;
                 autoInjectCb.checked = saved;
                 if (saved && !memoryEnabled) {
-                    memoryEnabled = true;
-                    memoryButton.classList.add('active');
-                    memoryButton.title = 'Memory: ON';
+                    setChatMemoryEnabled(true, { persist: false });
                 }
             });
             autoInjectCb.addEventListener('change', () => {
                 const checked = autoInjectCb.checked;
                 chrome.storage.local.set({ [MEMORY_AUTO_INJECT_KEY]: checked });
-                memoryEnabled = checked;
-                memoryButton.classList.toggle('active', checked);
-                memoryButton.title = checked ? 'Memory: ON' : 'Memory: OFF';
+                setChatMemoryEnabled(checked);
             });
         }
 
@@ -7786,14 +8661,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Alt+W  — web search  (Ctrl+W = close window)
         if (e.key.toLowerCase() === 'w' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
-            webSearchButton.click();
+            if (chatWorkflowMode === 'agent') {
+                setAgentResearchMode(agentResearchMode === 'web' ? 'off' : 'web');
+            } else {
+                webSearchButton.click();
+            }
         }
         // Alt+R  — deep research  (Ctrl+R = read aloud, already taken)
         if (e.key.toLowerCase() === 'r' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
-            deepResearchButton.click();
+            if (chatWorkflowMode === 'agent') {
+                setAgentResearchMode(agentResearchMode === 'deep' ? 'off' : 'deep');
+            } else {
+                deepResearchButton.click();
+            }
         }
-        // Alt+A  — agent mode  (Ctrl+A = select all)
+        // Alt+A  — Agent workflow  (Ctrl+A = select all)
         if (e.key.toLowerCase() === 'a' && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
             e.preventDefault();
             agentModeButton.click();
@@ -7814,7 +8697,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 case 'm': {                                         // Ctrl+M — toggle memory
                     e.preventDefault();
-                    if (memoryButton) memoryButton.click();
+                    if (chatWorkflowMode === 'agent') {
+                        setAgentMemoryMode(agentMemoryMode === 'off' ? 'inject' : 'off');
+                    } else if (memoryButton) {
+                        memoryButton.click();
+                    }
                     break;
                 }
                 case 'd': {                                         // Ctrl+D — delete conversation
@@ -9411,6 +10298,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 deepResearchEnabled: typeof deepResearchEnabled !== 'undefined' ? deepResearchEnabled : false,
                 agentModeEnabled: typeof agentModeEnabled !== 'undefined' ? agentModeEnabled : false,
                 memoryEnabled: typeof memoryEnabled !== 'undefined' ? memoryEnabled : false,
+                chatWorkflowMode: typeof chatWorkflowMode !== 'undefined' ? chatWorkflowMode : 'chat',
+                agentResearchMode: typeof agentResearchMode !== 'undefined' ? agentResearchMode : 'auto',
+                agentMemoryMode: typeof agentMemoryMode !== 'undefined' ? agentMemoryMode : 'inject',
+                agentSkillsMode: typeof agentSkillsMode !== 'undefined' ? agentSkillsMode : 'auto',
+                agentYoloMode: typeof agentYoloMode !== 'undefined' ? agentYoloMode : false,
             };
         }
 
@@ -9424,6 +10316,32 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (typeof state.currentLlamaCppPath !== 'undefined') {
                 if (typeof currentLlamaCppPath !== 'undefined') currentLlamaCppPath = state.currentLlamaCppPath;
+            }
+            if (typeof state.webSearchEnabled !== 'undefined') {
+                setChatWebSearchEnabled(state.webSearchEnabled, { persist: false });
+            }
+            if (typeof state.deepResearchEnabled !== 'undefined') {
+                setChatDeepResearchEnabled(state.deepResearchEnabled, { persist: false });
+            }
+            if (typeof state.memoryEnabled !== 'undefined') {
+                setChatMemoryEnabled(state.memoryEnabled, { persist: false });
+            }
+            if (typeof state.agentResearchMode !== 'undefined') {
+                setAgentResearchMode(state.agentResearchMode, { persist: false });
+            }
+            if (typeof state.agentMemoryMode !== 'undefined') {
+                setAgentMemoryMode(state.agentMemoryMode, { persist: false });
+            }
+            if (typeof state.agentSkillsMode !== 'undefined') {
+                setAgentSkillsMode(state.agentSkillsMode, { persist: false });
+            }
+            if (typeof state.agentYoloMode !== 'undefined') {
+                setAgentYoloMode(state.agentYoloMode, { persist: false });
+            }
+            if (typeof state.chatWorkflowMode !== 'undefined') {
+                setWorkflowMode(state.chatWorkflowMode, { persist: false });
+            } else if (typeof state.agentModeEnabled !== 'undefined') {
+                setWorkflowMode(state.agentModeEnabled ? 'agent' : 'chat', { persist: false });
             }
         }
 

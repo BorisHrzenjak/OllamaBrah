@@ -33,6 +33,7 @@ const {
 
 const {
     handleAgentPermission,
+    handleAgentPlan,
     handleAgentConfigGet,
     handleAgentConfigPost,
 } = require('./tools');
@@ -50,6 +51,12 @@ const {
     handleLlmfitRecommend,
     handleResearch,
     handleAgentChat,
+    handleAgentRunList,
+    handleAgentRunCreate,
+    handleAgentRunGet,
+    handleAgentRunStream,
+    handleAgentRunCancel,
+    handleAgentRunResume,
     handleOllamaProxy,
     getLlamacppDiagnostics,
     getLlamaProcess,
@@ -569,8 +576,15 @@ app.post('/api/research', handleResearch);
 // --- Agent Routes ---
 
 app.post('/api/agent/permission', handleAgentPermission);
+app.post('/api/agent/plan', handleAgentPlan);
 app.get('/api/agent/config', handleAgentConfigGet);
 app.post('/api/agent/config', handleAgentConfigPost);
+app.get('/api/agent/runs', handleAgentRunList);
+app.post('/api/agent/runs', handleAgentRunCreate);
+app.get('/api/agent/runs/:id', handleAgentRunGet);
+app.get('/api/agent/runs/:id/stream', handleAgentRunStream);
+app.post('/api/agent/runs/:id/cancel', handleAgentRunCancel);
+app.post('/api/agent/runs/:id/resume', handleAgentRunResume);
 app.post('/api/agent/chat', handleAgentChat);
 
 // --- Skills API ---
