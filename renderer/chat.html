@@ -5036,6 +5036,43 @@
             animation-duration: 0.5s;
         }
 
+        .agent-bottom-progress {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-top: 10px;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: color-mix(in srgb, var(--bg-tertiary) 88%, transparent);
+            font-size: var(--font-size-xs);
+        }
+
+        .agent-bottom-progress.visible {
+            display: flex;
+        }
+
+        .agent-bottom-progress.waiting {
+            border-color: color-mix(in srgb, #f59e0b 35%, var(--border));
+        }
+
+        .agent-bottom-progress.done {
+            border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+        }
+
+        .agent-bottom-progress-step {
+            color: var(--text-primary);
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .agent-bottom-progress-status {
+            color: var(--text-secondary);
+            text-align: right;
+            flex: 1;
+        }
+
         @keyframes agentStatusPulse {
             0% {
                 transform: scale(0.9);

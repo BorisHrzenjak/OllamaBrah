@@ -1006,8 +1006,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     function upsertAgentFinalSummary(panels, finalState, { continueRunId = null } = {}) {
         if (!panels) return;
         const files = [...panels.touchedPaths];
+        const stateLabel = finalState === 'paused' ? 'waiting for continuation' : (finalState || 'completed');
         const lines = [
-            `State: ${finalState || 'completed'}`,
+            `State: ${stateLabel}`,
             `Workspace: ${panels.workspaceRoot || 'Not set'}`,
             `Approvals: ${panels.yoloMode ? 'YOLO (skip prompts)' : 'Standard prompts'}`,
             `Files touched: ${files.length}`,
@@ -1015,13 +1016,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (files.length) lines.push('', summarizeAgentPaths(files));
         if (continueRunId) lines.push('', 'Continuation available: this run hit the current step limit.');
 
+        const tone = finalState === 'failed'
+            ? 'error'
+            : ((finalState === 'cancelled' || finalState === 'paused') ? 'warning' : 'success');
+
         if (!panels.finalSummaryCard) {
-            panels.finalSummaryCard = createAgentRunCard('Run Summary', lines.join('\n'), finalState === 'failed' ? 'error' : (finalState === 'cancelled' ? 'warning' : 'success'));
+            panels.finalSummaryCard = createAgentRunCard('Run Summary', lines.join('\n'), tone);
             appendAgentSectionItem(panels.sections.final, panels.finalSummaryCard);
             return;
         }
 
-        panels.finalSummaryCard.className = `agent-run-card agent-run-card-${finalState === 'failed' ? 'error' : (finalState === 'cancelled' ? 'warning' : 'success')}`;
+        panels.finalSummaryCard.className = `agent-run-card agent-run-card-${tone}`;
         const bodyEl = panels.finalSummaryCard.querySelector('.agent-run-card-body');
         if (bodyEl) bodyEl.textContent = lines.join('\n');
     }
@@ -1075,6 +1080,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         botTextElement.appendChild(liveStatusEl);
         botTextElement.appendChild(panels.root);
 
+        const bottomProgressEl = document.createElement('div');
+        bottomProgressEl.className = 'agent-bottom-progress visible';
+        const bottomStepEl = document.createElement('span');
+        bottomStepEl.className = 'agent-bottom-progress-step';
+        bottomStepEl.textContent = 'Preparing run';
+        const bottomStatusEl = document.createElement('span');
+        bottomStatusEl.className = 'agent-bottom-progress-status';
+        bottomStatusEl.textContent = 'Analyzing your request and planning the first step...';
+        bottomProgressEl.append(bottomStepEl, bottomStatusEl);
+        botTextElement.appendChild(bottomProgressEl);
+
+        const setStepProgress = (text) => {
+            const safeText = text || '';
+            counterEl.textContent = safeText;
+            bottomStepEl.textContent = safeText || 'Run complete';
+        };
+
+        const setBottomProgressState = (statusText, mode = 'working', { stepText = null, completed = false } = {}) => {
+            if (stepText !== null) setStepProgress(stepText);
+            bottomStatusEl.textContent = statusText || '';
+            bottomProgressEl.classList.add('visible');
+            bottomProgressEl.classList.toggle('waiting', mode === 'waiting');
+            bottomProgressEl.classList.toggle('done', completed);
+        };
+
         const setLiveStatus = (text, mode = 'working') => {
             lastStatusText = text || '';
             if (!lastStatusText) {
@@ -1086,6 +1116,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             liveStatusEl.classList.add('visible');
             liveStatusEl.classList.toggle('waiting', mode === 'waiting');
             liveStatusEl.classList.toggle('streaming', mode === 'streaming');
+            setBottomProgressState(lastStatusText, mode);
         };
 
         setLiveStatus('Analyzing your request and planning the first step...');
@@ -1318,14 +1349,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             if (chunk.type === 'step_done') {
-                counterEl.textContent = `Step ${chunk.step} / ${chunk.maxSteps}`;
+                setStepProgress(`Step ${chunk.step} / ${chunk.maxSteps}`);
                 if (pendingToolCalls === 0 && !currentContentText) {
                     setLiveStatus('Step finished. Thinking through what to do next...');
                 }
             }
 
             if (chunk.type === 'max_steps_reached') {
+                finalState = 'paused';
                 continueRunId = continueRunId || handlers.runId || currentAgentRunId;
+                setBottomProgressState('Step limit reached. Waiting for you to continue the run.', 'waiting', { completed: true });
             }
 
             if (chunk.type === 'error') {
@@ -1345,12 +1378,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (chunk.type === 'cancelled') {
                 finalState = 'cancelled';
                 setLiveStatus('Agent run cancelled.');
+                setBottomProgressState('Agent run cancelled.', 'waiting', { completed: true });
                 appendAgentSectionItem(panels.sections.final, createAgentRunCard('Run Cancelled', 'The run was cancelled before completion.', 'warning'));
             }
 
             if (chunk.type === 'done') {
-                counterEl.textContent = '';
+                const completionText = finalState === 'paused'
+                    ? 'Waiting for you to continue this run.'
+                    : (finalState === 'cancelled' ? 'Agent run cancelled.' : 'Agent run completed.');
                 setLiveStatus('');
+                setBottomProgressState(completionText, finalState === 'paused' ? 'waiting' : 'working', {
+                    stepText: counterEl.textContent || bottomStepEl.textContent,
+                    completed: true,
+                });
                 upsertAgentFinalSummary(panels, finalState, { continueRunId });
                 if (continueRunId) {
                     renderContinueButtons(continueRunId);
@@ -1379,12 +1419,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // Flush any bytes remaining in the TextDecoder and process trailing data
-        buf += decoder.decode();
-        for (const line of buf.split('\n')) {
-            if (!line.trim()) continue;
-            let chunk;
-            try { chunk = JSON.parse(line); } catch { continue; }
-            processAgentChunk(chunk);
+        if (!streamDone) {
+            buf += decoder.decode();
+            for (const line of buf.split('\n')) {
+                if (!line.trim()) continue;
+                let chunk;
+                try { chunk = JSON.parse(line); } catch { continue; }
+                if (processAgentChunk(chunk)) break;
+            }
         }
 
         return {
@@ -7991,7 +8033,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                         return;
                     }
                 }
-                setAgentYoloMode(e.target.checked, { persist: false });
+                setAgentYoloMode(e.target.checked);
             });
         }
 

@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.17.0
+## What's New - v1.18.0
 
-- **YOLO mode for agent runs** — Agent Mode now has a prominent `YOLO` checkbox that skips plan approval and tool permission prompts for the current run after an explicit warning
-- **YOLO stays visible in run history** — runs persist whether YOLO mode was enabled, and the timeline/final summary show when risky actions were auto-approved instead of manually confirmed
-- **Safety boundaries still apply** — blocked paths, allowed-directory limits, and workspace-root guardrails remain active even when YOLO mode is enabled
+- **YOLO setting now persists correctly** — enabling YOLO in `Settings > Agent Mode` now survives app restarts instead of silently resetting
+- **Active agent progress stays visible near the bottom** — long runs now keep a bottom step/status strip updated so you can see current progress without scrolling back to the top of the response
+- **Run completion is clearer** — the UI no longer shows a run as finished before late buffered events land, and step-limit pauses are labeled as waiting for continuation instead of looking completed
 
 ---
 
@@ -70,6 +70,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Renderer run recovery** — the desktop UI can reconnect to active runs, replay recent runs, and resume from max-step limits through the durable run API
 - **Workspace-aware run panels** — Agent workflow shows the active workspace, a dedicated changed-files panel, diff previews when patches are available, shell output separated from chat text, and a per-run final summary
 - **Optional YOLO mode** — Agent workflow can skip permission and plan prompts for a run while still keeping blocked-path and workspace safety boundaries in place
+- **Persistent agent progress strip** — active runs keep the current step and status visible at the bottom of the response so long multi-step tasks are easier to monitor
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
 - Semantic memory search in the memory manager, with provenance like source type, extraction mode, and linked conversation/message metadata
 - Auto-extracted memories save directly with provenance and deduplication, and replies can show which memories were used in context
