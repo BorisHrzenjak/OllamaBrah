@@ -345,6 +345,69 @@ queueAsyncTest('requestPlanApproval auto-approves in yolo mode', async () => {
     assert(events.some(event => event.type === 'plan_auto_approved'));
 });
 
+queueAsyncTest('requestPermission persists session grants and emits a decision event', async () => {
+    const events = [];
+    const sessionPermissions = new Map();
+    let persistCalls = 0;
+    sessionPermissions._persist = () => { persistCalls += 1; };
+    const fakeRes = {
+        writableEnded: false,
+        write: (line) => events.push(JSON.parse(String(line).trim())),
+        once: () => {},
+        removeListener: () => {},
+    };
+
+    const pending = tools.requestPermission(fakeRes, 'runShell', { cmd: 'npm test' }, 'critical', sessionPermissions);
+    const requestEvent = events.find(event => event.type === 'permission_request');
+    assert(requestEvent, 'permission_request should be emitted');
+
+    tools.handleAgentPermission({
+        body: { id: requestEvent.id, approved: true, scope: 'session' }
+    }, {
+        json: () => {}
+    });
+
+    const approved = await pending;
+    assert.strictEqual(approved, true);
+    assert.strictEqual(sessionPermissions.get('runShell'), true);
+    assert.strictEqual(persistCalls, 1);
+    assert(events.some(event => event.type === 'permission_decision' && event.scope === 'session' && event.tool === 'runShell'));
+});
+
+queueAsyncTest('requestPlanApproval persists session plan grants', async () => {
+    const events = [];
+    const sessionPermissions = new Map();
+    let persistCalls = 0;
+    sessionPermissions._persist = () => { persistCalls += 1; };
+    const fakeRes = {
+        writableEnded: false,
+        write: (line) => events.push(JSON.parse(String(line).trim())),
+        once: () => {},
+        removeListener: () => {},
+    };
+    const plan = {
+        summary: 'Run risky command',
+        actions: [{ tool: 'runShell', commands: ['npm test'], files: [] }],
+    };
+
+    const pending = tools.requestPlanApproval(fakeRes, plan, sessionPermissions);
+    const requestEvent = events.find(event => event.type === 'plan_request');
+    assert(requestEvent, 'plan_request should be emitted');
+
+    tools.handleAgentPlan({
+        body: { id: requestEvent.id, approved: true, scope: 'session' }
+    }, {
+        json: () => {}
+    });
+
+    const approved = await pending;
+    assert.strictEqual(approved, true);
+    assert.strictEqual(persistCalls, 1);
+    const persistedKeys = [...sessionPermissions.keys()];
+    assert(persistedKeys.some(key => key.startsWith('plan:')));
+    assert(events.some(event => event.type === 'plan_decision' && event.scope === 'session'));
+});
+
 test('writeFile returns a diff preview for completed edits', async () => {
     const workspace = path.join(tmpDir, 'workspace-diff');
     fs.mkdirSync(workspace, { recursive: true });

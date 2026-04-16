@@ -54,6 +54,10 @@ function stableHash(...parts) {
 
 // --- Agent config (updated via POST /api/agent/config) ---
 let agentMaxSteps = parseInt(process.env.AGENT_MAX_STEPS || '15', 10);
+let agentMaxComputeSteps = parseInt(process.env.AGENT_MAX_COMPUTE_STEPS || '120', 10);
+let agentExecutionPolicy = ['pause_on_limit', 'run_until_blocked'].includes(process.env.AGENT_EXECUTION_POLICY)
+    ? process.env.AGENT_EXECUTION_POLICY
+    : 'run_until_blocked';
 
 // When AGENT_ALLOWED_DIRS is unset, default to the user's home directory as a safe boundary.
 // File tools will only operate inside these directories unless explicitly expanded via env/config.
@@ -691,6 +695,12 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
                         const dir = path.dirname(args.path);
                         sessionPermissions.set(`${tool}:${dir}`, true);
                     }
+                    if ((scope === 'session' || scope === 'path') && typeof sessionPermissions._persist === 'function') {
+                        sessionPermissions._persist();
+                    }
+                }
+                if (typeof res.write === 'function' && !res.writableEnded) {
+                    res.write(JSON.stringify({ type: 'permission_decision', id, approved: !!approved, scope, tool, args, risk }) + '\n');
                 }
                 cleanup(approved);
             },
@@ -734,7 +744,12 @@ async function requestPlanApproval(res, plan, sessionPermissions) {
                 if (typeof res.write === 'function' && !res.writableEnded) {
                     res.write(JSON.stringify({ type: 'plan_decision', id, approved: !!approved, scope, plan }) + '\n');
                 }
-                if (approved && scope === 'session') sessionPermissions.set(sessionPlanKey, true);
+                if (approved && scope === 'session') {
+                    sessionPermissions.set(sessionPlanKey, true);
+                    if (typeof sessionPermissions._persist === 'function') {
+                        sessionPermissions._persist();
+                    }
+                }
                 cleanup(approved);
             },
             reject: () => cleanup(false),
@@ -1268,13 +1283,24 @@ function handleAgentPlan(req, res) {
 
 // GET /api/agent/config — return current agent config
 function handleAgentConfigGet(req, res) {
-    res.json({ maxSteps: agentMaxSteps, allowedDirs: agentAllowedDirs, blockedPaths: agentBlockedPaths, toolPermissions: agentToolPermissions });
+    res.json({
+        maxSteps: agentMaxSteps,
+        maxComputeSteps: agentMaxComputeSteps,
+        executionPolicy: agentExecutionPolicy,
+        allowedDirs: agentAllowedDirs,
+        blockedPaths: agentBlockedPaths,
+        toolPermissions: agentToolPermissions
+    });
 }
 
 // POST /api/agent/config — update agent config
 function handleAgentConfigPost(req, res) {
-    const { maxSteps, allowedDirs, blockedPaths, toolPermissions } = req.body || {};
+    const { maxSteps, maxComputeSteps, executionPolicy, allowedDirs, blockedPaths, toolPermissions } = req.body || {};
     if (maxSteps !== undefined) agentMaxSteps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || 15));
+    if (maxComputeSteps !== undefined) agentMaxComputeSteps = Math.max(1, Math.min(500, parseInt(maxComputeSteps, 10) || 120));
+    if (executionPolicy !== undefined && ['pause_on_limit', 'run_until_blocked'].includes(executionPolicy)) {
+        agentExecutionPolicy = executionPolicy;
+    }
     if (Array.isArray(allowedDirs)) {
         const validated = allowedDirs.map(s => String(s).trim()).filter(Boolean);
         agentAllowedDirs = validated.length > 0 ? validated : [os.homedir()];
@@ -1296,6 +1322,8 @@ function handleAgentConfigPost(req, res) {
 
 // Getter for agentMaxSteps (primitive — not live-exported)
 function getAgentMaxSteps() { return agentMaxSteps; }
+function getAgentMaxComputeSteps() { return agentMaxComputeSteps; }
+function getAgentExecutionPolicy() { return agentExecutionPolicy; }
 // Getter for agentAllowedDirs (array — live reference, but getter provided for consistency)
 function getAgentAllowedDirs() { return agentAllowedDirs; }
 // Getter for agentBlockedPaths
@@ -1329,6 +1357,8 @@ module.exports = {
     handleAgentConfigGet,
     handleAgentConfigPost,
     getAgentMaxSteps,
+    getAgentMaxComputeSteps,
+    getAgentExecutionPolicy,
     getAgentAllowedDirs,
     getAgentBlockedPaths,
     createToolCache,

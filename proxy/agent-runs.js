@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const RUN_DIR = path.join(process.env.USER_DATA_PATH || process.cwd(), 'agent-runs');
+const ACTIVE_RUN_STATUSES = new Set(['queued', 'running', 'waiting_permission']);
 
 function ensureRunDir() {
     fs.mkdirSync(RUN_DIR, { recursive: true });
@@ -36,13 +37,29 @@ function createRun(body = {}) {
         model: body.model || null,
         backend: body.backend || 'ollama',
         maxSteps: body.maxSteps || null,
+        maxComputeSteps: body.maxComputeSteps || body.maxSteps || null,
+        executionPolicy: body.executionPolicy || 'run_until_blocked',
+        autoResumeOnRestart: body.autoResumeOnRestart !== false,
+        stepBudget: body.stepBudget || body.maxSteps || null,
+        stepsCompleted: body.stepsCompleted || 0,
+        lastStep: body.lastStep || 0,
         workspaceRoot: body.workspaceRoot || null,
         yoloMode: body.yoloMode === true,
+        canResume: body.canResume === true,
+        pauseReason: body.pauseReason || null,
+        interruptionReason: body.interruptionReason || null,
         pendingPermission: null,
         pendingPlan: null,
-        approvedPlans: [],
-        filesTouched: [],
+        sessionPermissionGrants: Array.isArray(body.sessionPermissionGrants) ? body.sessionPermissionGrants : [],
+        permissionDecisions: Array.isArray(body.permissionDecisions) ? body.permissionDecisions : [],
+        approvedPlans: Array.isArray(body.approvedPlans) ? body.approvedPlans : [],
+        filesTouched: Array.isArray(body.filesTouched) ? body.filesTouched : [],
         lastError: null,
+        startedAt: body.startedAt || null,
+        completedAt: body.completedAt || null,
+        resumedFromRunId: body.resumedFromRunId || body.parentRunId || null,
+        interruptedFromStatus: body.interruptedFromStatus || null,
+        resumeCount: parseInt(body.resumeCount, 10) || 0,
         latestMessages: Array.isArray(body.messages) ? body.messages : [],
         requestBody: body,
     };
@@ -104,11 +121,58 @@ function readRunEvents(runId) {
     }
 }
 
+function trimTrailingDoneEvents(runId) {
+    try {
+        const events = readRunEvents(runId);
+        while (events.length && events[events.length - 1]?.type === 'done') {
+            events.pop();
+        }
+        const serialized = events.map(event => JSON.stringify(event)).join('\n');
+        fs.writeFileSync(getRunEventsPath(runId), serialized ? `${serialized}\n` : '', 'utf8');
+        return events;
+    } catch {
+        return null;
+    }
+}
+
+function recoverInterruptedRuns(reason = 'Run interrupted because the app stopped before it finished.') {
+    ensureRunDir();
+    const recovered = [];
+    const entries = fs.readdirSync(RUN_DIR, { withFileTypes: true }).filter(entry => entry.isDirectory());
+
+    for (const entry of entries) {
+        const run = getRun(entry.name);
+        if (!run || !ACTIVE_RUN_STATUSES.has(run.status)) continue;
+
+        const updated = updateRun(run.id, {
+            status: 'interrupted',
+            canResume: true,
+            pauseReason: 'interrupted',
+            interruptionReason: reason,
+            interruptedFromStatus: run.status,
+            pendingPermission: null,
+            pendingPlan: null,
+        });
+        appendRunEvent(run.id, {
+            type: 'interrupted',
+            text: reason,
+            resumable: true,
+        });
+        appendRunEvent(run.id, { type: 'done' });
+        if (updated) recovered.push(updated);
+    }
+
+    return recovered;
+}
+
 module.exports = {
+    ACTIVE_RUN_STATUSES,
     createRun,
     getRun,
     updateRun,
     appendRunEvent,
     listRuns,
     readRunEvents,
+    trimTrailingDoneEvents,
+    recoverInterruptedRuns,
 };
