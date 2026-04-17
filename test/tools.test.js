@@ -408,6 +408,42 @@ queueAsyncTest('requestPlanApproval persists session plan grants', async () => {
     assert(events.some(event => event.type === 'plan_decision' && event.scope === 'session'));
 });
 
+queueAsyncTest('abortPendingInteractionsForRun cancels a pending permission request', async () => {
+    const sessionPermissions = new Map();
+    const fakeRes = {
+        runId: 'run-cancel-permission',
+        writableEnded: false,
+        write: () => {},
+        once: () => {},
+        removeListener: () => {},
+    };
+
+    const pending = tools.requestPermission(fakeRes, 'runShell', { cmd: 'npm test' }, 'critical', sessionPermissions);
+    const aborted = tools.abortPendingInteractionsForRun('run-cancel-permission', 'Run cancelled in test');
+    assert.strictEqual(aborted, 1);
+    await assert.rejects(pending, err => err?.code === tools.RUN_CANCELLED_ERROR_CODE);
+});
+
+queueAsyncTest('abortPendingInteractionsForRun cancels a pending plan approval', async () => {
+    const sessionPermissions = new Map();
+    const fakeRes = {
+        runId: 'run-cancel-plan',
+        writableEnded: false,
+        write: () => {},
+        once: () => {},
+        removeListener: () => {},
+    };
+    const plan = {
+        summary: 'Run risky command',
+        actions: [{ tool: 'runShell', commands: ['npm test'], files: [] }],
+    };
+
+    const pending = tools.requestPlanApproval(fakeRes, plan, sessionPermissions);
+    const aborted = tools.abortPendingInteractionsForRun('run-cancel-plan', 'Run cancelled in test');
+    assert.strictEqual(aborted, 1);
+    await assert.rejects(pending, err => err?.code === tools.RUN_CANCELLED_ERROR_CODE);
+});
+
 test('writeFile returns a diff preview for completed edits', async () => {
     const workspace = path.join(tmpDir, 'workspace-diff');
     fs.mkdirSync(workspace, { recursive: true });

@@ -28,18 +28,27 @@ const {
     createToolCache,
     buildExecutionPlan,
     requestPlanApproval,
+    RUN_CANCELLED_ERROR_CODE,
 } = require('./tools');
 const { fetchOllama, resolveOllamaBaseUrl } = require('./ollama');
 const {
-    createRun,
     getRun,
     updateRun,
     appendRunEvent,
-    listRuns,
-    readRunEvents,
-    trimTrailingDoneEvents,
-    recoverInterruptedRuns,
 } = require('./agent-runs');
+const {
+    configureAgentRunManager,
+    publishRunEvent,
+    isRunCancelled,
+    isRunActive,
+    clearActiveRun,
+    startAgentRun,
+    resumeAgentRun,
+    attachRunStream,
+    cancelActiveRun,
+    recoverAgentRunsOnStartup,
+    listRuns,
+} = require('./agent-run-manager');
 
 // Resolve paths that may live in app.asar.unpacked when packaged
 function unpackedPath(...segments) {
@@ -65,7 +74,6 @@ let llamaModelManifest = new Map();
 let llamaDesiredModel = null;
 let llamaLoadPromise = null;
 let llamaAutoWarmStarted = false;
-const activeAgentRuns = new Map();
 
 function safeParseJson(raw, fallback) {
     try {
@@ -1569,11 +1577,6 @@ async function handleAgentChat(req, res) {
     res.end();
 }
 
-function writeNdjson(res, payload) {
-    if (!res || res.writableEnded || res.destroyed) return;
-    res.write(JSON.stringify(payload) + '\n');
-}
-
 function setRunStatus(runId, status, extra = {}) {
     return updateRun(runId, { status, ...extra });
 }
@@ -1599,9 +1602,12 @@ function normalizeComputeBudget(value, fallback) {
     return fallback;
 }
 
+function isRunCancelledError(err) {
+    return err?.code === RUN_CANCELLED_ERROR_CODE;
+}
+
 function emitRunEvent(runId, payload) {
     appendRunEvent(runId, payload);
-    const active = activeAgentRuns.get(runId);
     if (payload.type === 'permission_request') {
         setRunStatus(runId, 'waiting_permission', {
             pendingPermission: { id: payload.id, tool: payload.tool, args: payload.args, risk: payload.risk }
@@ -1621,6 +1627,7 @@ function emitRunEvent(runId, payload) {
             timestamp: Date.now(),
         });
         setRunStatus(runId, current?.status === 'waiting_permission' ? 'running' : (current?.status || 'running'), {
+            pendingPermission: null,
             pendingPlan: null,
             approvedPlans,
         });
@@ -1635,18 +1642,18 @@ function emitRunEvent(runId, payload) {
             risk: payload.risk || null,
             timestamp: Date.now(),
         });
-        updateRun(runId, { permissionDecisions: decisions });
+        setRunStatus(runId, current?.status === 'waiting_permission' ? 'running' : (current?.status || 'running'), {
+            pendingPermission: null,
+            pendingPlan: null,
+            permissionDecisions: decisions,
+        });
     } else if (payload.type === 'tool_result') {
         const current = getRun(runId);
         if (current?.status === 'waiting_permission') {
             setRunStatus(runId, 'running', { pendingPermission: null, pendingPlan: null });
         }
     }
-    if (active) {
-        for (const subscriber of active.subscribers) {
-            writeNdjson(subscriber, payload);
-        }
-    }
+    publishRunEvent(runId, payload);
 }
 
 function createRunWriter(runId, options = {}) {
@@ -1668,30 +1675,6 @@ function createRunWriter(runId, options = {}) {
         once() { },
         removeListener() { },
     };
-}
-
-function attachRunStream(runId, res) {
-    const run = getRun(runId);
-    if (!run) return res.status(404).json({ error: 'Run not found' });
-    const after = Math.max(0, parseInt(res.req?.query?.after, 10) || 0);
-
-    res.setHeader('Content-Type', 'application/x-ndjson');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.setHeader('Cache-Control', 'no-cache');
-
-    const events = readRunEvents(runId);
-    for (const event of events.slice(after)) {
-        const { timestamp, ...payload } = event;
-        writeNdjson(res, payload);
-    }
-
-    const active = activeAgentRuns.get(runId);
-    if (!active) return res.end();
-
-    active.subscribers.add(res);
-    res.once('close', () => {
-        activeAgentRuns.get(runId)?.subscribers.delete(res);
-    });
 }
 
 async function executeDurableAgentRun(runId, body = {}) {
@@ -1737,6 +1720,19 @@ async function executeDurableAgentRun(runId, body = {}) {
     );
     const initialResumeCount = parseInt(existingRun?.resumeCount, 10) || 0;
     const initialStartedAt = existingRun?.startedAt || Date.now();
+    const markRunCancelled = (step = stepsCompleted) => {
+        writer.write(JSON.stringify({ type: 'cancelled', step }));
+        setRunStatus(runId, 'cancelled', {
+            latestMessages: messages,
+            pendingPermission: null,
+            pendingPlan: null,
+            lastStep: stepsCompleted,
+            stepsCompleted,
+            canResume: false,
+            pauseReason: null,
+            completedAt: Date.now(),
+        });
+    };
 
     setRunStatus(runId, 'running', {
         maxSteps: stepChunkLimit,
@@ -1802,16 +1798,8 @@ async function executeDurableAgentRun(runId, body = {}) {
     try {
         let stopRun = false;
         while (!stopRun) {
-            if (activeAgentRuns.get(runId)?.cancelled) {
-                writer.write(JSON.stringify({ type: 'cancelled', step: stepsCompleted }));
-                setRunStatus(runId, 'cancelled', {
-                    latestMessages: messages,
-                    lastStep: stepsCompleted,
-                    stepsCompleted,
-                    canResume: false,
-                    pauseReason: null,
-                    completedAt: Date.now(),
-                });
+            if (isRunCancelled(runId)) {
+                markRunCancelled(stepsCompleted);
                 break;
             }
 
@@ -1841,16 +1829,8 @@ async function executeDurableAgentRun(runId, body = {}) {
             for (let chunkStep = 1; chunkStep <= chunkSteps; chunkStep++) {
                 const step = stepsCompleted + 1;
 
-                if (activeAgentRuns.get(runId)?.cancelled) {
-                    writer.write(JSON.stringify({ type: 'cancelled', step }));
-                    setRunStatus(runId, 'cancelled', {
-                        latestMessages: messages,
-                        lastStep: stepsCompleted,
-                        stepsCompleted,
-                        canResume: false,
-                        pauseReason: null,
-                        completedAt: Date.now(),
-                    });
+                if (isRunCancelled(runId)) {
+                    markRunCancelled(step);
                     stopRun = true;
                     break;
                 }
@@ -1914,7 +1894,17 @@ async function executeDurableAgentRun(runId, body = {}) {
                                 : 'low'
                 })));
                 if (plan) {
-                    const planApproved = await requestPlanApproval(writer, plan, sessionPermissions);
+                    let planApproved;
+                    try {
+                        planApproved = await requestPlanApproval(writer, plan, sessionPermissions);
+                    } catch (err) {
+                        if (isRunCancelledError(err)) {
+                            markRunCancelled(step);
+                            stopRun = true;
+                            break;
+                        }
+                        throw err;
+                    }
                     if (!planApproved) {
                         writer.write(JSON.stringify({ type: 'error', text: 'Plan not approved.' }));
                         setRunStatus(runId, 'failed', {
@@ -1940,12 +1930,22 @@ async function executeDurableAgentRun(runId, body = {}) {
                 }));
                 for (const tc of toolCalls) writer.write(JSON.stringify({ type: 'tool_call', name: tc.name, args: tc.args }));
 
-                const execResults = await Promise.all(toolCalls.map(async tc => {
-                    const { result, error, diffPreview, diffPath } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend, toolCache, workspaceRoot);
-                    writer.write(JSON.stringify({ type: 'tool_result', name: tc.name, result, error: !!error }));
-                    if (diffPreview) writer.write(JSON.stringify({ type: 'file_diff', name: tc.name, path: diffPath || tc.args?.path || null, diff: diffPreview }));
-                    return { tc, result, error, diffPreview, diffPath };
-                }));
+                let execResults;
+                try {
+                    execResults = await Promise.all(toolCalls.map(async tc => {
+                        const { result, error, diffPreview, diffPath } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend, toolCache, workspaceRoot);
+                        writer.write(JSON.stringify({ type: 'tool_result', name: tc.name, result, error: !!error }));
+                        if (diffPreview) writer.write(JSON.stringify({ type: 'file_diff', name: tc.name, path: diffPath || tc.args?.path || null, diff: diffPreview }));
+                        return { tc, result, error, diffPreview, diffPath };
+                    }));
+                } catch (err) {
+                    if (isRunCancelledError(err)) {
+                        markRunCancelled(step);
+                        stopRun = true;
+                        break;
+                    }
+                    throw err;
+                }
 
                 const touched = [...new Set(execResults.flatMap(({ tc }) => {
                     const args = tc.args || {};
@@ -2092,25 +2092,10 @@ async function executeDurableAgentRun(runId, body = {}) {
             completedAt: Date.now(),
         });
     }
-    activeAgentRuns.delete(runId);
+    clearActiveRun(runId);
 }
 
-function startAgentRun(body = {}) {
-    const run = createRun(body);
-    activeAgentRuns.set(run.id, { subscribers: new Set(), cancelled: false });
-    setImmediate(() => {
-        executeDurableAgentRun(run.id, body).catch(err => {
-            console.error('[AgentRun] Fatal durable run error:', err);
-            setRunStatus(run.id, 'failed', { lastError: err.message });
-            emitRunEvent(run.id, { type: 'error', text: err.message });
-            emitRunEvent(run.id, { type: 'done' });
-            activeAgentRuns.delete(run.id);
-        });
-    });
-    return getRun(run.id);
-}
-
-function resumeExistingAgentRun(existing, overrides = {}) {
+function buildResumeRunBody(existing, overrides = {}) {
     const extendBudgetBy = normalizeComputeBudget(overrides.extendBudgetBy, 0) || 0;
     const nextMaxComputeSteps = extendBudgetBy > 0
         ? Math.max(
@@ -2142,64 +2127,62 @@ function resumeExistingAgentRun(existing, overrides = {}) {
         startedAt: existing.startedAt || existing.createdAt || null,
         resumeCount: existing.resumeCount || 0,
     };
+    return body;
+}
 
-    trimTrailingDoneEvents(existing.id);
+function resumeExistingAgentRun(existing, overrides = {}) {
+    const body = buildResumeRunBody(existing, overrides);
     updateRun(existing.id, {
         requestBody: {
             ...(existing.requestBody || {}),
             ...(Number.isFinite(parseInt(overrides.maxSteps, 10)) ? { maxSteps: parseInt(overrides.maxSteps, 10) } : {}),
-            maxComputeSteps: nextMaxComputeSteps,
-            executionPolicy: nextExecutionPolicy,
-            autoResumeOnRestart: nextAutoResumeOnRestart,
+            maxComputeSteps: body.maxComputeSteps,
+            executionPolicy: body.executionPolicy,
+            autoResumeOnRestart: body.autoResumeOnRestart,
         },
-        maxComputeSteps: nextMaxComputeSteps,
-        executionPolicy: nextExecutionPolicy,
-        autoResumeOnRestart: nextAutoResumeOnRestart,
+        maxComputeSteps: body.maxComputeSteps,
+        executionPolicy: body.executionPolicy,
+        autoResumeOnRestart: body.autoResumeOnRestart,
         canResume: true,
         pauseReason: null,
         interruptionReason: null,
         completedAt: null,
         lastError: null,
     });
-
-    activeAgentRuns.set(existing.id, { subscribers: new Set(), cancelled: false });
-    setImmediate(() => {
-        executeDurableAgentRun(existing.id, body).catch(err => {
-            console.error('[AgentRun] Fatal durable resume error:', err);
-            setRunStatus(existing.id, 'failed', { lastError: err.message });
-            emitRunEvent(existing.id, { type: 'error', text: err.message });
-            emitRunEvent(existing.id, { type: 'done' });
-            activeAgentRuns.delete(existing.id);
-        });
-    });
-    return getRun(existing.id);
+    return resumeAgentRun(existing.id, body);
 }
 
 function shouldAutoResumeRecoveredRun(run) {
-    return !!run
+    return process.env.AGENT_AUTO_RESUME_INTERRUPTED_RUNS === '1'
+        && !!run
         && run.canResume === true
         && run.autoResumeOnRestart !== false
         && ['queued', 'running'].includes(run.interruptedFromStatus);
 }
 
-function bootstrapRecoveredAgentRuns() {
-    try {
-        const recovered = recoverInterruptedRuns();
-        if (!recovered.length) return;
+function handleFatalAgentRunError(runId, err) {
+    console.error('[AgentRun] Fatal durable run error:', err);
+    setRunStatus(runId, 'failed', { lastError: err.message });
+    emitRunEvent(runId, { type: 'error', text: err.message });
+    emitRunEvent(runId, { type: 'done' });
+}
 
-        console.log(`[AgentRun] Recovered ${recovered.length} interrupted run${recovered.length === 1 ? '' : 's'} on startup.`);
-        for (const run of recovered) {
-            if (!shouldAutoResumeRecoveredRun(run)) continue;
-            try {
-                resumeExistingAgentRun(run, {});
-                console.log(`[AgentRun] Auto-resumed run ${run.id} after restart.`);
-            } catch (err) {
-                console.warn(`[AgentRun] Failed to auto-resume run ${run.id}: ${err.message}`);
-            }
-        }
-    } catch (err) {
-        console.warn('[AgentRun] Failed to recover interrupted runs:', err.message);
+configureAgentRunManager({
+    executeRun: executeDurableAgentRun,
+    onFatalError: handleFatalAgentRunError,
+});
+
+try {
+    const recovered = recoverAgentRunsOnStartup({
+        shouldAutoResume: shouldAutoResumeRecoveredRun,
+        createResumeBody: run => buildResumeRunBody(run, {}),
+    });
+    if (recovered.length) {
+        const autoResumeEnabled = process.env.AGENT_AUTO_RESUME_INTERRUPTED_RUNS === '1';
+        console.log(`[AgentRun] Recovered ${recovered.length} interrupted run${recovered.length === 1 ? '' : 's'} on startup.${autoResumeEnabled ? ' Auto-resume is enabled.' : ' Leaving them resumable until the user continues them.'}`);
     }
+} catch (err) {
+    console.warn('[AgentRun] Failed to recover interrupted runs:', err.message);
 }
 
 function handleAgentRunList(req, res) {
@@ -2224,21 +2207,37 @@ function handleAgentRunStream(req, res) {
 
 function handleAgentRunCancel(req, res) {
     const runId = req.params.id;
-    const active = activeAgentRuns.get(runId);
-    if (!active) {
+    if (!isRunActive(runId)) {
         const run = getRun(runId);
         if (!run) return res.status(404).json({ error: 'Run not found' });
-        return res.json({ ok: true, run: setRunStatus(runId, 'cancelled') });
+        return res.json({
+            ok: true,
+            run: setRunStatus(runId, 'cancelled', {
+                pendingPermission: null,
+                pendingPlan: null,
+                canResume: false,
+                pauseReason: null,
+                completedAt: run.completedAt || Date.now(),
+            })
+        });
     }
-    active.cancelled = true;
-    emitRunEvent(runId, { type: 'cancel_requested' });
-    res.json({ ok: true, run: setRunStatus(runId, 'cancelled') });
+    const { abortedInteractions } = cancelActiveRun(runId, 'Run cancelled by user.');
+    emitRunEvent(runId, { type: 'cancel_requested', abortedInteractions });
+    res.json({
+        ok: true,
+        run: setRunStatus(runId, 'cancelled', {
+            pendingPermission: null,
+            pendingPlan: null,
+            canResume: false,
+            pauseReason: null,
+        })
+    });
 }
 
 function handleAgentRunResume(req, res) {
     const existing = getRun(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Run not found' });
-    if (activeAgentRuns.has(existing.id)) return res.json({ ok: true, run: existing, active: true });
+    if (isRunActive(existing.id)) return res.json({ ok: true, run: existing, active: true });
     if (existing.canResume !== true || !['paused', 'interrupted'].includes(existing.status)) {
         return res.status(400).json({ error: `Run in status "${existing.status}" cannot be resumed.` });
     }
@@ -2257,8 +2256,6 @@ function handleAgentChat(req, res) {
     const run = startAgentRun(req.body || {});
     attachRunStream(run.id, res);
 }
-
-bootstrapRecoveredAgentRuns();
 
 // --- Ollama Proxy handler ---
 
@@ -2499,6 +2496,7 @@ module.exports = {
     handleAgentRunStream,
     handleAgentRunCancel,
     handleAgentRunResume,
+    buildResumeRunBody,
     handleOllamaProxy,
     getLlamacppDiagnostics,
     getLlamaProcess,

@@ -23,6 +23,16 @@ try {
         pendingPermission: { id: 'perm-1', tool: 'writeFile' }
     });
 
+    const waitingPlan = agentRuns.createRun({ model: 'test-model' });
+    agentRuns.updateRun(waitingPlan.id, {
+        status: 'waiting_permission',
+        pendingPlan: {
+            id: 'plan-1',
+            summary: 'Run tests and inspect failures',
+            actions: [{ tool: 'runShell', commands: ['npm test'], files: [] }],
+        }
+    });
+
     const paused = agentRuns.createRun({ model: 'test-model' });
     agentRuns.updateRun(paused.id, { status: 'paused', canResume: true, pauseReason: 'max_steps' });
 
@@ -34,6 +44,7 @@ try {
 
     assert(recoveredIds.has(running.id), 'running run should be marked interrupted');
     assert(recoveredIds.has(waiting.id), 'waiting_permission run should be marked interrupted');
+    assert(recoveredIds.has(waitingPlan.id), 'waiting plan run should be marked interrupted');
     assert(!recoveredIds.has(paused.id), 'paused run should not be modified');
     assert(!recoveredIds.has(completed.id), 'completed run should not be modified');
 
@@ -45,8 +56,14 @@ try {
 
     const waitingAfter = agentRuns.getRun(waiting.id);
     assert.strictEqual(waitingAfter.status, 'interrupted');
-    assert.strictEqual(waitingAfter.pendingPermission, null);
     assert.strictEqual(waitingAfter.interruptedFromStatus, 'waiting_permission');
+    assert.deepStrictEqual(waitingAfter.pendingPermission, { id: 'perm-1', tool: 'writeFile' });
+
+    const waitingPlanAfter = agentRuns.getRun(waitingPlan.id);
+    assert.strictEqual(waitingPlanAfter.status, 'interrupted');
+    assert.strictEqual(waitingPlanAfter.interruptedFromStatus, 'waiting_permission');
+    assert.strictEqual(waitingPlanAfter.pendingPlan?.id, 'plan-1');
+    assert.strictEqual(waitingPlanAfter.pendingPlan?.summary, 'Run tests and inspect failures');
 
     const pausedAfter = agentRuns.getRun(paused.id);
     assert.strictEqual(pausedAfter.status, 'paused');

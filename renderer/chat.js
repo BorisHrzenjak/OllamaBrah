@@ -945,6 +945,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         return element;
     }
 
+    function focusAgentActionCard(element) {
+        if (!element || typeof element.scrollIntoView !== 'function') return;
+        requestAnimationFrame(() => {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+    }
+
     function createAgentRunCard(title, body, tone = 'neutral') {
         const card = document.createElement('div');
         card.className = `agent-run-card agent-run-card-${tone}`;
@@ -1288,7 +1295,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentContentText = '';
                 setLiveStatus('Waiting for your permission to continue...', 'waiting');
                 const card = createPermissionCard(chunk);
-                appendAgentSectionItem(panels.sections.timeline, card);
+                appendAgentSectionItem(panels.sections.final, card);
+                focusAgentActionCard(card);
             }
 
             if (chunk.type === 'plan_request') {
@@ -1296,7 +1304,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentContentText = '';
                 setLiveStatus('Waiting for your plan approval to continue...', 'waiting');
                 const card = createPlanCard(chunk);
-                appendAgentSectionItem(panels.sections.timeline, card);
+                appendAgentSectionItem(panels.sections.final, card);
+                focusAgentActionCard(card);
             }
 
             if (chunk.type === 'plan_decision') {

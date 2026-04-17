@@ -109,6 +109,7 @@ let agentToolPermissions = {
 // Pending permission requests: id → { resolve, reject }
 const pendingPermissions = new Map();
 const pendingPlanApprovals = new Map();
+const RUN_CANCELLED_ERROR_CODE = 'AGENT_RUN_CANCELLED';
 
 const PLAN_GATED_TOOLS = new Set([
     'runShell',
@@ -174,6 +175,32 @@ function buildExecutionPlan(toolCalls = []) {
 
 function generatePermissionId() {
     return Math.random().toString(36).slice(2, 10);
+}
+
+function createRunCancelledError(message = 'Run cancelled') {
+    const err = new Error(message);
+    err.code = RUN_CANCELLED_ERROR_CODE;
+    return err;
+}
+
+function abortPendingInteractionsForRun(runId, reason = 'Run cancelled') {
+    if (!runId) return 0;
+    let aborted = 0;
+
+    for (const pending of pendingPermissions.values()) {
+        if (pending.runId === runId && typeof pending.cancel === 'function') {
+            pending.cancel(reason);
+            aborted += 1;
+        }
+    }
+    for (const pending of pendingPlanApprovals.values()) {
+        if (pending.runId === runId && typeof pending.cancel === 'function') {
+            pending.cancel(reason);
+            aborted += 1;
+        }
+    }
+
+    return aborted;
 }
 
 function isPathAllowed(targetPath) {
@@ -664,15 +691,28 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
     const id = generatePermissionId();
     res.write(JSON.stringify({ type: 'permission_request', id, tool, args, risk, runId: res.runId || null }) + '\n');
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
         let keepaliveInterval;
+        let settled = false;
 
-        const cleanup = (approved) => {
+        const cleanup = () => {
+            if (settled) return false;
+            settled = true;
             clearTimeout(timeout);
             clearInterval(keepaliveInterval);
             if (typeof res.removeListener === 'function') res.removeListener('close', onClose);
             pendingPermissions.delete(id);
+            return true;
+        };
+
+        const settle = (approved) => {
+            if (!cleanup()) return;
             resolve(approved);
+        };
+
+        const cancel = (reason) => {
+            if (!cleanup()) return;
+            reject(createRunCancelledError(reason));
         };
 
         // Keepalive pings prevent the HTTP connection from timing out during long waits
@@ -680,9 +720,9 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
             if (!res.writableEnded) res.write(JSON.stringify({ type: 'keepalive' }) + '\n');
         }, 25000);
 
-        const timeout = setTimeout(() => cleanup(false), 300000); // auto-deny after 5 min
+        const timeout = setTimeout(() => settle(false), 300000); // auto-deny after 5 min
 
-        const onClose = () => cleanup(false); // client disconnected
+        const onClose = () => settle(false); // client disconnected
         if (typeof res.once === 'function') res.once('close', onClose);
 
         pendingPermissions.set(id, {
@@ -702,9 +742,10 @@ async function requestPermission(res, tool, args, risk, sessionPermissions) {
                 if (typeof res.write === 'function' && !res.writableEnded) {
                     res.write(JSON.stringify({ type: 'permission_decision', id, approved: !!approved, scope, tool, args, risk }) + '\n');
                 }
-                cleanup(approved);
+                settle(approved);
             },
-            reject: () => cleanup(false)
+            reject: () => settle(false),
+            cancel,
         });
     });
 }
@@ -724,16 +765,30 @@ async function requestPlanApproval(res, plan, sessionPermissions) {
     const id = generatePermissionId();
     res.write(JSON.stringify({ type: 'plan_request', id, plan, runId: res.runId || null }) + '\n');
 
-    return new Promise((resolve) => {
-        const timeout = setTimeout(() => cleanup(false), 300000);
-        const onClose = () => cleanup(false);
+    return new Promise((resolve, reject) => {
+        let settled = false;
 
-        const cleanup = (approved) => {
+        const cleanup = () => {
+            if (settled) return false;
+            settled = true;
             clearTimeout(timeout);
             if (typeof res.removeListener === 'function') res.removeListener('close', onClose);
             pendingPlanApprovals.delete(id);
+            return true;
+        };
+
+        const settle = (approved) => {
+            if (!cleanup()) return;
             resolve(approved);
         };
+
+        const cancel = (reason) => {
+            if (!cleanup()) return;
+            reject(createRunCancelledError(reason));
+        };
+
+        const timeout = setTimeout(() => settle(false), 300000);
+        const onClose = () => settle(false);
 
         if (typeof res.once === 'function') res.once('close', onClose);
 
@@ -750,9 +805,10 @@ async function requestPlanApproval(res, plan, sessionPermissions) {
                         sessionPermissions._persist();
                     }
                 }
-                cleanup(approved);
+                settle(approved);
             },
-            reject: () => cleanup(false),
+            reject: () => settle(false),
+            cancel,
         });
     });
 }
@@ -1217,6 +1273,9 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 return { result: `Unknown tool: ${name}`, error: true };
         }
     } catch (err) {
+        if (err?.code === RUN_CANCELLED_ERROR_CODE) {
+            throw err;
+        }
         return { result: 'Unexpected error: ' + err.message, error: true };
     }
 }
@@ -1336,9 +1395,11 @@ module.exports = {
     agentToolPermissions,
     pendingPermissions,
     pendingPlanApprovals,
+    RUN_CANCELLED_ERROR_CODE,
     PLAN_GATED_TOOLS,
     buildToolPlan: getPlanToolEntry,
     buildExecutionPlan,
+    abortPendingInteractionsForRun,
     generatePermissionId,
     isPathAllowed,
     ensureAllowedPath,

@@ -150,8 +150,8 @@ function recoverInterruptedRuns(reason = 'Run interrupted because the app stoppe
             pauseReason: 'interrupted',
             interruptionReason: reason,
             interruptedFromStatus: run.status,
-            pendingPermission: null,
-            pendingPlan: null,
+            pendingPermission: run.pendingPermission || null,
+            pendingPlan: run.pendingPlan || null,
         });
         appendRunEvent(run.id, {
             type: 'interrupted',
