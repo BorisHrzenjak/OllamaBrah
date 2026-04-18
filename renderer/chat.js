@@ -8884,6 +8884,33 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         }
     });
 
+    document.addEventListener('click', async (e) => {
+        const link = e.target instanceof Element ? e.target.closest('a[href]') : null;
+        if (!link) return;
+
+        const rawHref = link.getAttribute('href');
+        if (!rawHref || rawHref.startsWith('#')) return;
+
+        let resolvedUrl;
+        try {
+            resolvedUrl = new URL(rawHref, window.location.href);
+        } catch {
+            return;
+        }
+
+        const isExternalProtocol = ['http:', 'https:', 'mailto:'].includes(resolvedUrl.protocol);
+        if (!isExternalProtocol || !window.electronAPI?.openExternal) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        try {
+            await window.electronAPI.openExternal(resolvedUrl.toString());
+        } catch (err) {
+            console.warn('[links] Failed to open external URL:', resolvedUrl.toString(), err);
+        }
+    }, true);
+
     document.addEventListener('click', (e) => {
         if (!modelSwitcherButton.contains(e.target) && !modelSwitcherDropdown.contains(e.target)) {
             modelSwitcherDropdown.style.display = 'none';
