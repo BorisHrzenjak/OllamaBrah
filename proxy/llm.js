@@ -23,19 +23,32 @@ const {
     executeTool,
     getEnabledTools,
     getAgentMaxSteps,
+    getAgentMaxComputeSteps,
+    getAgentExecutionPolicy,
     createToolCache,
     buildExecutionPlan,
     requestPlanApproval,
+    RUN_CANCELLED_ERROR_CODE,
 } = require('./tools');
 const { fetchOllama, resolveOllamaBaseUrl } = require('./ollama');
 const {
-    createRun,
     getRun,
     updateRun,
     appendRunEvent,
-    listRuns,
-    readRunEvents,
 } = require('./agent-runs');
+const {
+    configureAgentRunManager,
+    publishRunEvent,
+    isRunCancelled,
+    isRunActive,
+    clearActiveRun,
+    startAgentRun,
+    resumeAgentRun,
+    attachRunStream,
+    cancelActiveRun,
+    recoverAgentRunsOnStartup,
+    listRuns,
+} = require('./agent-run-manager');
 
 // Resolve paths that may live in app.asar.unpacked when packaged
 function unpackedPath(...segments) {
@@ -61,7 +74,6 @@ let llamaModelManifest = new Map();
 let llamaDesiredModel = null;
 let llamaLoadPromise = null;
 let llamaAutoWarmStarted = false;
-const activeAgentRuns = new Map();
 
 function safeParseJson(raw, fallback) {
     try {
@@ -1565,18 +1577,37 @@ async function handleAgentChat(req, res) {
     res.end();
 }
 
-function writeNdjson(res, payload) {
-    if (!res || res.writableEnded || res.destroyed) return;
-    res.write(JSON.stringify(payload) + '\n');
-}
-
 function setRunStatus(runId, status, extra = {}) {
     return updateRun(runId, { status, ...extra });
 }
 
+function loadSessionPermissionsFromRun(run) {
+    const grants = Array.isArray(run?.sessionPermissionGrants) ? run.sessionPermissionGrants : [];
+    const sessionPermissions = new Map(grants.map(key => [key, true]));
+    return sessionPermissions;
+}
+
+function persistSessionPermissions(runId, sessionPermissions) {
+    const grants = [...sessionPermissions.keys()].filter(key => typeof key === 'string' && !key.startsWith('_'));
+    updateRun(runId, { sessionPermissionGrants: grants });
+}
+
+function normalizeExecutionPolicy(value, fallback = 'run_until_blocked') {
+    return ['pause_on_limit', 'run_until_blocked'].includes(value) ? value : fallback;
+}
+
+function normalizeComputeBudget(value, fallback) {
+    const parsed = parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.min(500, Math.max(1, parsed));
+    return fallback;
+}
+
+function isRunCancelledError(err) {
+    return err?.code === RUN_CANCELLED_ERROR_CODE;
+}
+
 function emitRunEvent(runId, payload) {
     appendRunEvent(runId, payload);
-    const active = activeAgentRuns.get(runId);
     if (payload.type === 'permission_request') {
         setRunStatus(runId, 'waiting_permission', {
             pendingPermission: { id: payload.id, tool: payload.tool, args: payload.args, risk: payload.risk }
@@ -1596,8 +1627,25 @@ function emitRunEvent(runId, payload) {
             timestamp: Date.now(),
         });
         setRunStatus(runId, current?.status === 'waiting_permission' ? 'running' : (current?.status || 'running'), {
+            pendingPermission: null,
             pendingPlan: null,
             approvedPlans,
+        });
+    } else if (payload.type === 'permission_decision') {
+        const current = getRun(runId);
+        const decisions = Array.isArray(current?.permissionDecisions) ? [...current.permissionDecisions] : [];
+        decisions.push({
+            id: payload.id,
+            tool: payload.tool,
+            approved: !!payload.approved,
+            scope: payload.scope || 'once',
+            risk: payload.risk || null,
+            timestamp: Date.now(),
+        });
+        setRunStatus(runId, current?.status === 'waiting_permission' ? 'running' : (current?.status || 'running'), {
+            pendingPermission: null,
+            pendingPlan: null,
+            permissionDecisions: decisions,
         });
     } else if (payload.type === 'tool_result') {
         const current = getRun(runId);
@@ -1605,11 +1653,7 @@ function emitRunEvent(runId, payload) {
             setRunStatus(runId, 'running', { pendingPermission: null, pendingPlan: null });
         }
     }
-    if (active) {
-        for (const subscriber of active.subscribers) {
-            writeNdjson(subscriber, payload);
-        }
-    }
+    publishRunEvent(runId, payload);
 }
 
 function createRunWriter(runId, options = {}) {
@@ -1633,39 +1677,86 @@ function createRunWriter(runId, options = {}) {
     };
 }
 
-function attachRunStream(runId, res) {
-    const run = getRun(runId);
-    if (!run) return res.status(404).json({ error: 'Run not found' });
-
-    res.setHeader('Content-Type', 'application/x-ndjson');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.setHeader('Cache-Control', 'no-cache');
-
-    for (const event of readRunEvents(runId)) {
-        const { timestamp, ...payload } = event;
-        writeNdjson(res, payload);
-    }
-
-    const active = activeAgentRuns.get(runId);
-    if (!active) return res.end();
-
-    active.subscribers.add(res);
-    res.once('close', () => {
-        activeAgentRuns.get(runId)?.subscribers.delete(res);
-    });
-}
-
 async function executeDurableAgentRun(runId, body = {}) {
-    const { messages: initialMessages, model, backend = 'ollama', maxSteps, continueFrom, _skillHint, workspaceRoot, yoloMode } = body;
-    const steps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || getAgentMaxSteps()));
+    const {
+        messages: initialMessages,
+        model,
+        backend = 'ollama',
+        maxSteps,
+        maxComputeSteps: requestedMaxComputeSteps,
+        executionPolicy: requestedExecutionPolicy,
+        autoResumeOnRestart: requestedAutoResumeOnRestart,
+        continueFrom,
+        _skillHint,
+        workspaceRoot,
+        yoloMode,
+    } = body;
     const tools = getEnabledTools();
-    const sessionPermissions = new Map();
+    const existingRun = getRun(runId);
+    const stepChunkLimit = Math.max(
+        1,
+        Math.min(50, parseInt(maxSteps, 10) || parseInt(existingRun?.maxSteps, 10) || getAgentMaxSteps())
+    );
+    const maxComputeSteps = normalizeComputeBudget(
+        requestedMaxComputeSteps,
+        normalizeComputeBudget(existingRun?.maxComputeSteps, getAgentMaxComputeSteps())
+    );
+    const executionPolicy = normalizeExecutionPolicy(
+        requestedExecutionPolicy,
+        normalizeExecutionPolicy(existingRun?.executionPolicy, getAgentExecutionPolicy())
+    );
+    const autoResumeOnRestart = requestedAutoResumeOnRestart !== false && existingRun?.autoResumeOnRestart !== false;
+    const sessionPermissions = loadSessionPermissionsFromRun(existingRun);
+    sessionPermissions._persist = () => persistSessionPermissions(runId, sessionPermissions);
     const toolCache = createToolCache();
     const writer = createRunWriter(runId, { yoloMode: yoloMode === true });
     let previousStepUsedTools = false;
     let messages = continueFrom ? [...continueFrom] : [...(initialMessages || [])];
+    let stepsCompleted = Math.max(
+        0,
+        parseInt(body.stepsCompleted, 10)
+        || parseInt(existingRun?.stepsCompleted, 10)
+        || 0
+    );
+    const initialResumeCount = parseInt(existingRun?.resumeCount, 10) || 0;
+    const initialStartedAt = existingRun?.startedAt || Date.now();
+    const markRunCancelled = (step = stepsCompleted) => {
+        writer.write(JSON.stringify({ type: 'cancelled', step }));
+        setRunStatus(runId, 'cancelled', {
+            latestMessages: messages,
+            pendingPermission: null,
+            pendingPlan: null,
+            lastStep: stepsCompleted,
+            stepsCompleted,
+            canResume: false,
+            pauseReason: null,
+            completedAt: Date.now(),
+        });
+    };
 
-    setRunStatus(runId, 'running', { maxSteps: steps, latestMessages: messages, pendingPermission: null, pendingPlan: null, approvedPlans: [], lastError: null });
+    setRunStatus(runId, 'running', {
+        maxSteps: stepChunkLimit,
+        maxComputeSteps,
+        executionPolicy,
+        autoResumeOnRestart,
+        stepBudget: stepChunkLimit,
+        latestMessages: messages,
+        pendingPermission: null,
+        pendingPlan: null,
+        sessionPermissionGrants: Array.isArray(existingRun?.sessionPermissionGrants) ? existingRun.sessionPermissionGrants : [],
+        approvedPlans: Array.isArray(existingRun?.approvedPlans) ? existingRun.approvedPlans : [],
+        filesTouched: Array.isArray(existingRun?.filesTouched) ? existingRun.filesTouched : [],
+        lastError: null,
+        canResume: true,
+        pauseReason: null,
+        interruptionReason: null,
+        interruptedFromStatus: null,
+        stepsCompleted,
+        lastStep: Math.max(stepsCompleted, parseInt(existingRun?.lastStep, 10) || 0),
+        startedAt: initialStartedAt,
+        completedAt: null,
+        resumeCount: continueFrom ? initialResumeCount + 1 : initialResumeCount,
+    });
     if (yoloMode === true) {
         writer.write(JSON.stringify({ type: 'yolo_mode', enabled: true, text: 'YOLO mode enabled: plan and permission prompts will be auto-approved for this run.' }));
     }
@@ -1705,158 +1796,393 @@ async function executeDurableAgentRun(runId, body = {}) {
     }
 
     try {
-        for (let step = 1; step <= steps; step++) {
-            if (activeAgentRuns.get(runId)?.cancelled) {
-                writer.write(JSON.stringify({ type: 'cancelled', step }));
-                setRunStatus(runId, 'cancelled', { latestMessages: messages });
+        let stopRun = false;
+        while (!stopRun) {
+            if (isRunCancelled(runId)) {
+                markRunCancelled(stepsCompleted);
                 break;
             }
 
-            const phase = previousStepUsedTools ? 'post_tools' : (step === 1 ? 'planning' : 'thinking');
-            const statusText = previousStepUsedTools
-                ? 'Reviewing tool results and preparing the next step or final response...'
-                : (step === 1 ? 'Analyzing your request and planning the first step...' : 'Thinking through the next step...');
-            writer.write(JSON.stringify({ type: 'status', phase, text: statusText, step, maxSteps: steps }));
-
-            let response;
-            const heartbeat = setInterval(() => writer.write(JSON.stringify({ type: 'heartbeat' })), 15000);
-            try {
-                response = backend === 'llamacpp'
-                    ? await callLlamaCppWithTools(messages, tools, model || 'default')
-                    : await callOllamaWithTools(messages, tools, model || 'llama3.2');
-            } catch (err) {
-                clearInterval(heartbeat);
-                writer.write(JSON.stringify({ type: 'error', text: 'Model call failed: ' + err.message }));
-                setRunStatus(runId, 'failed', { lastError: err.message, latestMessages: messages });
-                break;
-            }
-            clearInterval(heartbeat);
-
-            const toolCalls = extractToolCalls(response, backend);
-            const content = extractContent(response, backend);
-            if (content && content.trim()) writer.write(JSON.stringify({ type: 'content', text: content }));
-
-            if (!toolCalls || toolCalls.length === 0) {
-                writer.write(JSON.stringify({ type: 'step_done', step, maxSteps: steps }));
-                const current = getRun(runId);
-                if (current?.filesTouched?.length) writer.write(JSON.stringify({ type: 'files_touched', files: current.filesTouched }));
-                setRunStatus(runId, 'completed', { latestMessages: messages, pendingPermission: null });
+            const remainingBudget = maxComputeSteps - stepsCompleted;
+            if (remainingBudget <= 0) {
+                writer.write(JSON.stringify({
+                    type: 'run_budget_reached',
+                    reason: 'compute_budget',
+                    stepsCompleted,
+                    maxComputeSteps,
+                    messages: [...messages],
+                }));
+                setRunStatus(runId, 'paused', {
+                    latestMessages: messages,
+                    lastStep: stepsCompleted,
+                    stepsCompleted,
+                    canResume: true,
+                    pauseReason: 'compute_budget',
+                    interruptionReason: null,
+                    pendingPermission: null,
+                    pendingPlan: null,
+                });
                 break;
             }
 
-            const plan = buildExecutionPlan(toolCalls.map(tc => ({
-                name: tc.name,
-                args: tc.args,
-                risk: tc.name === 'runShell' ? 'critical'
-                    : ['writeFile', 'applyPatch', 'deleteFile'].includes(tc.name) ? 'high'
-                        : ['replaceInFile', 'mkdir', 'copyFile', 'moveFile', 'appendFile'].includes(tc.name) ? 'medium'
-                            : 'low'
-            })));
-            if (plan) {
-                const planApproved = await requestPlanApproval(writer, plan, sessionPermissions);
-                if (!planApproved) {
-                    writer.write(JSON.stringify({ type: 'error', text: 'Plan not approved.' }));
-                    setRunStatus(runId, 'failed', { latestMessages: messages, pendingPlan: null });
+            const chunkSteps = Math.min(stepChunkLimit, remainingBudget);
+            for (let chunkStep = 1; chunkStep <= chunkSteps; chunkStep++) {
+                const step = stepsCompleted + 1;
+
+                if (isRunCancelled(runId)) {
+                    markRunCancelled(step);
+                    stopRun = true;
                     break;
                 }
-            }
 
-            writer.write(JSON.stringify({ type: 'status', phase: 'executing_tools', text: `Running ${toolCalls.length} tool${toolCalls.length === 1 ? '' : 's'}...`, step, maxSteps: steps }));
-            for (const tc of toolCalls) writer.write(JSON.stringify({ type: 'tool_call', name: tc.name, args: tc.args }));
+                const phase = previousStepUsedTools ? 'post_tools' : (step === 1 ? 'planning' : 'thinking');
+                const statusText = previousStepUsedTools
+                    ? 'Reviewing tool results and preparing the next step or final response...'
+                    : (step === 1 ? 'Analyzing your request and planning the first step...' : 'Thinking through the next step...');
+                writer.write(JSON.stringify({ type: 'status', phase, text: statusText, step, maxSteps: maxComputeSteps }));
 
-            const execResults = await Promise.all(toolCalls.map(async tc => {
-                const { result, error, diffPreview, diffPath } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend, toolCache, workspaceRoot);
-                writer.write(JSON.stringify({ type: 'tool_result', name: tc.name, result, error: !!error }));
-                if (diffPreview) writer.write(JSON.stringify({ type: 'file_diff', name: tc.name, path: diffPath || tc.args?.path || null, diff: diffPreview }));
-                return { tc, result, error, diffPreview, diffPath };
-            }));
+                let response;
+                const heartbeat = setInterval(() => writer.write(JSON.stringify({ type: 'heartbeat' })), 15000);
+                try {
+                    response = backend === 'llamacpp'
+                        ? await callLlamaCppWithTools(messages, tools, model || 'default')
+                        : await callOllamaWithTools(messages, tools, model || 'llama3.2');
+                } catch (err) {
+                    clearInterval(heartbeat);
+                    writer.write(JSON.stringify({ type: 'error', text: 'Model call failed: ' + err.message }));
+                    setRunStatus(runId, 'failed', {
+                        lastError: err.message,
+                        latestMessages: messages,
+                        lastStep: stepsCompleted,
+                        stepsCompleted,
+                        canResume: false,
+                    });
+                    stopRun = true;
+                    break;
+                }
+                clearInterval(heartbeat);
 
-            const touched = [...new Set(execResults.flatMap(({ tc }) => {
-                const args = tc.args || {};
-                if (['writeFile', 'replaceInFile', 'applyPatch', 'deleteFile', 'appendFile', 'mkdir'].includes(tc.name)) return args.path ? [args.path] : [];
-                if (['copyFile', 'moveFile'].includes(tc.name)) return [args.source, args.destination].filter(Boolean);
-                return [];
-            }))];
-            if (touched.length) {
-                const current = getRun(runId);
-                const filesTouched = [...new Set([...(current?.filesTouched || []), ...touched])];
-                updateRun(runId, { filesTouched });
-                writer.write(JSON.stringify({ type: 'files_touched', files: filesTouched }));
-            }
+                const toolCalls = extractToolCalls(response, backend);
+                const content = extractContent(response, backend);
+                if (content && content.trim()) writer.write(JSON.stringify({ type: 'content', text: content }));
 
-            if (backend === 'llamacpp') {
-                messages.push({ role: 'assistant', content: '', tool_calls: execResults.map(({ tc }) => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.args) } })) });
-                for (const { tc, result } of execResults) messages.push({ role: 'tool', tool_call_id: tc.id, content: String(result) });
-            } else {
-                messages.push({ role: 'assistant', content: '', tool_calls: execResults.map(({ tc }) => ({ function: { name: tc.name, arguments: tc.args } })) });
-                for (const { result } of execResults) messages.push({ role: 'tool', content: String(result) });
-            }
+                if (!toolCalls || toolCalls.length === 0) {
+                    writer.write(JSON.stringify({ type: 'step_done', step, maxSteps: maxComputeSteps }));
+                    const current = getRun(runId);
+                    if (current?.filesTouched?.length) writer.write(JSON.stringify({ type: 'files_touched', files: current.filesTouched }));
+                    setRunStatus(runId, 'completed', {
+                        latestMessages: messages,
+                        pendingPermission: null,
+                        pendingPlan: null,
+                        lastStep: step,
+                        stepsCompleted: step,
+                        canResume: false,
+                        pauseReason: null,
+                        interruptionReason: null,
+                        completedAt: Date.now(),
+                    });
+                    stopRun = true;
+                    break;
+                }
 
-            updateRun(runId, { latestMessages: messages, pendingPermission: null });
-
-            const tokenEstimate = estimateTokens(messages);
-            const ctxLimit = backend === 'llamacpp' ? llamaCtxSize : await getModelContextLimit(model || 'llama3.2').catch(() => 32768);
-            const compressionThreshold = Math.floor(ctxLimit * 0.65);
-            if (tokenEstimate > compressionThreshold) {
-                const KEEP_HEAD = 3;
-                const KEEP_TAIL = 6;
-                const middleStart = KEEP_HEAD;
-                const middleEnd = Math.max(KEEP_HEAD, messages.length - KEEP_TAIL);
-                const middle = messages.slice(middleStart, middleEnd);
-                if (middle.length >= 2) {
+                const plan = buildExecutionPlan(toolCalls.map(tc => ({
+                    name: tc.name,
+                    args: tc.args,
+                    risk: tc.name === 'runShell' ? 'critical'
+                        : ['writeFile', 'applyPatch', 'deleteFile'].includes(tc.name) ? 'high'
+                            : ['replaceInFile', 'mkdir', 'copyFile', 'moveFile', 'appendFile'].includes(tc.name) ? 'medium'
+                                : 'low'
+                })));
+                if (plan) {
+                    let planApproved;
                     try {
-                        const workLog = middle.map(m => {
-                            const contentPart = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
-                            const calls = m.tool_calls ? ' [called: ' + m.tool_calls.map(tc => tc.function?.name || tc.name || '?').join(', ') + ']' : '';
-                            return `[${m.role}${calls}]: ${contentPart.slice(0, 600)}`;
-                        }).join('\n---\n');
-                        const summary = await callModelSync(model || 'llama3.2', backend, 'Summarize the following agent work log. List: goals pursued, tools called, key findings, files read/written, current status, and any errors. Be concise but preserve all specific values (file paths, counts, errors):\n\n' + workLog, 30000);
-                        if (summary && summary.trim()) {
-                            const summaryMsg = { role: 'assistant', content: `[Progress summary — ${middle.length} messages compressed]\n${summary.trim()}` };
-                            messages.splice(middleStart, middle.length, summaryMsg);
-                            const tokensAfter = estimateTokens(messages);
-                            updateRun(runId, { latestMessages: messages });
-                            writer.write(JSON.stringify({ type: 'context_compressed', step, tokensBefore: tokenEstimate, tokensAfter }));
-                        }
+                        planApproved = await requestPlanApproval(writer, plan, sessionPermissions);
                     } catch (err) {
-                        console.warn('[Agent] Mid-run compression failed:', err.message);
+                        if (isRunCancelledError(err)) {
+                            markRunCancelled(step);
+                            stopRun = true;
+                            break;
+                        }
+                        throw err;
+                    }
+                    if (!planApproved) {
+                        writer.write(JSON.stringify({ type: 'error', text: 'Plan not approved.' }));
+                        setRunStatus(runId, 'failed', {
+                            latestMessages: messages,
+                            pendingPlan: null,
+                            lastStep: stepsCompleted,
+                            stepsCompleted,
+                            canResume: false,
+                            pauseReason: null,
+                            completedAt: Date.now(),
+                        });
+                        stopRun = true;
+                        break;
                     }
                 }
+
+                writer.write(JSON.stringify({
+                    type: 'status',
+                    phase: 'executing_tools',
+                    text: `Running ${toolCalls.length} tool${toolCalls.length === 1 ? '' : 's'}...`,
+                    step,
+                    maxSteps: maxComputeSteps
+                }));
+                for (const tc of toolCalls) writer.write(JSON.stringify({ type: 'tool_call', name: tc.name, args: tc.args }));
+
+                let execResults;
+                try {
+                    execResults = await Promise.all(toolCalls.map(async tc => {
+                        const { result, error, diffPreview, diffPath } = await executeTool(writer, tc.name, tc.args, sessionPermissions, model, backend, toolCache, workspaceRoot);
+                        writer.write(JSON.stringify({ type: 'tool_result', name: tc.name, result, error: !!error }));
+                        if (diffPreview) writer.write(JSON.stringify({ type: 'file_diff', name: tc.name, path: diffPath || tc.args?.path || null, diff: diffPreview }));
+                        return { tc, result, error, diffPreview, diffPath };
+                    }));
+                } catch (err) {
+                    if (isRunCancelledError(err)) {
+                        markRunCancelled(step);
+                        stopRun = true;
+                        break;
+                    }
+                    throw err;
+                }
+
+                const touched = [...new Set(execResults.flatMap(({ tc }) => {
+                    const args = tc.args || {};
+                    if (['writeFile', 'replaceInFile', 'applyPatch', 'deleteFile', 'appendFile', 'mkdir'].includes(tc.name)) return args.path ? [args.path] : [];
+                    if (['copyFile', 'moveFile'].includes(tc.name)) return [args.source, args.destination].filter(Boolean);
+                    return [];
+                }))];
+                if (touched.length) {
+                    const current = getRun(runId);
+                    const filesTouched = [...new Set([...(current?.filesTouched || []), ...touched])];
+                    updateRun(runId, { filesTouched });
+                    writer.write(JSON.stringify({ type: 'files_touched', files: filesTouched }));
+                }
+
+                if (backend === 'llamacpp') {
+                    messages.push({ role: 'assistant', content: '', tool_calls: execResults.map(({ tc }) => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.args) } })) });
+                    for (const { tc, result } of execResults) messages.push({ role: 'tool', tool_call_id: tc.id, content: String(result) });
+                } else {
+                    messages.push({ role: 'assistant', content: '', tool_calls: execResults.map(({ tc }) => ({ function: { name: tc.name, arguments: tc.args } })) });
+                    for (const { result } of execResults) messages.push({ role: 'tool', content: String(result) });
+                }
+
+                updateRun(runId, {
+                    latestMessages: messages,
+                    pendingPermission: null,
+                    pendingPlan: null,
+                    lastStep: step,
+                    stepsCompleted: step,
+                });
+                stepsCompleted = step;
+
+                const tokenEstimate = estimateTokens(messages);
+                const ctxLimit = backend === 'llamacpp' ? llamaCtxSize : await getModelContextLimit(model || 'llama3.2').catch(() => 32768);
+                const compressionThreshold = Math.floor(ctxLimit * 0.65);
+                if (tokenEstimate > compressionThreshold) {
+                    const KEEP_HEAD = 3;
+                    const KEEP_TAIL = 6;
+                    const middleStart = KEEP_HEAD;
+                    const middleEnd = Math.max(KEEP_HEAD, messages.length - KEEP_TAIL);
+                    const middle = messages.slice(middleStart, middleEnd);
+                    if (middle.length >= 2) {
+                        try {
+                            const workLog = middle.map(m => {
+                                const contentPart = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+                                const calls = m.tool_calls ? ' [called: ' + m.tool_calls.map(tc => tc.function?.name || tc.name || '?').join(', ') + ']' : '';
+                                return `[${m.role}${calls}]: ${contentPart.slice(0, 600)}`;
+                            }).join('\n---\n');
+                            const summary = await callModelSync(model || 'llama3.2', backend, 'Summarize the following agent work log. List: goals pursued, tools called, key findings, files read/written, current status, and any errors. Be concise but preserve all specific values (file paths, counts, errors):\n\n' + workLog, 30000);
+                            if (summary && summary.trim()) {
+                                const summaryMsg = { role: 'assistant', content: `[Progress summary — ${middle.length} messages compressed]\n${summary.trim()}` };
+                                messages.splice(middleStart, middle.length, summaryMsg);
+                                const tokensAfter = estimateTokens(messages);
+                                updateRun(runId, { latestMessages: messages });
+                                writer.write(JSON.stringify({ type: 'context_compressed', step, tokensBefore: tokenEstimate, tokensAfter }));
+                            }
+                        } catch (err) {
+                            console.warn('[Agent] Mid-run compression failed:', err.message);
+                        }
+                    }
+                }
+
+                previousStepUsedTools = true;
+                writer.write(JSON.stringify({ type: 'step_done', step, maxSteps: maxComputeSteps }));
             }
 
-            previousStepUsedTools = true;
-            writer.write(JSON.stringify({ type: 'step_done', step, maxSteps: steps }));
-            if (step === steps) {
-                writer.write(JSON.stringify({ type: 'content', text: '\n\n*Agent reached maximum steps.*' }));
-                writer.write(JSON.stringify({ type: 'max_steps_reached', messages: [...messages] }));
-                setRunStatus(runId, 'completed', { latestMessages: messages });
+            if (stopRun) break;
+
+            if (stepsCompleted >= maxComputeSteps) {
+                writer.write(JSON.stringify({
+                    type: 'run_budget_reached',
+                    reason: 'compute_budget',
+                    stepsCompleted,
+                    maxComputeSteps,
+                    messages: [...messages],
+                }));
+                setRunStatus(runId, 'paused', {
+                    latestMessages: messages,
+                    lastStep: stepsCompleted,
+                    stepsCompleted,
+                    canResume: true,
+                    pauseReason: 'compute_budget',
+                    interruptionReason: null,
+                    pendingPermission: null,
+                    pendingPlan: null,
+                });
+                stopRun = true;
+                break;
             }
+
+            if (executionPolicy === 'pause_on_limit') {
+                writer.write(JSON.stringify({ type: 'content', text: '\n\n*Agent reached the current step chunk limit.*' }));
+                writer.write(JSON.stringify({
+                    type: 'max_steps_reached',
+                    reason: 'step_limit',
+                    stepChunkLimit,
+                    stepsCompleted,
+                    maxComputeSteps,
+                    messages: [...messages],
+                }));
+                setRunStatus(runId, 'paused', {
+                    latestMessages: messages,
+                    lastStep: stepsCompleted,
+                    stepsCompleted,
+                    canResume: true,
+                    pauseReason: 'step_limit',
+                    interruptionReason: null,
+                    pendingPermission: null,
+                    pendingPlan: null,
+                });
+                stopRun = true;
+                break;
+            }
+
+            writer.write(JSON.stringify({
+                type: 'status',
+                phase: 'continuing_run',
+                text: `Continuing automatically after ${stepsCompleted} step${stepsCompleted === 1 ? '' : 's'}...`,
+                step: stepsCompleted,
+                maxSteps: maxComputeSteps
+            }));
         }
     } catch (err) {
         console.error('[Agent] Durable run error:', err);
         writer.write(JSON.stringify({ type: 'error', text: err.message }));
-        setRunStatus(runId, 'failed', { lastError: err.message, latestMessages: messages });
+        setRunStatus(runId, 'failed', {
+            lastError: err.message,
+            latestMessages: messages,
+            lastStep: stepsCompleted,
+            stepsCompleted,
+            canResume: false,
+            pauseReason: null,
+            completedAt: Date.now(),
+        });
     }
 
     writer.write(JSON.stringify({ type: 'done' }));
     const current = getRun(runId);
-    if (current && current.status === 'running') setRunStatus(runId, 'completed', { latestMessages: messages });
-    activeAgentRuns.delete(runId);
+    if (current && current.status === 'running') {
+        setRunStatus(runId, 'completed', {
+            latestMessages: messages,
+            canResume: false,
+            pauseReason: null,
+            interruptionReason: null,
+            completedAt: Date.now(),
+        });
+    }
+    clearActiveRun(runId);
 }
 
-function startAgentRun(body = {}) {
-    const run = createRun(body);
-    activeAgentRuns.set(run.id, { subscribers: new Set(), cancelled: false });
-    setImmediate(() => {
-        executeDurableAgentRun(run.id, body).catch(err => {
-            console.error('[AgentRun] Fatal durable run error:', err);
-            setRunStatus(run.id, 'failed', { lastError: err.message });
-            emitRunEvent(run.id, { type: 'error', text: err.message });
-            emitRunEvent(run.id, { type: 'done' });
-            activeAgentRuns.delete(run.id);
-        });
+function buildResumeRunBody(existing, overrides = {}) {
+    const extendBudgetBy = normalizeComputeBudget(overrides.extendBudgetBy, 0) || 0;
+    const nextMaxComputeSteps = extendBudgetBy > 0
+        ? Math.max(
+            normalizeComputeBudget(existing.maxComputeSteps, getAgentMaxComputeSteps()),
+            Math.max(0, parseInt(existing.stepsCompleted, 10) || 0) + extendBudgetBy
+        )
+        : normalizeComputeBudget(
+            overrides.maxComputeSteps,
+            normalizeComputeBudget(existing.maxComputeSteps, getAgentMaxComputeSteps())
+        );
+    const nextExecutionPolicy = normalizeExecutionPolicy(
+        overrides.executionPolicy,
+        normalizeExecutionPolicy(existing.executionPolicy, getAgentExecutionPolicy())
+    );
+    const nextAutoResumeOnRestart = overrides.autoResumeOnRestart !== false && existing.autoResumeOnRestart !== false;
+    const body = {
+        ...(existing.requestBody || {}),
+        ...overrides,
+        maxComputeSteps: nextMaxComputeSteps,
+        executionPolicy: nextExecutionPolicy,
+        autoResumeOnRestart: nextAutoResumeOnRestart,
+        continueFrom: existing.latestMessages || existing.requestBody?.messages || [],
+        resumedFromRunId: existing.resumedFromRunId || existing.id,
+        sessionPermissionGrants: existing.sessionPermissionGrants || [],
+        approvedPlans: existing.approvedPlans || [],
+        filesTouched: existing.filesTouched || [],
+        stepsCompleted: existing.stepsCompleted || 0,
+        lastStep: existing.lastStep || 0,
+        startedAt: existing.startedAt || existing.createdAt || null,
+        resumeCount: existing.resumeCount || 0,
+    };
+    return body;
+}
+
+function resumeExistingAgentRun(existing, overrides = {}) {
+    const body = buildResumeRunBody(existing, overrides);
+    updateRun(existing.id, {
+        requestBody: {
+            ...(existing.requestBody || {}),
+            ...(Number.isFinite(parseInt(overrides.maxSteps, 10)) ? { maxSteps: parseInt(overrides.maxSteps, 10) } : {}),
+            maxComputeSteps: body.maxComputeSteps,
+            executionPolicy: body.executionPolicy,
+            autoResumeOnRestart: body.autoResumeOnRestart,
+        },
+        maxComputeSteps: body.maxComputeSteps,
+        executionPolicy: body.executionPolicy,
+        autoResumeOnRestart: body.autoResumeOnRestart,
+        canResume: true,
+        pauseReason: null,
+        interruptionReason: null,
+        completedAt: null,
+        lastError: null,
     });
-    return getRun(run.id);
+    return resumeAgentRun(existing.id, body);
+}
+
+function shouldAutoResumeRecoveredRun(run) {
+    return process.env.AGENT_AUTO_RESUME_INTERRUPTED_RUNS === '1'
+        && !!run
+        && run.canResume === true
+        && run.autoResumeOnRestart !== false
+        && ['queued', 'running'].includes(run.interruptedFromStatus);
+}
+
+function handleFatalAgentRunError(runId, err) {
+    console.error('[AgentRun] Fatal durable run error:', err);
+    setRunStatus(runId, 'failed', { lastError: err.message });
+    emitRunEvent(runId, { type: 'error', text: err.message });
+    emitRunEvent(runId, { type: 'done' });
+}
+
+configureAgentRunManager({
+    executeRun: executeDurableAgentRun,
+    onFatalError: handleFatalAgentRunError,
+});
+
+try {
+    const recovered = recoverAgentRunsOnStartup({
+        shouldAutoResume: shouldAutoResumeRecoveredRun,
+        createResumeBody: run => buildResumeRunBody(run, {}),
+    });
+    if (recovered.length) {
+        const autoResumeEnabled = process.env.AGENT_AUTO_RESUME_INTERRUPTED_RUNS === '1';
+        console.log(`[AgentRun] Recovered ${recovered.length} interrupted run${recovered.length === 1 ? '' : 's'} on startup.${autoResumeEnabled ? ' Auto-resume is enabled.' : ' Leaving them resumable until the user continues them.'}`);
+    }
+} catch (err) {
+    console.warn('[AgentRun] Failed to recover interrupted runs:', err.message);
 }
 
 function handleAgentRunList(req, res) {
@@ -1881,29 +2207,47 @@ function handleAgentRunStream(req, res) {
 
 function handleAgentRunCancel(req, res) {
     const runId = req.params.id;
-    const active = activeAgentRuns.get(runId);
-    if (!active) {
+    if (!isRunActive(runId)) {
         const run = getRun(runId);
         if (!run) return res.status(404).json({ error: 'Run not found' });
-        return res.json({ ok: true, run: setRunStatus(runId, 'cancelled') });
+        return res.json({
+            ok: true,
+            run: setRunStatus(runId, 'cancelled', {
+                pendingPermission: null,
+                pendingPlan: null,
+                canResume: false,
+                pauseReason: null,
+                completedAt: run.completedAt || Date.now(),
+            })
+        });
     }
-    active.cancelled = true;
-    emitRunEvent(runId, { type: 'cancel_requested' });
-    res.json({ ok: true, run: setRunStatus(runId, 'cancelled') });
+    const { abortedInteractions } = cancelActiveRun(runId, 'Run cancelled by user.');
+    emitRunEvent(runId, { type: 'cancel_requested', abortedInteractions });
+    res.json({
+        ok: true,
+        run: setRunStatus(runId, 'cancelled', {
+            pendingPermission: null,
+            pendingPlan: null,
+            canResume: false,
+            pauseReason: null,
+        })
+    });
 }
 
 function handleAgentRunResume(req, res) {
     const existing = getRun(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Run not found' });
-    if (activeAgentRuns.has(existing.id)) return res.json({ ok: true, run: existing, active: true });
+    if (isRunActive(existing.id)) return res.json({ ok: true, run: existing, active: true });
+    if (existing.canResume !== true || !['paused', 'interrupted'].includes(existing.status)) {
+        return res.status(400).json({ error: `Run in status "${existing.status}" cannot be resumed.` });
+    }
     const overrideMaxSteps = parseInt(req.body?.maxSteps, 10);
-    const run = startAgentRun({
-        ...(existing.requestBody || {}),
+    const extendBudgetBy = parseInt(req.body?.extendBudgetBy, 10);
+    const run = resumeExistingAgentRun(existing, {
         ...(Number.isFinite(overrideMaxSteps) ? { maxSteps: overrideMaxSteps } : {}),
-        continueFrom: existing.latestMessages || existing.requestBody?.messages || [],
-        parentRunId: existing.id,
+        ...(Number.isFinite(extendBudgetBy) ? { extendBudgetBy } : {}),
     });
-    res.status(202).json({ ok: true, run, resumedFrom: existing.id });
+    res.status(202).json({ ok: true, run, resumedFrom: existing.id, sameRun: true });
 }
 
 // Compatibility wrapper: legacy clients can still use /api/agent/chat,
@@ -2152,6 +2496,7 @@ module.exports = {
     handleAgentRunStream,
     handleAgentRunCancel,
     handleAgentRunResume,
+    buildResumeRunBody,
     handleOllamaProxy,
     getLlamacppDiagnostics,
     getLlamaProcess,

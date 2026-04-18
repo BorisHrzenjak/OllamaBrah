@@ -4039,6 +4039,8 @@
         .agent-run-status-dot.completed { background-color: #22c55e; }
         .agent-run-status-dot.running { background-color: var(--accent); animation: pulse-dot 1.5s infinite; }
         .agent-run-status-dot.waiting_permission { background-color: #eab308; animation: pulse-dot 1.5s infinite; }
+        .agent-run-status-dot.paused { background-color: #f59e0b; }
+        .agent-run-status-dot.interrupted { background-color: #fb7185; }
         .agent-run-status-dot.failed { background-color: #ef4444; }
         .agent-run-status-dot.cancelled { background-color: var(--text-muted); }
         .agent-run-status-dot.queued { background-color: var(--text-muted); }
@@ -6510,13 +6512,34 @@ body {
                         </div>
 
                         <div class="llamacpp-field">
-                            <label class="llamacpp-field-label">Max Steps</label>
+                            <label class="llamacpp-field-label">Step Chunk Limit</label>
                             <div style="display:flex;align-items:center;gap:var(--space-sm)">
                                 <input type="range" id="agentMaxStepsSlider" min="1" max="50" value="15"
                                     style="flex:1">
                                 <span id="agentMaxStepsValue"
                                     style="min-width:24px;text-align:right;font-size:var(--font-size-sm)">15</span>
                             </div>
+                            <p class="modal-description" style="margin:4px 0 0 0">How many steps the agent takes before either pausing or auto-continuing, depending on execution policy.</p>
+                        </div>
+
+                        <div class="llamacpp-field" style="margin-top:var(--space-md)">
+                            <label class="llamacpp-field-label">Execution Policy</label>
+                            <select id="agentExecutionPolicySelect" class="settings-select">
+                                <option value="run_until_blocked">Run Until Blocked</option>
+                                <option value="pause_on_limit">Pause At Each Chunk</option>
+                            </select>
+                            <p class="modal-description" style="margin:4px 0 0 0">Run until blocked keeps chaining chunks automatically. Pause at each chunk stops after the current chunk limit and waits for you to continue.</p>
+                        </div>
+
+                        <div class="llamacpp-field" style="margin-top:var(--space-md)">
+                            <label class="llamacpp-field-label">Compute Budget</label>
+                            <div style="display:flex;align-items:center;gap:var(--space-sm)">
+                                <input type="range" id="agentMaxComputeStepsSlider" min="10" max="500" step="5" value="120"
+                                    style="flex:1">
+                                <span id="agentMaxComputeStepsValue"
+                                    style="min-width:32px;text-align:right;font-size:var(--font-size-sm)">120</span>
+                            </div>
+                            <p class="modal-description" style="margin:4px 0 0 0">Total step budget for the run before it pauses and asks whether to continue.</p>
                         </div>
 
                         <div class="llamacpp-field" style="margin-top:var(--space-md)">

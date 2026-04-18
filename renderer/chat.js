@@ -380,7 +380,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const status = item.dataset.runStatus;
         if (!runId) return;
 
-        if (status === 'running' || status === 'waiting_permission') {
+        if (['running', 'waiting_permission', 'paused', 'interrupted'].includes(status)) {
             if (currentAgentRunId === runId) return;
             try {
                 const resp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}`);
@@ -945,6 +945,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         return element;
     }
 
+    function focusAgentActionCard(element) {
+        if (!element || typeof element.scrollIntoView !== 'function') return;
+        requestAnimationFrame(() => {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+    }
+
     function createAgentRunCard(title, body, tone = 'neutral') {
         const card = document.createElement('div');
         card.className = `agent-run-card agent-run-card-${tone}`;
@@ -1006,7 +1013,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     function upsertAgentFinalSummary(panels, finalState, { continueRunId = null } = {}) {
         if (!panels) return;
         const files = [...panels.touchedPaths];
-        const stateLabel = finalState === 'paused' ? 'waiting for continuation' : (finalState || 'completed');
+        const stateLabel = finalState === 'paused'
+            ? 'waiting for continuation'
+            : (finalState === 'interrupted' ? 'interrupted' : (finalState || 'completed'));
         const lines = [
             `State: ${stateLabel}`,
             `Workspace: ${panels.workspaceRoot || 'Not set'}`,
@@ -1014,11 +1023,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             `Files touched: ${files.length}`,
         ];
         if (files.length) lines.push('', summarizeAgentPaths(files));
-        if (continueRunId) lines.push('', 'Continuation available: this run hit the current step limit.');
+        if (continueRunId) lines.push('', 'Continuation available: this run paused before completion and can be resumed.');
 
         const tone = finalState === 'failed'
             ? 'error'
-            : ((finalState === 'cancelled' || finalState === 'paused') ? 'warning' : 'success');
+            : ((finalState === 'cancelled' || finalState === 'paused' || finalState === 'interrupted') ? 'warning' : 'success');
 
         if (!panels.finalSummaryCard) {
             panels.finalSummaryCard = createAgentRunCard('Run Summary', lines.join('\n'), tone);
@@ -1044,6 +1053,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         let lastStatusText = '';
         let lastTimelineStatus = '';
         let finalState = 'completed';
+        let seenEventCount = Math.max(0, parseInt(handlers.after, 10) || 0);
         const onSearchEvent = typeof handlers.onSearchEvent === 'function' ? handlers.onSearchEvent : null;
         const onMemoryEvent = typeof handlers.onMemoryEvent === 'function' ? handlers.onMemoryEvent : null;
         const onContextBreakdown = typeof handlers.onContextBreakdown === 'function' ? handlers.onContextBreakdown : null;
@@ -1136,18 +1146,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const resp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}/resume`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ maxSteps: extraSteps })
+                            body: JSON.stringify({ extendBudgetBy: extraSteps })
                         });
                         if (!resp.ok) throw new Error(`Agent API Error: ${resp.status}`);
                         const resumedRun = await resp.json();
                         const resumedRunId = resumedRun?.run?.id;
                         if (!resumedRunId) throw new Error('Resume did not return a run id');
-                        const streamResp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(resumedRunId)}/stream`);
-                        if (!streamResp.ok) throw new Error(`Run stream error: ${streamResp.status}`);
-                        const contReader = streamResp.body.getReader();
-                        const contResult = await handleAgentStream(botTextElement, botMessageDiv, contReader, {
+                        if (stopButton) stopButton.style.display = 'flex';
+                        sendButton.style.display = 'none';
+                        const contResult = await streamAgentRun(resumedRunId, botTextElement, botMessageDiv, {
                             ...handlers,
                             runId: resumedRunId,
+                            after: seenEventCount,
                             workspaceRoot: resumedRun?.run?.workspaceRoot || handlers.workspaceRoot || null,
                             yoloMode: resumedRun?.run?.yoloMode === true,
                         });
@@ -1183,6 +1193,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             if (chunk.type === 'status') {
+                if (finalState === 'paused' || finalState === 'interrupted') {
+                    finalState = 'completed';
+                    continueRunId = null;
+                }
                 setLiveStatus(chunk.text, chunk.phase === 'executing_tools' ? 'working' : 'working');
                 if (chunk.text && chunk.text !== lastTimelineStatus) {
                     appendAgentSectionItem(panels.sections.timeline, createAgentRunCard('Status', chunk.text));
@@ -1281,7 +1295,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentContentText = '';
                 setLiveStatus('Waiting for your permission to continue...', 'waiting');
                 const card = createPermissionCard(chunk);
-                appendAgentSectionItem(panels.sections.timeline, card);
+                appendAgentSectionItem(panels.sections.final, card);
+                focusAgentActionCard(card);
             }
 
             if (chunk.type === 'plan_request') {
@@ -1289,7 +1304,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentContentText = '';
                 setLiveStatus('Waiting for your plan approval to continue...', 'waiting');
                 const card = createPlanCard(chunk);
-                appendAgentSectionItem(panels.sections.timeline, card);
+                appendAgentSectionItem(panels.sections.final, card);
+                focusAgentActionCard(card);
             }
 
             if (chunk.type === 'plan_decision') {
@@ -1358,7 +1374,34 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (chunk.type === 'max_steps_reached') {
                 finalState = 'paused';
                 continueRunId = continueRunId || handlers.runId || currentAgentRunId;
-                setBottomProgressState('Step limit reached. Waiting for you to continue the run.', 'waiting', { completed: true });
+                const message = chunk.reason === 'step_limit'
+                    ? 'Step chunk limit reached. Waiting for you to continue the run.'
+                    : 'Step limit reached. Waiting for you to continue the run.';
+                setBottomProgressState(message, 'waiting', { completed: true });
+            }
+
+            if (chunk.type === 'run_budget_reached') {
+                finalState = 'paused';
+                continueRunId = continueRunId || handlers.runId || currentAgentRunId;
+                setLiveStatus('Compute budget reached. Waiting for you to continue the run.', 'waiting');
+                setBottomProgressState('Compute budget reached. Waiting for you to continue the run.', 'waiting', { completed: true });
+                appendAgentSectionItem(
+                    panels.sections.final,
+                    createAgentRunCard('Compute Budget Reached', 'This run used its current compute budget and is paused until you continue it.', 'warning')
+                );
+            }
+
+            if (chunk.type === 'interrupted') {
+                finalState = 'interrupted';
+                if (chunk.resumable !== false) {
+                    continueRunId = continueRunId || handlers.runId || currentAgentRunId;
+                }
+                setLiveStatus('Agent run interrupted before completion.', 'waiting');
+                setBottomProgressState(chunk.text || 'Agent run interrupted before completion.', 'waiting', { completed: true });
+                appendAgentSectionItem(
+                    panels.sections.final,
+                    createAgentRunCard('Run Interrupted', chunk.text || 'The run stopped before it could finish. You can resume it from here.', 'warning')
+                );
             }
 
             if (chunk.type === 'error') {
@@ -1385,9 +1428,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (chunk.type === 'done') {
                 const completionText = finalState === 'paused'
                     ? 'Waiting for you to continue this run.'
-                    : (finalState === 'cancelled' ? 'Agent run cancelled.' : 'Agent run completed.');
+                    : (finalState === 'cancelled'
+                        ? 'Agent run cancelled.'
+                        : (finalState === 'interrupted' ? 'Agent run interrupted.' : 'Agent run completed.'));
                 setLiveStatus('');
-                setBottomProgressState(completionText, finalState === 'paused' ? 'waiting' : 'working', {
+                setBottomProgressState(completionText, (finalState === 'paused' || finalState === 'interrupted') ? 'waiting' : 'working', {
                     stepText: counterEl.textContent || bottomStepEl.textContent,
                     completed: true,
                 });
@@ -1414,6 +1459,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!line.trim()) continue;
                 let chunk;
                 try { chunk = JSON.parse(line); } catch { continue; }
+                seenEventCount += 1;
                 if (processAgentChunk(chunk)) { streamDone = true; break; }
             }
         }
@@ -1425,6 +1471,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!line.trim()) continue;
                 let chunk;
                 try { chunk = JSON.parse(line); } catch { continue; }
+                seenEventCount += 1;
                 if (processAgentChunk(chunk)) break;
             }
         }
@@ -1434,13 +1481,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             memoryUsageMeta,
             contextBreakdown,
             finalState,
+            seenEventCount,
         };
     }
 
     async function streamAgentRun(runId, botTextElement, botMessageDiv, handlers = {}) {
         currentAgentRunId = runId;
         currentAbortController = new AbortController();
-        const response = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}/stream`, {
+        const after = Math.max(0, parseInt(handlers.after, 10) || 0);
+        const response = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}/stream${after > 0 ? `?after=${after}` : ''}`, {
             signal: currentAbortController.signal
         });
         if (!response.ok) throw new Error(`Run stream error: ${response.status}`);
@@ -1463,6 +1512,12 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                 audit.className = 'agent-context-compressed';
                 const approvedCount = run.approvedPlans.filter(p => p.approved).length;
                 audit.innerHTML = `<span class="compress-icon">📝</span><span>Plan audit: ${approvedCount}/${run.approvedPlans.length} approved</span>`;
+                botTextElement.appendChild(audit);
+            }
+            if (run.status === 'interrupted') {
+                const audit = document.createElement('div');
+                audit.className = 'agent-context-compressed';
+                audit.innerHTML = '<span class="compress-icon">⚠</span><span>This run was interrupted and can be resumed.</span>';
                 botTextElement.appendChild(audit);
             }
             const result = await streamAgentRun(run.id, botTextElement, botMessageDiv, {
@@ -6492,6 +6547,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             if (agentModeEnabled) {
                 const configuredMaxSteps = Number.isInteger(agentConfig?.maxSteps) && agentConfig.maxSteps > 0
                     ? agentConfig.maxSteps : 15;
+                const configuredMaxComputeSteps = Number.isInteger(agentConfig?.maxComputeSteps) && agentConfig.maxComputeSteps > 0
+                    ? agentConfig.maxComputeSteps : 120;
                 const researchPolicy = activeResearchMode;
                 const memoryPolicy = activeMemoryMode;
                 const agentBody = {
@@ -6499,6 +6556,9 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                     model: currentModelName,
                     backend: currentModelBackend,
                     maxSteps: configuredMaxSteps,
+                    maxComputeSteps: configuredMaxComputeSteps,
+                    executionPolicy: agentConfig?.executionPolicy || 'run_until_blocked',
+                    autoResumeOnRestart: true,
                     workspaceRoot: agentWorkspaceRoot || null,
                     yoloMode: agentYoloMode === true,
                     _researchPolicy: researchPolicy,
@@ -7889,6 +7949,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
     let agentConfig = {
         maxSteps: 15,
+        maxComputeSteps: 120,
+        executionPolicy: 'run_until_blocked',
         allowedDirs: [],
         blockedPaths: ['C:\\Windows\\System32', 'C:\\Windows\\SysWOW64'],
         toolPermissions: {
@@ -7908,12 +7970,18 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
     }
 
     function renderAgentSettings() {
-        // Max steps slider
+        // Step chunk + compute budget controls
         const slider = document.getElementById('agentMaxStepsSlider');
         const sliderVal = document.getElementById('agentMaxStepsValue');
+        const computeSlider = document.getElementById('agentMaxComputeStepsSlider');
+        const computeSliderVal = document.getElementById('agentMaxComputeStepsValue');
+        const executionPolicySelect = document.getElementById('agentExecutionPolicySelect');
         const yoloToggle = document.getElementById('agentYoloSettingsToggle');
         if (slider) { slider.value = agentConfig.maxSteps; }
         if (sliderVal) sliderVal.textContent = agentConfig.maxSteps;
+        if (computeSlider) { computeSlider.value = agentConfig.maxComputeSteps; }
+        if (computeSliderVal) computeSliderVal.textContent = agentConfig.maxComputeSteps;
+        if (executionPolicySelect) executionPolicySelect.value = agentConfig.executionPolicy || 'run_until_blocked';
         if (yoloToggle) yoloToggle.checked = !!agentYoloMode;
 
         // Tool permissions
@@ -7985,6 +8053,10 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
         const slider = document.getElementById('agentMaxStepsSlider');
         if (slider) agentConfig.maxSteps = parseInt(slider.value, 10);
+        const computeSlider = document.getElementById('agentMaxComputeStepsSlider');
+        if (computeSlider) agentConfig.maxComputeSteps = parseInt(computeSlider.value, 10);
+        const executionPolicySelect = document.getElementById('agentExecutionPolicySelect');
+        if (executionPolicySelect) agentConfig.executionPolicy = executionPolicySelect.value;
         const yoloToggle = document.getElementById('agentYoloSettingsToggle');
         if (yoloToggle) setAgentYoloMode(yoloToggle.checked);
 
@@ -8016,8 +8088,13 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
         const slider = document.getElementById('agentMaxStepsSlider');
         const sliderVal = document.getElementById('agentMaxStepsValue');
+        const computeSlider = document.getElementById('agentMaxComputeStepsSlider');
+        const computeSliderVal = document.getElementById('agentMaxComputeStepsValue');
         if (slider && sliderVal) {
             slider.addEventListener('input', () => { sliderVal.textContent = slider.value; });
+        }
+        if (computeSlider && computeSliderVal) {
+            computeSlider.addEventListener('input', () => { computeSliderVal.textContent = computeSlider.value; });
         }
 
         const saveBtn = document.getElementById('saveAgentConfig');
@@ -8806,6 +8883,33 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             modelSwitcherDropdown.style.display = 'block';
         }
     });
+
+    document.addEventListener('click', async (e) => {
+        const link = e.target instanceof Element ? e.target.closest('a[href]') : null;
+        if (!link) return;
+
+        const rawHref = link.getAttribute('href');
+        if (!rawHref || rawHref.startsWith('#')) return;
+
+        let resolvedUrl;
+        try {
+            resolvedUrl = new URL(rawHref, window.location.href);
+        } catch {
+            return;
+        }
+
+        const isExternalProtocol = ['http:', 'https:', 'mailto:'].includes(resolvedUrl.protocol);
+        if (!isExternalProtocol || !window.electronAPI?.openExternal) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        try {
+            await window.electronAPI.openExternal(resolvedUrl.toString());
+        } catch (err) {
+            console.warn('[links] Failed to open external URL:', resolvedUrl.toString(), err);
+        }
+    }, true);
 
     document.addEventListener('click', (e) => {
         if (!modelSwitcherButton.contains(e.target) && !modelSwitcherDropdown.contains(e.target)) {

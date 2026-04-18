@@ -17,6 +17,25 @@ const GITHUB_RELEASES_REPO = 'OllamaBrah';
 const GITHUB_RELEASES_LATEST_API = `https://api.github.com/repos/${GITHUB_RELEASES_OWNER}/${GITHUB_RELEASES_REPO}/releases/latest`;
 const GITHUB_RELEASES_PAGE = `https://github.com/${GITHUB_RELEASES_OWNER}/${GITHUB_RELEASES_REPO}/releases/latest`;
 
+function isAllowedExternalUrl(url) {
+    if (typeof url !== 'string' || !url.trim()) return false;
+
+    try {
+        const parsed = new URL(url);
+        return ['http:', 'https:', 'mailto:'].includes(parsed.protocol);
+    } catch {
+        return false;
+    }
+}
+
+async function openExternalUrl(url) {
+    if (!isAllowedExternalUrl(url)) {
+        throw new Error('Invalid external URL');
+    }
+
+    await shell.openExternal(url);
+}
+
 function configureAppPaths() {
     if (app.isPackaged) return;
 
@@ -242,6 +261,28 @@ function createWindow() {
         }
     });
 
+    win.webContents.setWindowOpenHandler(({ url }) => {
+        if (isAllowedExternalUrl(url)) {
+            void openExternalUrl(url);
+        }
+        return { action: 'deny' };
+    });
+
+    win.webContents.on('will-navigate', (event, url) => {
+        if (url === win.webContents.getURL()) return;
+
+        if (isAllowedExternalUrl(url)) {
+            event.preventDefault();
+            void openExternalUrl(url);
+            return;
+        }
+
+        const isLocalAppFile = url.startsWith('file://');
+        if (!isLocalAppFile) {
+            event.preventDefault();
+        }
+    });
+
     win.loadFile(path.join(__dirname, 'renderer', 'chat.html'));
 
     win.once('ready-to-show', () => {
@@ -254,10 +295,6 @@ function createWindow() {
         }
     });
 
-    win.webContents.setWindowOpenHandler(({ url }) => {
-        shell.openExternal(url);
-        return { action: 'deny' };
-    });
 }
 
 function focusMainWindow() {
@@ -282,10 +319,7 @@ function registerIpcHandlers() {
         return checkForAppUpdate();
     });
     ipcMain.handle('app:openExternal', async (_e, url) => {
-        if (typeof url !== 'string' || !/^https:\/\//i.test(url)) {
-            throw new Error('Invalid external URL');
-        }
-        await shell.openExternal(url);
+        await openExternalUrl(url);
     });
     ipcMain.handle('app:writeClipboard', async (_e, text) => {
         clipboard.writeText(String(text || ''));
