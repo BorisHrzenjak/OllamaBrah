@@ -4,7 +4,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
     getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+    getUpdateState: () => ipcRenderer.invoke('app:getUpdateState'),
     checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
+    downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
+    installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
     openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
     writeClipboard: (text) => ipcRenderer.invoke('app:writeClipboard', text),
 

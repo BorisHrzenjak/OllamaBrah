@@ -2619,9 +2619,17 @@
             font-size: var(--font-size-xs);
         }
 
+        .update-notice-status {
+            margin-top: 8px;
+            color: var(--text-muted);
+            font-size: var(--font-size-xs);
+            min-height: 16px;
+        }
+
         .update-notice-actions {
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: 10px;
             margin-top: 14px;
         }
@@ -6939,9 +6947,11 @@ body {
             </button>
         </div>
         <div id="updateNoticeBody" class="update-notice-body"></div>
+        <div id="updateNoticeStatus" class="update-notice-status"></div>
         <div id="updateNoticeDate" class="update-notice-date" style="display:none;"></div>
         <div class="update-notice-actions">
-            <button id="openUpdateReleaseButton" class="modal-button primary">View release</button>
+            <button id="updateNowButton" class="modal-button primary">Update now</button>
+            <button id="openUpdateReleaseButton" class="modal-button secondary">View release</button>
             <button id="dismissUpdateNoticeButton" class="modal-button secondary">Not now</button>
         </div>
     </div>
