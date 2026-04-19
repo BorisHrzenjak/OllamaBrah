@@ -192,8 +192,12 @@ async function startProxy() {
     process.env.SKILLS_DIR = path.join(app.getPath('userData'), 'skills');
 
     // Load API keys saved via the settings UI into process.env so the proxy can use them
+    const ollamaBaseUrl = store.get('ollamaApiBaseUrl');
     const tavilyKey = store.get('tavilyApiKey', '');
     const exaKey    = store.get('exaApiKey', '');
+    if (typeof ollamaBaseUrl === 'string' && ollamaBaseUrl.trim()) {
+        process.env.OLLAMA_API_BASE_URL = ollamaBaseUrl.trim();
+    }
     if (tavilyKey) process.env.TAVILY_API_KEY = tavilyKey;
     if (exaKey)    process.env.EXA_API_KEY    = exaKey;
     try {

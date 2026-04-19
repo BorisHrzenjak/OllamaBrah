@@ -5973,6 +5973,9 @@ body {
                     </button>
 
                     <div class="settings-nav-group-label">Advanced</div>
+                    <button class="settings-nav-item" data-toggle="ollamaSectionToggle" data-body="ollamaSectionBody">
+                        <i data-lucide="server"></i><span>Ollama</span>
+                    </button>
                     <button class="settings-nav-item" data-toggle="llamaCppSectionToggle" data-body="llamaCppSectionBody">
                         <i data-lucide="cpu"></i><span>llama.cpp</span>
                     </button>
@@ -6432,6 +6435,30 @@ body {
                         </div>
                         <div class="context-limit-info">
                             <span id="contextLimitInfo">Auto-detecting: 4K (local) or 128K (cloud)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-section collapsible-section">
+                    <button class="settings-section-toggle" id="ollamaSectionToggle">
+                        Ollama
+                        <span class="section-chevron"><i data-lucide="chevron-right"></i></span>
+                    </button>
+                    <div id="ollamaSectionBody" class="settings-section-body">
+                        <p class="modal-description">Choose which Ollama server this app talks to. Use the default for this machine, or point it at a trusted remote Ollama instance on your LAN, VPN, or HTTPS reverse proxy.</p>
+
+                        <div class="llamacpp-field">
+                            <label class="llamacpp-field-label" for="ollamaServerUrlInput">Server URL</label>
+                            <input type="text" id="ollamaServerUrlInput" class="llamacpp-input"
+                                placeholder="http://localhost:11434">
+                            <p class="modal-description" style="margin:4px 0 0 0">Examples: <code>http://localhost:11434</code>, <code>http://192.168.1.50:11434</code>, <code>https://ollama.example.com</code></p>
+                        </div>
+
+                        <div style="display:flex;align-items:center;gap:var(--space-md);margin-top:var(--space-sm)">
+                            <button id="saveOllamaConfig" class="modal-button primary">Save</button>
+                            <button id="resetOllamaConfig" class="modal-button secondary">Reset to Default</button>
+                            <span id="ollamaConfigStatus"
+                                style="font-size:var(--font-size-xs);color:var(--text-muted)"></span>
                         </div>
                     </div>
                 </div>

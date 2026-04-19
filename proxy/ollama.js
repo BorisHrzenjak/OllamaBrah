@@ -19,6 +19,14 @@ function getConfiguredOllamaBaseUrl() {
     return normalizeBaseUrl(process.env.OLLAMA_API_BASE_URL || DEFAULT_OLLAMA_BASE_URL);
 }
 
+function setConfiguredOllamaBaseUrl(url) {
+    const raw = String(url || '').trim();
+    const normalized = normalizeBaseUrl(raw || DEFAULT_OLLAMA_BASE_URL);
+    process.env.OLLAMA_API_BASE_URL = normalized;
+    cachedReachableBaseUrl = null;
+    return normalized;
+}
+
 function getOllamaBaseUrlCandidates() {
     const configured = getConfiguredOllamaBaseUrl();
     const candidates = [cachedReachableBaseUrl, configured];
@@ -57,6 +65,7 @@ async function resolveOllamaBaseUrl(probePath = '/api/tags') {
 
 module.exports = {
     DEFAULT_OLLAMA_BASE_URL,
+    setConfiguredOllamaBaseUrl,
     getConfiguredOllamaBaseUrl,
     getOllamaBaseUrlCandidates,
     fetchOllama,

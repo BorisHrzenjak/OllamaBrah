@@ -152,7 +152,7 @@ The GitHub Actions release workflow builds the installer and uploads it to the m
 ## Notes
 
 - Ollama must be running before launching the app (`ollama serve`)
-- If Ollama is running on a custom address, set `OLLAMA_API_BASE_URL` in `.env` to match it
+- If Ollama is running on a custom address, set the Ollama server URL in `Settings > Ollama` or set `OLLAMA_API_BASE_URL` in `.env`
 - Pull at least one model first: `ollama pull <model-name>`
 - The internal proxy runs on `localhost:3456` — make sure that port is free
 - Memory feature requires the `nomic-embed-text` model: `ollama pull nomic-embed-text`

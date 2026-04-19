@@ -1,6 +1,7 @@
 // proxy/llm.js — llama.cpp state/management, Ollama proxy handler, agent chat/config/permission endpoints
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -2274,15 +2275,11 @@ async function handleOllamaProxy(req, res) {
         const targetUrlString = ollamaBaseUrl + ollamaPath;
         console.log(`Proxying request: ${req.method} ${req.originalUrl} -> ${targetUrlString}`);
         const targetUrl = new URL(targetUrlString);
-
-        if (targetUrl.hostname !== 'localhost' && targetUrl.hostname !== '127.0.0.1') {
-            console.warn(`Forbidden: Host '${targetUrl.hostname}' not allowed.`);
-            return res.status(403).send('Forbidden: Host not allowed.');
-        }
+        const requestClient = targetUrl.protocol === 'https:' ? https : http;
 
         // Construct headers for the outgoing request to Ollama
         const ollamaRequestHeaders = {
-            'host': targetUrl.hostname, // Essential: Must match the target
+            'host': targetUrl.host, // Include port when the upstream uses a custom port
             'accept': req.headers['accept'] || '*/*', // Pass through accept or default
             'user-agent': req.headers['user-agent'] || 'OllamaBroProxy/1.0', // Pass through user-agent or set a custom one
             // We will set Content-Type and Content-Length specifically when sending the body
@@ -2304,7 +2301,7 @@ async function handleOllamaProxy(req, res) {
         let ollamaContextBreakdown = null;
         let ollamaMemoryMeta = null;
 
-        const proxyReq = http.request(options, (proxyRes) => {
+        const proxyReq = requestClient.request(options, (proxyRes) => {
             console.log(`Proxy to Ollama: Received response status: ${proxyRes.statusCode}`);
             console.log('Proxy to Ollama: Received response headers:', JSON.stringify(proxyRes.headers, null, 2));
             res.writeHead(proxyRes.statusCode, proxyRes.headers);

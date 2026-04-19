@@ -2287,6 +2287,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
     function openSettingsSection(section) {
         openSettingsModal();
         const sections = {
+            ollama: ['ollamaSectionToggle', 'ollamaSectionBody'],
             llamaCpp: ['llamaCppSectionToggle', 'llamaCppSectionBody'],
             memory: ['memorySectionToggle', 'memorySectionBody'],
             tts: ['ttsSectionToggle', 'ttsSectionBody'],
@@ -2294,7 +2295,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             apiKeys: ['apiKeysSectionToggle', 'apiKeysSectionBody'],
         };
         const target = sections[section];
-        if (target) ensureSettingsSectionExpanded(target[0], target[1]);
+        if (target) showSettingsPanel(target[1]);
     }
 
     async function fetchReadinessReport() {
@@ -2331,6 +2332,10 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         if (actionId === 'retry') {
             const report = await refreshStartupReadiness({ forceRender: true });
             await tryRecoverStartupModel(report);
+            return;
+        }
+        if (actionId === 'open_ollama_settings') {
+            openSettingsSection('ollama');
             return;
         }
         if (actionId === 'open_llamacpp_settings') {
@@ -7903,6 +7908,83 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
     const ttsSectionToggle = document.getElementById('ttsSectionToggle');
     if (ttsSectionToggle) {
         ttsSectionToggle.addEventListener('click', () => toggleSection('ttsSectionToggle', 'ttsSectionBody'));
+    }
+
+    async function loadOllamaSettings() {
+        const input = document.getElementById('ollamaServerUrlInput');
+        const statusEl = document.getElementById('ollamaConfigStatus');
+        if (!input) return;
+
+        try {
+            const response = await fetch(`${PROXY_BASE}/api/ollama/config`);
+            if (!response.ok) throw new Error('Could not load Ollama settings');
+            const data = await response.json();
+            input.value = data.baseUrl || 'http://localhost:11434';
+            if (statusEl) statusEl.textContent = '';
+        } catch (err) {
+            console.error('[Ollama] Failed to load config:', err);
+            if (statusEl) statusEl.textContent = 'Could not load current URL';
+        }
+    }
+
+    async function saveOllamaSettings() {
+        const input = document.getElementById('ollamaServerUrlInput');
+        const statusEl = document.getElementById('ollamaConfigStatus');
+        if (!input) return;
+
+        const requestedUrl = (input.value || '').trim() || 'http://localhost:11434';
+
+        try {
+            const response = await fetch(`${PROXY_BASE}/api/ollama/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ baseUrl: requestedUrl })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Could not save Ollama server URL');
+
+            const normalizedUrl = data.baseUrl || requestedUrl;
+            input.value = normalizedUrl;
+            await window.electronAPI.store.set('ollamaApiBaseUrl', normalizedUrl);
+
+            availableModels = [];
+            const models = await fetchAvailableModels();
+            populateModelDropdown(models, currentModelName);
+            await populateMgmtModelList();
+            await refreshStartupReadiness({ forceRender: true });
+
+            if (statusEl) {
+                statusEl.textContent = 'Saved';
+                setTimeout(() => {
+                    if (statusEl?.textContent === 'Saved') statusEl.textContent = '';
+                }, 2000);
+            }
+        } catch (err) {
+            if (statusEl) statusEl.textContent = err.message || 'Error saving';
+        }
+    }
+
+    const ollamaSectionToggle = document.getElementById('ollamaSectionToggle');
+    if (ollamaSectionToggle) {
+        ollamaSectionToggle.addEventListener('click', () => {
+            toggleSection('ollamaSectionToggle', 'ollamaSectionBody');
+            const body = document.getElementById('ollamaSectionBody');
+            if (body && body.classList.contains('expanded')) loadOllamaSettings();
+        });
+    }
+
+    const saveOllamaConfigBtn = document.getElementById('saveOllamaConfig');
+    if (saveOllamaConfigBtn) {
+        saveOllamaConfigBtn.addEventListener('click', saveOllamaSettings);
+    }
+
+    const resetOllamaConfigBtn = document.getElementById('resetOllamaConfig');
+    if (resetOllamaConfigBtn) {
+        resetOllamaConfigBtn.addEventListener('click', async () => {
+            const input = document.getElementById('ollamaServerUrlInput');
+            if (input) input.value = 'http://localhost:11434';
+            await saveOllamaSettings();
+        });
     }
 
     const llamaCppSectionToggle = document.getElementById('llamaCppSectionToggle');

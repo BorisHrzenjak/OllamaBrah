@@ -9,7 +9,12 @@ const http = require('http');
 const { spawn } = require('child_process');
 const memory = require('./memory');
 const { handleProcessAttachments } = require('./attachments');
-const { fetchOllama } = require('./ollama');
+const {
+    DEFAULT_OLLAMA_BASE_URL,
+    fetchOllama,
+    getConfiguredOllamaBaseUrl,
+    setConfiguredOllamaBaseUrl,
+} = require('./ollama');
 
 const {
     handleSkillsList,
@@ -325,6 +330,7 @@ async function buildReadinessReport() {
             title: 'Ollama is offline',
             detail: ollama.message
         });
+        addAction('open_ollama_settings', 'Review Ollama server URL', 'Open Settings and check which Ollama server URL this app should use.', { section: 'ollama' });
         addAction('retry', 'Check again', 'Refresh startup checks after Ollama finishes starting.');
     } else if (ollama.status === 'no_models') {
         overallState = overallState === 'blocked' ? 'blocked' : 'degraded';
@@ -643,6 +649,28 @@ app.post('/api/keys', (req, res) => {
     if (tavilyApiKey !== undefined) process.env.TAVILY_API_KEY = String(tavilyApiKey).trim();
     if (exaApiKey    !== undefined) process.env.EXA_API_KEY    = String(exaApiKey).trim();
     res.json({ ok: true });
+});
+
+app.get('/api/ollama/config', (req, res) => {
+    const baseUrl = getConfiguredOllamaBaseUrl();
+    res.json({
+        baseUrl,
+        usingDefault: baseUrl === DEFAULT_OLLAMA_BASE_URL,
+    });
+});
+
+app.post('/api/ollama/config', (req, res) => {
+    try {
+        const { baseUrl } = req.body || {};
+        const configured = setConfiguredOllamaBaseUrl(baseUrl);
+        res.json({
+            ok: true,
+            baseUrl: configured,
+            usingDefault: configured === DEFAULT_OLLAMA_BASE_URL,
+        });
+    } catch (err) {
+        res.status(400).json({ error: err.message || 'Invalid Ollama URL' });
+    }
 });
 
 // --- Memory Endpoints ---
