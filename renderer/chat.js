@@ -113,9 +113,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const closeUpdateNoticeButton = document.getElementById('closeUpdateNoticeButton');
 
     const UPDATE_NOTIFICATIONS_KEY = 'updateNotificationsEnabled';
+    const DISMISSED_UPDATE_VERSION_KEY = 'dismissedUpdateVersion';
     let activeUpdateReleaseUrl = null;
     let activeUpdateNoticeVersion = null;
     let activeUpdateState = null;
+    let dismissedUpdateVersion = null;
     let isUpdateActionPending = false;
     let updateNotificationsEnabled = true;
 
@@ -5426,6 +5428,15 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         updateNotice.classList.remove('visible');
     }
 
+    async function dismissActiveUpdateNotice() {
+        if (activeUpdateNoticeVersion && window.electronAPI?.store?.set) {
+            dismissedUpdateVersion = activeUpdateNoticeVersion;
+            await window.electronAPI.store.set(DISMISSED_UPDATE_VERSION_KEY, activeUpdateNoticeVersion);
+        }
+
+        hideUpdateNotice();
+    }
+
     function normalizeVersionPart(part) {
         const match = String(part || '').match(/^(\d+)/);
         return match ? Number(match[1]) : 0;
@@ -5501,6 +5512,18 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
         const hasUpdate = hasPendingAppUpdate(updateInfo);
         const releaseDate = formatReleaseDate(updateInfo.publishedAt);
+        const shouldResetDismissedVersion = dismissedUpdateVersion
+            && updateInfo.latestVersion
+            && compareVersions(updateInfo.latestVersion, dismissedUpdateVersion) > 0;
+        const isDismissedVersion = dismissedUpdateVersion
+            && updateInfo.latestVersion
+            && compareVersions(updateInfo.latestVersion, dismissedUpdateVersion) === 0;
+
+        if (shouldResetDismissedVersion) {
+            dismissedUpdateVersion = null;
+            window.electronAPI?.store?.delete?.(DISMISSED_UPDATE_VERSION_KEY)
+                .catch(err => console.warn('[updates] Could not clear dismissed update version:', err));
+        }
 
         if (!hasUpdate && updateInfo.status !== 'downloading' && updateInfo.status !== 'update-downloaded' && updateInfo.status !== 'installing') {
             if (updateInfo.status === 'up-to-date') {
@@ -5542,7 +5565,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         }
 
         updateUpdateNoticeActions(updateInfo);
-        if (showNotice) {
+        if (showNotice && !isDismissedVersion) {
             updateNotice.classList.add('visible');
         }
     }
@@ -5645,6 +5668,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
         const stored = await chrome.storage.local.get([UPDATE_NOTIFICATIONS_KEY]);
         updateNotificationsEnabled = stored[UPDATE_NOTIFICATIONS_KEY] !== false;
+        dismissedUpdateVersion = await window.electronAPI?.store?.get?.(DISMISSED_UPDATE_VERSION_KEY, null) || null;
 
         if (window.electronAPI?.on) {
             window.electronAPI.on('app:updateStatus', (updateInfo) => {
@@ -5692,11 +5716,15 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         }
 
         if (dismissUpdateNoticeButton) {
-            dismissUpdateNoticeButton.addEventListener('click', hideUpdateNotice);
+            dismissUpdateNoticeButton.addEventListener('click', () => {
+                dismissActiveUpdateNotice().catch(err => console.warn('[updates] Could not persist dismissed update notice:', err));
+            });
         }
 
         if (closeUpdateNoticeButton) {
-            closeUpdateNoticeButton.addEventListener('click', hideUpdateNotice);
+            closeUpdateNoticeButton.addEventListener('click', () => {
+                dismissActiveUpdateNotice().catch(err => console.warn('[updates] Could not persist dismissed update notice:', err));
+            });
         }
 
         if (updateNotificationsEnabled) {
