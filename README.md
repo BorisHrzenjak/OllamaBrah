@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.18.0
+## What's New - v1.18.2
 
-- **YOLO setting now persists correctly** — enabling YOLO in `Settings > Agent Mode` now survives app restarts instead of silently resetting
-- **Active agent progress stays visible near the bottom** — long runs now keep a bottom step/status strip updated so you can see current progress without scrolling back to the top of the response
-- **Run completion is clearer** — the UI no longer shows a run as finished before late buffered events land, and step-limit pauses are labeled as waiting for continuation instead of looking completed
+- **One-click app updates** — when a new desktop release is available, the popup can now download it in-app and switch to a `Restart to install` flow instead of only linking out to GitHub
+- **Release metadata still stays visible** — update notices continue to show the published date and keep a direct `View release` fallback for users who want the changelog first
+- **Windows installer updates are wired to the app lifecycle** — the update flow now coordinates with the app’s cleanup path so restart-and-install works cleanly with the local proxy and helper processes
 
 ---
 
@@ -47,7 +47,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - Message history navigation with `↑` / `↓`
 - Pin messages to preserve them in context
 - Per-message actions: copy, read aloud, download as TXT or Markdown, remove
-- GitHub Releases update checks with optional startup notifications, a manual check button in Settings, and a compact update popup with version/date info
+- GitHub Releases update checks with optional startup notifications, a manual check button in Settings, and a compact update popup with version/date info plus `Update now` / `Restart to install` actions for packaged Windows builds
 - Drag & drop file attachments
 - Supported file types: images, PDF, TXT, Markdown, Python, JS, TS, JSON, HTML, CSS, SQL, Shell, YAML, XML, CSV, logs
 - Document attachments are chunked and summarized automatically, with only the most relevant excerpts injected into context on each turn
@@ -152,7 +152,7 @@ The GitHub Actions release workflow builds the installer and uploads it to the m
 ## Notes
 
 - Ollama must be running before launching the app (`ollama serve`)
-- If Ollama is running on a custom address, set `OLLAMA_API_BASE_URL` in `.env` to match it
+- If Ollama is running on a custom address, set the Ollama server URL in `Settings > Ollama` or set `OLLAMA_API_BASE_URL` in `.env`
 - Pull at least one model first: `ollama pull <model-name>`
 - The internal proxy runs on `localhost:3456` — make sure that port is free
 - Memory feature requires the `nomic-embed-text` model: `ollama pull nomic-embed-text`

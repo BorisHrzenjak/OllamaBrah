@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, shell, session, dialog, clipboard } = requi
 const path = require('path');
 const Database = require('better-sqlite3');
 const Store = require('electron-store');
+const { NsisUpdater } = require('electron-updater');
 
 let win;
 let db;
@@ -11,11 +12,28 @@ let store;
 let isCleaningUp = false;
 let pendingSecondInstanceFocus = false;
 let shouldRelaunchAfterQuit = false;
+let appUpdater = null;
+let updateCheckPromise = null;
+let updateDownloadPromise = null;
+let isInstallingAppUpdate = false;
 
 const GITHUB_RELEASES_OWNER = 'BorisHrzenjak';
 const GITHUB_RELEASES_REPO = 'OllamaBrah';
 const GITHUB_RELEASES_LATEST_API = `https://api.github.com/repos/${GITHUB_RELEASES_OWNER}/${GITHUB_RELEASES_REPO}/releases/latest`;
 const GITHUB_RELEASES_PAGE = `https://github.com/${GITHUB_RELEASES_OWNER}/${GITHUB_RELEASES_REPO}/releases/latest`;
+
+const updateState = {
+    status: 'idle',
+    currentVersion: null,
+    latestVersion: null,
+    releaseUrl: GITHUB_RELEASES_PAGE,
+    publishedAt: null,
+    releaseName: null,
+    body: '',
+    error: null,
+    canAutoUpdate: false,
+    downloadProgress: null,
+};
 
 function isAllowedExternalUrl(url) {
     if (typeof url !== 'string' || !url.trim()) return false;
@@ -192,8 +210,12 @@ async function startProxy() {
     process.env.SKILLS_DIR = path.join(app.getPath('userData'), 'skills');
 
     // Load API keys saved via the settings UI into process.env so the proxy can use them
+    const ollamaBaseUrl = store.get('ollamaApiBaseUrl');
     const tavilyKey = store.get('tavilyApiKey', '');
     const exaKey    = store.get('exaApiKey', '');
+    if (typeof ollamaBaseUrl === 'string' && ollamaBaseUrl.trim()) {
+        process.env.OLLAMA_API_BASE_URL = ollamaBaseUrl.trim();
+    }
     if (tavilyKey) process.env.TAVILY_API_KEY = tavilyKey;
     if (exaKey)    process.env.EXA_API_KEY    = exaKey;
     try {
@@ -284,6 +306,7 @@ function createWindow() {
     });
 
     win.loadFile(path.join(__dirname, 'renderer', 'chat.html'));
+    win.webContents.once('did-finish-load', broadcastUpdateState);
 
     win.once('ready-to-show', () => {
         if (pendingSecondInstanceFocus) {
@@ -315,8 +338,15 @@ function registerIpcHandlers() {
 
     // App
     ipcMain.handle('app:getVersion', () => app.getVersion());
+    ipcMain.handle('app:getUpdateState', () => snapshotUpdateState());
     ipcMain.handle('app:checkForUpdates', async () => {
         return checkForAppUpdate();
+    });
+    ipcMain.handle('app:downloadUpdate', async () => {
+        return downloadAppUpdate();
+    });
+    ipcMain.handle('app:installUpdate', async () => {
+        return installAppUpdate();
     });
     ipcMain.handle('app:openExternal', async (_e, url) => {
         await openExternalUrl(url);
@@ -518,7 +548,34 @@ function compareVersions(a, b) {
     return 0;
 }
 
-async function checkForAppUpdate() {
+function normalizeVersion(version) {
+    return String(version || '').replace(/^v/i, '').trim();
+}
+
+function snapshotUpdateState() {
+    return {
+        ...updateState,
+        currentVersion: updateState.currentVersion || app.getVersion(),
+        downloadProgress: updateState.downloadProgress ? { ...updateState.downloadProgress } : null,
+    };
+}
+
+function broadcastUpdateState() {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send('app:updateStatus', snapshotUpdateState());
+}
+
+function setUpdateState(patch = {}, { broadcast = true } = {}) {
+    Object.assign(updateState, patch);
+    if (broadcast) broadcastUpdateState();
+    return snapshotUpdateState();
+}
+
+function canAutoUpdateInApp() {
+    return Boolean(appUpdater) && app.isPackaged && process.platform === 'win32';
+}
+
+async function fetchLatestReleaseInfo() {
     const currentVersion = app.getVersion();
 
     try {
@@ -535,7 +592,7 @@ async function checkForAppUpdate() {
         }
 
         const release = await response.json();
-        const latestVersion = String(release.tag_name || '').replace(/^v/i, '').trim();
+        const latestVersion = normalizeVersion(release.tag_name);
         const releaseUrl = release.html_url || GITHUB_RELEASES_PAGE;
 
         if (!latestVersion) {
@@ -570,6 +627,226 @@ async function checkForAppUpdate() {
     }
 }
 
+function initAppUpdater() {
+    setUpdateState({
+        currentVersion: app.getVersion(),
+        canAutoUpdate: false,
+    }, { broadcast: false });
+
+    if (!app.isPackaged || process.platform !== 'win32') {
+        return;
+    }
+
+    appUpdater = new NsisUpdater();
+    appUpdater.autoDownload = false;
+    appUpdater.autoInstallOnAppQuit = false;
+    appUpdater.disableWebInstaller = true;
+
+    appUpdater.on('checking-for-update', () => {
+        setUpdateState({
+            status: 'checking',
+            currentVersion: app.getVersion(),
+            canAutoUpdate: true,
+            error: null,
+            downloadProgress: null,
+        });
+    });
+
+    appUpdater.on('update-available', (info) => {
+        const latestVersion = normalizeVersion(info?.version);
+        setUpdateState({
+            status: 'update-available',
+            currentVersion: app.getVersion(),
+            latestVersion: latestVersion || updateState.latestVersion,
+            canAutoUpdate: true,
+            error: null,
+            downloadProgress: null,
+        });
+    });
+
+    appUpdater.on('update-not-available', (info) => {
+        setUpdateState({
+            status: 'up-to-date',
+            currentVersion: app.getVersion(),
+            latestVersion: normalizeVersion(info?.version) || app.getVersion(),
+            canAutoUpdate: true,
+            error: null,
+            downloadProgress: null,
+        });
+    });
+
+    appUpdater.on('download-progress', (info) => {
+        setUpdateState({
+            status: 'downloading',
+            currentVersion: app.getVersion(),
+            canAutoUpdate: true,
+            error: null,
+            downloadProgress: {
+                percent: Number(info?.percent || 0),
+                transferred: Number(info?.transferred || 0),
+                total: Number(info?.total || 0),
+                bytesPerSecond: Number(info?.bytesPerSecond || 0),
+            },
+        });
+    });
+
+    appUpdater.on('update-downloaded', (info) => {
+        setUpdateState({
+            status: 'update-downloaded',
+            currentVersion: app.getVersion(),
+            latestVersion: normalizeVersion(info?.version) || updateState.latestVersion,
+            canAutoUpdate: true,
+            error: null,
+            downloadProgress: {
+                percent: 100,
+                transferred: updateState.downloadProgress?.total || 0,
+                total: updateState.downloadProgress?.total || 0,
+                bytesPerSecond: 0,
+            },
+        });
+    });
+
+    appUpdater.on('error', (error) => {
+        const hasKnownUpdate = updateState.latestVersion
+            && compareVersions(updateState.latestVersion, app.getVersion()) > 0;
+
+        setUpdateState({
+            status: hasKnownUpdate ? 'error' : 'error',
+            currentVersion: app.getVersion(),
+            canAutoUpdate: true,
+            error: error?.message || 'Unable to update right now.',
+        });
+    });
+
+}
+
+async function checkForPackagedAppUpdate() {
+    if (!canAutoUpdateInApp()) {
+        return snapshotUpdateState();
+    }
+
+    if (updateState.status === 'update-downloaded') {
+        return snapshotUpdateState();
+    }
+
+    if (updateCheckPromise) {
+        return updateCheckPromise;
+    }
+
+    updateCheckPromise = (async () => {
+        try {
+            await appUpdater.checkForUpdates();
+        } catch (error) {
+            setUpdateState({
+                status: 'error',
+                currentVersion: app.getVersion(),
+                canAutoUpdate: true,
+                error: error?.message || 'Unable to check for updates right now.',
+            });
+            return snapshotUpdateState();
+        } finally {
+            updateCheckPromise = null;
+        }
+    })();
+
+    return updateCheckPromise;
+}
+
+async function checkForAppUpdate() {
+    const currentVersion = app.getVersion();
+
+    const [releaseInfo, packagedState] = await Promise.all([
+        fetchLatestReleaseInfo(),
+        checkForPackagedAppUpdate(),
+    ]);
+
+    const nextState = packagedState || snapshotUpdateState();
+    const latestVersion = normalizeVersion(releaseInfo.latestVersion || nextState.latestVersion);
+
+    let status = nextState.status;
+    if (status !== 'downloading' && status !== 'update-downloaded' && !(status === 'error' && latestVersion)) {
+        status = releaseInfo.status;
+    }
+
+    return setUpdateState({
+        status,
+        currentVersion,
+        latestVersion: latestVersion || null,
+        releaseUrl: releaseInfo.releaseUrl || nextState.releaseUrl || GITHUB_RELEASES_PAGE,
+        publishedAt: releaseInfo.publishedAt || null,
+        releaseName: releaseInfo.releaseName || null,
+        body: typeof releaseInfo.body === 'string' ? releaseInfo.body : '',
+        error: status === 'error' ? (nextState.error || releaseInfo.error || 'Unable to check for updates') : null,
+        canAutoUpdate: canAutoUpdateInApp(),
+    });
+}
+
+async function downloadAppUpdate() {
+    if (!canAutoUpdateInApp()) {
+        throw new Error('In-app updates are only available in installed Windows builds.');
+    }
+
+    if (updateState.status === 'update-downloaded') {
+        return snapshotUpdateState();
+    }
+
+    if (updateDownloadPromise) {
+        return updateDownloadPromise;
+    }
+
+    if (!updateState.latestVersion || compareVersions(updateState.latestVersion, app.getVersion()) <= 0) {
+        await checkForAppUpdate();
+    }
+
+    if (!updateState.latestVersion || compareVersions(updateState.latestVersion, app.getVersion()) <= 0) {
+        throw new Error('No newer update is currently available.');
+    }
+
+    updateDownloadPromise = (async () => {
+        try {
+            setUpdateState({
+                status: 'downloading',
+                canAutoUpdate: true,
+                error: null,
+                downloadProgress: updateState.downloadProgress || {
+                    percent: 0,
+                    transferred: 0,
+                    total: 0,
+                    bytesPerSecond: 0,
+                },
+            });
+
+            await appUpdater.downloadUpdate();
+            return snapshotUpdateState();
+        } finally {
+            updateDownloadPromise = null;
+        }
+    })();
+
+    return updateDownloadPromise;
+}
+
+async function installAppUpdate() {
+    if (!canAutoUpdateInApp()) {
+        throw new Error('In-app updates are only available in installed Windows builds.');
+    }
+
+    if (updateState.status !== 'update-downloaded') {
+        throw new Error('The update is not downloaded yet.');
+    }
+
+    shouldRelaunchAfterQuit = false;
+    isInstallingAppUpdate = true;
+    setUpdateState({
+        status: 'installing',
+        canAutoUpdate: true,
+        error: null,
+    });
+    await cleanupAppResources();
+    appUpdater.quitAndInstall(false, true);
+    return true;
+}
+
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
 if (gotSingleInstanceLock) {
@@ -590,6 +867,7 @@ if (gotSingleInstanceLock) {
     app.whenReady().then(async () => {
         initDatabase();
         initStore();
+        initAppUpdater();
         await startProxy();
         registerIpcHandlers();
 
@@ -610,6 +888,7 @@ if (gotSingleInstanceLock) {
     });
 
     app.on('before-quit', (event) => {
+        if (isInstallingAppUpdate) return;
         if (isCleaningUp) return;
         event.preventDefault();
         const forceExitTimer = setTimeout(() => app.exit(0), 5000);

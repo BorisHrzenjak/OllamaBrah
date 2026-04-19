@@ -1,6 +1,6 @@
 {
   "name": "ollama-brah",
-  "version": "1.18.1",
+  "version": "1.18.2",
   "description": "Ollama Brah - Standalone Electron chat app for local Ollama models",
   "main": "main.js",
   "scripts": {
@@ -12,9 +12,16 @@
   "build": {
     "appId": "com.ollamabrah.app",
     "productName": "Ollama Brah",
+    "publish": {
+      "provider": "github",
+      "owner": "BorisHrzenjak",
+      "repo": "OllamaBrah"
+    },
+    "electronUpdaterCompatibility": ">=2.16",
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "artifactName": "Ollama-Brah-Setup-${version}.${ext}"
     },
     "files": [
       "main.js",
@@ -35,6 +42,7 @@
     "diff": "^8.0.3",
     "dotenv": "^17.3.1",
     "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.3",
     "express": "^4.19.2",
     "kokoro-js": "^1.2.1",
     "pdf-parse": "^1.1.1",

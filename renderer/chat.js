@@ -105,7 +105,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const checkForUpdatesStatus = document.getElementById('checkForUpdatesStatus');
     const updateNotice = document.getElementById('updateNotice');
     const updateNoticeBody = document.getElementById('updateNoticeBody');
+    const updateNoticeStatus = document.getElementById('updateNoticeStatus');
     const updateNoticeDate = document.getElementById('updateNoticeDate');
+    const updateNowButton = document.getElementById('updateNowButton');
     const openUpdateReleaseButton = document.getElementById('openUpdateReleaseButton');
     const dismissUpdateNoticeButton = document.getElementById('dismissUpdateNoticeButton');
     const closeUpdateNoticeButton = document.getElementById('closeUpdateNoticeButton');
@@ -113,6 +115,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const UPDATE_NOTIFICATIONS_KEY = 'updateNotificationsEnabled';
     let activeUpdateReleaseUrl = null;
     let activeUpdateNoticeVersion = null;
+    let activeUpdateState = null;
+    let isUpdateActionPending = false;
+    let updateNotificationsEnabled = true;
 
     // Clear context modal elements
     const clearContextModal = document.getElementById('clearContextModal');
@@ -2287,6 +2292,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
     function openSettingsSection(section) {
         openSettingsModal();
         const sections = {
+            ollama: ['ollamaSectionToggle', 'ollamaSectionBody'],
             llamaCpp: ['llamaCppSectionToggle', 'llamaCppSectionBody'],
             memory: ['memorySectionToggle', 'memorySectionBody'],
             tts: ['ttsSectionToggle', 'ttsSectionBody'],
@@ -2294,7 +2300,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             apiKeys: ['apiKeysSectionToggle', 'apiKeysSectionBody'],
         };
         const target = sections[section];
-        if (target) ensureSettingsSectionExpanded(target[0], target[1]);
+        if (target) showSettingsPanel(target[1]);
     }
 
     async function fetchReadinessReport() {
@@ -2331,6 +2337,10 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         if (actionId === 'retry') {
             const report = await refreshStartupReadiness({ forceRender: true });
             await tryRecoverStartupModel(report);
+            return;
+        }
+        if (actionId === 'open_ollama_settings') {
+            openSettingsSection('ollama');
             return;
         }
         if (actionId === 'open_llamacpp_settings') {
@@ -5416,6 +5426,127 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         updateNotice.classList.remove('visible');
     }
 
+    function normalizeVersionPart(part) {
+        const match = String(part || '').match(/^(\d+)/);
+        return match ? Number(match[1]) : 0;
+    }
+
+    function compareVersions(a, b) {
+        const aParts = String(a || '').split('.').map(normalizeVersionPart);
+        const bParts = String(b || '').split('.').map(normalizeVersionPart);
+        const length = Math.max(aParts.length, bParts.length);
+
+        for (let i = 0; i < length; i += 1) {
+            const left = aParts[i] || 0;
+            const right = bParts[i] || 0;
+            if (left > right) return 1;
+            if (left < right) return -1;
+        }
+
+        return 0;
+    }
+
+    function hasPendingAppUpdate(updateInfo) {
+        if (!updateInfo?.latestVersion || !updateInfo?.currentVersion) return false;
+        return compareVersions(updateInfo.latestVersion, updateInfo.currentVersion) > 0;
+    }
+
+    function formatUpdateProgress(progress) {
+        if (!progress) return '';
+        const percent = Math.max(0, Math.min(100, Math.round(Number(progress.percent || 0))));
+        return `Downloading update... ${percent}%`;
+    }
+
+    function updateUpdateNoticeActions(updateInfo) {
+        const hasUpdate = hasPendingAppUpdate(updateInfo);
+        const canAutoUpdate = Boolean(updateInfo?.canAutoUpdate);
+
+        if (updateNowButton) {
+            let visible = hasUpdate && canAutoUpdate;
+            let label = 'Update now';
+            let disabled = false;
+
+            if (updateInfo?.status === 'downloading') {
+                label = 'Downloading...';
+                disabled = true;
+            } else if (updateInfo?.status === 'update-downloaded') {
+                label = 'Restart to install';
+            } else if (updateInfo?.status === 'installing') {
+                label = 'Installing...';
+                disabled = true;
+            } else if (updateInfo?.status === 'error' && hasUpdate) {
+                label = 'Retry update';
+            }
+
+            updateNowButton.textContent = label;
+            updateNowButton.disabled = disabled || isUpdateActionPending;
+            updateNowButton.style.display = visible ? '' : 'none';
+        }
+
+        if (openUpdateReleaseButton) {
+            openUpdateReleaseButton.style.display = activeUpdateReleaseUrl ? '' : 'none';
+        }
+
+        if (dismissUpdateNoticeButton) {
+            dismissUpdateNoticeButton.disabled = updateInfo?.status === 'installing';
+        }
+    }
+
+    function applyUpdateState(updateInfo, { showNotice = true } = {}) {
+        if (!updateInfo) return;
+
+        activeUpdateState = updateInfo;
+        activeUpdateReleaseUrl = updateInfo.releaseUrl || null;
+        activeUpdateNoticeVersion = updateInfo.latestVersion || null;
+
+        const hasUpdate = hasPendingAppUpdate(updateInfo);
+        const releaseDate = formatReleaseDate(updateInfo.publishedAt);
+
+        if (!hasUpdate && updateInfo.status !== 'downloading' && updateInfo.status !== 'update-downloaded' && updateInfo.status !== 'installing') {
+            if (updateInfo.status === 'up-to-date') {
+                hideUpdateNotice();
+            }
+            return;
+        }
+
+        if (!updateNotice || !updateNoticeBody) return;
+
+        if (updateInfo.status === 'update-downloaded' || updateInfo.status === 'installing') {
+            updateNoticeBody.textContent = `Update v${updateInfo.latestVersion} is ready. Restart OllamaBrah to install it over v${updateInfo.currentVersion}.`;
+        } else {
+            updateNoticeBody.textContent = `A new version of OllamaBrah (v${updateInfo.latestVersion}) is available. You are currently on v${updateInfo.currentVersion}.`;
+        }
+
+        if (updateNoticeStatus) {
+            if (updateInfo.status === 'downloading') {
+                updateNoticeStatus.textContent = formatUpdateProgress(updateInfo.downloadProgress);
+            } else if (updateInfo.status === 'update-downloaded') {
+                updateNoticeStatus.textContent = 'Download complete. Restart the app to finish installing.';
+            } else if (updateInfo.status === 'installing') {
+                updateNoticeStatus.textContent = 'Closing OllamaBrah to install the update...';
+            } else if (updateInfo.status === 'error' && hasUpdate) {
+                updateNoticeStatus.textContent = updateInfo.error || 'The update could not be completed. You can retry.';
+            } else {
+                updateNoticeStatus.textContent = '';
+            }
+        }
+
+        if (updateNoticeDate) {
+            if (releaseDate) {
+                updateNoticeDate.textContent = `Published ${releaseDate}`;
+                updateNoticeDate.style.display = 'block';
+            } else {
+                updateNoticeDate.textContent = '';
+                updateNoticeDate.style.display = 'none';
+            }
+        }
+
+        updateUpdateNoticeActions(updateInfo);
+        if (showNotice) {
+            updateNotice.classList.add('visible');
+        }
+    }
+
     function formatReleaseDate(publishedAt) {
         if (!publishedAt) return '';
 
@@ -5430,25 +5561,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
     }
 
     function showUpdateNotice(updateInfo) {
-        if (!updateNotice || !updateNoticeBody || !updateInfo?.latestVersion) return;
-        if (activeUpdateNoticeVersion === updateInfo.latestVersion && updateNotice.classList.contains('visible')) return;
-
-        activeUpdateNoticeVersion = updateInfo.latestVersion;
-        activeUpdateReleaseUrl = updateInfo.releaseUrl || null;
-        updateNoticeBody.textContent = `A new version of OllamaBrah (v${updateInfo.latestVersion}) is available. You are currently on v${updateInfo.currentVersion}.`;
-
-        const releaseDate = formatReleaseDate(updateInfo.publishedAt);
-        if (updateNoticeDate) {
-            if (releaseDate) {
-                updateNoticeDate.textContent = `Published ${releaseDate}`;
-                updateNoticeDate.style.display = 'block';
-            } else {
-                updateNoticeDate.textContent = '';
-                updateNoticeDate.style.display = 'none';
-            }
-        }
-
-        updateNotice.classList.add('visible');
+        applyUpdateState(updateInfo, { showNotice: true });
     }
 
     async function openUpdateReleasePage() {
@@ -5456,30 +5569,64 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         await window.electronAPI.openExternal(activeUpdateReleaseUrl);
     }
 
+    async function handleUpdateNowAction() {
+        if (!isElectron || !window.electronAPI || isUpdateActionPending || !activeUpdateState) return;
+
+        try {
+            isUpdateActionPending = true;
+            updateUpdateNoticeActions(activeUpdateState);
+
+            if (activeUpdateState.status === 'update-downloaded') {
+                await window.electronAPI.installUpdate();
+                return;
+            }
+
+            await window.electronAPI.downloadUpdate();
+        } catch (err) {
+            const message = err?.message || 'Unable to update right now.';
+            if (activeUpdateState) {
+                applyUpdateState({
+                    ...activeUpdateState,
+                    status: 'error',
+                    error: message,
+                }, { showNotice: true });
+            }
+        } finally {
+            isUpdateActionPending = false;
+            if (activeUpdateState) updateUpdateNoticeActions(activeUpdateState);
+        }
+    }
+
     async function runUpdateCheck({ manual = false } = {}) {
         if (!isElectron || !window.electronAPI?.checkForUpdates) return null;
 
         if (manual) {
-            setCheckForUpdatesStatus('Checking GitHub Releases...');
+            setCheckForUpdatesStatus('Checking for updates...');
             if (checkForUpdatesButton) checkForUpdatesButton.disabled = true;
         }
 
         try {
             const result = await window.electronAPI.checkForUpdates();
 
-            if (result?.status === 'update-available') {
+            if (hasPendingAppUpdate(result)) {
                 showUpdateNotice(result);
                 if (manual) {
-                    setCheckForUpdatesStatus(`v${result.latestVersion} is available.`);
+                    const suffix = result.canAutoUpdate ? ' Ready to download.' : '';
+                    setCheckForUpdatesStatus(`v${result.latestVersion} is available.${suffix}`);
                 }
                 return result;
             }
 
             if (result?.status === 'up-to-date') {
+                applyUpdateState(result, { showNotice: false });
                 if (manual) {
                     setCheckForUpdatesStatus(`You are up to date on v${result.currentVersion}.`);
                 }
                 return result;
+            }
+
+            if (result?.status === 'error' && hasPendingAppUpdate(result)) {
+                showUpdateNotice(result);
             }
 
             if (manual) {
@@ -5497,11 +5644,25 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         if (!isElectron) return;
 
         const stored = await chrome.storage.local.get([UPDATE_NOTIFICATIONS_KEY]);
-        const notificationsEnabled = stored[UPDATE_NOTIFICATIONS_KEY] !== false;
+        updateNotificationsEnabled = stored[UPDATE_NOTIFICATIONS_KEY] !== false;
+
+        if (window.electronAPI?.on) {
+            window.electronAPI.on('app:updateStatus', (updateInfo) => {
+                applyUpdateState(updateInfo, {
+                    showNotice: updateNotificationsEnabled || updateNotice?.classList.contains('visible'),
+                });
+            });
+        }
+
+        if (window.electronAPI?.getUpdateState) {
+            const initialState = await window.electronAPI.getUpdateState();
+            applyUpdateState(initialState, { showNotice: false });
+        }
 
         if (updateNotificationsToggle) {
-            updateNotificationsToggle.checked = notificationsEnabled;
+            updateNotificationsToggle.checked = updateNotificationsEnabled;
             updateNotificationsToggle.addEventListener('change', async () => {
+                updateNotificationsEnabled = updateNotificationsToggle.checked;
                 await chrome.storage.local.set({ [UPDATE_NOTIFICATIONS_KEY]: updateNotificationsToggle.checked });
                 if (!updateNotificationsToggle.checked) {
                     hideUpdateNotice();
@@ -5524,6 +5685,12 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             });
         }
 
+        if (updateNowButton) {
+            updateNowButton.addEventListener('click', () => {
+                handleUpdateNowAction().catch(err => console.warn('[updates] Could not start update:', err));
+            });
+        }
+
         if (dismissUpdateNoticeButton) {
             dismissUpdateNoticeButton.addEventListener('click', hideUpdateNotice);
         }
@@ -5532,7 +5699,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             closeUpdateNoticeButton.addEventListener('click', hideUpdateNotice);
         }
 
-        if (notificationsEnabled) {
+        if (updateNotificationsEnabled) {
             runUpdateCheck().catch(err => console.warn('[updates] Startup check failed:', err));
         }
     }
@@ -7903,6 +8070,83 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
     const ttsSectionToggle = document.getElementById('ttsSectionToggle');
     if (ttsSectionToggle) {
         ttsSectionToggle.addEventListener('click', () => toggleSection('ttsSectionToggle', 'ttsSectionBody'));
+    }
+
+    async function loadOllamaSettings() {
+        const input = document.getElementById('ollamaServerUrlInput');
+        const statusEl = document.getElementById('ollamaConfigStatus');
+        if (!input) return;
+
+        try {
+            const response = await fetch(`${PROXY_BASE}/api/ollama/config`);
+            if (!response.ok) throw new Error('Could not load Ollama settings');
+            const data = await response.json();
+            input.value = data.baseUrl || 'http://localhost:11434';
+            if (statusEl) statusEl.textContent = '';
+        } catch (err) {
+            console.error('[Ollama] Failed to load config:', err);
+            if (statusEl) statusEl.textContent = 'Could not load current URL';
+        }
+    }
+
+    async function saveOllamaSettings() {
+        const input = document.getElementById('ollamaServerUrlInput');
+        const statusEl = document.getElementById('ollamaConfigStatus');
+        if (!input) return;
+
+        const requestedUrl = (input.value || '').trim() || 'http://localhost:11434';
+
+        try {
+            const response = await fetch(`${PROXY_BASE}/api/ollama/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ baseUrl: requestedUrl })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Could not save Ollama server URL');
+
+            const normalizedUrl = data.baseUrl || requestedUrl;
+            input.value = normalizedUrl;
+            await window.electronAPI.store.set('ollamaApiBaseUrl', normalizedUrl);
+
+            availableModels = [];
+            const models = await fetchAvailableModels();
+            populateModelDropdown(models, currentModelName);
+            await populateMgmtModelList();
+            await refreshStartupReadiness({ forceRender: true });
+
+            if (statusEl) {
+                statusEl.textContent = 'Saved';
+                setTimeout(() => {
+                    if (statusEl?.textContent === 'Saved') statusEl.textContent = '';
+                }, 2000);
+            }
+        } catch (err) {
+            if (statusEl) statusEl.textContent = err.message || 'Error saving';
+        }
+    }
+
+    const ollamaSectionToggle = document.getElementById('ollamaSectionToggle');
+    if (ollamaSectionToggle) {
+        ollamaSectionToggle.addEventListener('click', () => {
+            toggleSection('ollamaSectionToggle', 'ollamaSectionBody');
+            const body = document.getElementById('ollamaSectionBody');
+            if (body && body.classList.contains('expanded')) loadOllamaSettings();
+        });
+    }
+
+    const saveOllamaConfigBtn = document.getElementById('saveOllamaConfig');
+    if (saveOllamaConfigBtn) {
+        saveOllamaConfigBtn.addEventListener('click', saveOllamaSettings);
+    }
+
+    const resetOllamaConfigBtn = document.getElementById('resetOllamaConfig');
+    if (resetOllamaConfigBtn) {
+        resetOllamaConfigBtn.addEventListener('click', async () => {
+            const input = document.getElementById('ollamaServerUrlInput');
+            if (input) input.value = 'http://localhost:11434';
+            await saveOllamaSettings();
+        });
     }
 
     const llamaCppSectionToggle = document.getElementById('llamaCppSectionToggle');
