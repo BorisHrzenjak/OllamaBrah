@@ -5,6 +5,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const Store = require('electron-store');
 const { NsisUpdater } = require('electron-updater');
+const { CancellationToken } = require('builder-util-runtime');
 
 let win;
 let db;
@@ -21,6 +22,8 @@ const GITHUB_RELEASES_OWNER = 'BorisHrzenjak';
 const GITHUB_RELEASES_REPO = 'OllamaBrah';
 const GITHUB_RELEASES_LATEST_API = `https://api.github.com/repos/${GITHUB_RELEASES_OWNER}/${GITHUB_RELEASES_REPO}/releases/latest`;
 const GITHUB_RELEASES_PAGE = `https://github.com/${GITHUB_RELEASES_OWNER}/${GITHUB_RELEASES_REPO}/releases/latest`;
+const APP_UPDATE_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+const APP_UPDATE_DOWNLOAD_TIMEOUT_MESSAGE = 'Download timed out. Please try again.';
 
 const updateState = {
     status: 'idle',
@@ -803,6 +806,10 @@ async function downloadAppUpdate() {
     }
 
     updateDownloadPromise = (async () => {
+        const cancellationToken = new CancellationToken();
+        let downloadTimeoutId = null;
+        let didTimeout = false;
+
         try {
             setUpdateState({
                 status: 'downloading',
@@ -816,9 +823,33 @@ async function downloadAppUpdate() {
                 },
             });
 
-            await appUpdater.downloadUpdate();
+            const downloadPromise = appUpdater.downloadUpdate(cancellationToken);
+            const timeoutPromise = new Promise((_, reject) => {
+                downloadTimeoutId = setTimeout(() => {
+                    didTimeout = true;
+                    cancellationToken.cancel();
+                    reject(new Error(APP_UPDATE_DOWNLOAD_TIMEOUT_MESSAGE));
+                }, APP_UPDATE_DOWNLOAD_TIMEOUT_MS);
+            });
+
+            await Promise.race([downloadPromise, timeoutPromise]);
             return snapshotUpdateState();
+        } catch (error) {
+            if (didTimeout) {
+                return setUpdateState({
+                    status: 'error',
+                    canAutoUpdate: true,
+                    error: APP_UPDATE_DOWNLOAD_TIMEOUT_MESSAGE,
+                    downloadProgress: null,
+                });
+            }
+
+            throw error;
         } finally {
+            if (downloadTimeoutId) {
+                clearTimeout(downloadTimeoutId);
+            }
+            cancellationToken.dispose();
             updateDownloadPromise = null;
         }
     })();
