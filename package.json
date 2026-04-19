@@ -1,6 +1,6 @@
 {
   "name": "ollama-brah",
-  "version": "1.18.3",
+  "version": "1.18.4",
   "description": "Ollama Brah - Standalone Electron chat app for local Ollama models",
   "main": "main.js",
   "scripts": {
@@ -38,6 +38,7 @@
   "dependencies": {
     "@llamaindex/liteparse": "^1.3.0",
     "better-sqlite3": "^9.6.0",
+    "builder-util-runtime": "^9.5.1",
     "cors": "^2.8.5",
     "diff": "^8.0.3",
     "dotenv": "^17.3.1",
