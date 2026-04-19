@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.18.2
+## What's New - v1.18.3
 
-- **One-click app updates** — when a new desktop release is available, the popup can now download it in-app and switch to a `Restart to install` flow instead of only linking out to GitHub
-- **Release metadata still stays visible** — update notices continue to show the published date and keep a direct `View release` fallback for users who want the changelog first
-- **Windows installer updates are wired to the app lifecycle** — the update flow now coordinates with the app’s cleanup path so restart-and-install works cleanly with the local proxy and helper processes
+- **Dismissed update banners now stay dismissed** — if you hide an update notice for the current version, it no longer reappears on every restart until a newer release is actually available
+- **Stalled in-app downloads now recover cleanly** — update downloads time out after five minutes instead of hanging indefinitely, then fall back to a retryable error state in the UI
+- **The in-app updater is less noisy and more resilient** — the full Windows update flow now behaves better across both repeated launches and flaky network conditions
 
 ---
 
