@@ -55,6 +55,7 @@ const {
     handleDetectContextLimit,
     handleLlmfitRecommend,
     handleResearch,
+    handleConversationWorkingMemory,
     handleAgentChat,
     handleAgentRunList,
     handleAgentRunCreate,
@@ -578,6 +579,7 @@ app.get('/api/llmfit/recommend', handleLlmfitRecommend);
 // --- Research Route ---
 
 app.post('/api/research', handleResearch);
+app.post('/api/conversation/working-memory', handleConversationWorkingMemory);
 
 // --- Agent Routes ---
 

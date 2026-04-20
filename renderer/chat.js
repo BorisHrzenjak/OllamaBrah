@@ -1770,6 +1770,12 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
     const MAX_VISIBLE_MESSAGES = 50;
     const WARNING_THRESHOLD = 0.75; // 75% - yellow
     const CRITICAL_THRESHOLD = 0.90; // 90% - red
+    const WORKING_MEMORY_MIN_MESSAGES = 4;
+    const WORKING_MEMORY_USAGE_THRESHOLD = 0.55;
+    const WORKING_MEMORY_LONG_CHAT_MESSAGES = 10;
+    const WORKING_MEMORY_RECENT_TURNS = 6;
+    const WORKING_MEMORY_RELEVANT_WINDOWS = 3;
+    const workingMemoryRefreshJobs = new Map();
 
     // Context breakdown state (populated by proxy _contextBreakdown events)
     let lastContextBreakdown = null;
@@ -2065,6 +2071,426 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         return `${count} tokens`;
     }
 
+    function createEmptyWorkingMemory() {
+        return {
+            summary: '',
+            goals: [],
+            constraints: [],
+            decisions: [],
+            openQuestions: [],
+            keyFacts: [],
+            filesInPlay: [],
+            latestOutputs: [],
+            sourceMessageCount: 0,
+            lastUpdatedAt: null,
+            stale: true,
+            refreshReason: null,
+        };
+    }
+
+    function uniqueWorkingMemoryItems(items, maxItems = 6, maxLen = 220) {
+        const seen = new Set();
+        const next = [];
+        for (const value of Array.isArray(items) ? items : []) {
+            const text = String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLen);
+            if (!text) continue;
+            const key = text.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            next.push(text);
+            if (next.length >= maxItems) break;
+        }
+        return next;
+    }
+
+    function normalizeWorkingMemoryState(value) {
+        const next = createEmptyWorkingMemory();
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            next.summary = String(value.summary || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+            next.goals = uniqueWorkingMemoryItems(value.goals);
+            next.constraints = uniqueWorkingMemoryItems(value.constraints);
+            next.decisions = uniqueWorkingMemoryItems(value.decisions);
+            next.openQuestions = uniqueWorkingMemoryItems(value.openQuestions);
+            next.keyFacts = uniqueWorkingMemoryItems(value.keyFacts);
+            next.filesInPlay = uniqueWorkingMemoryItems(value.filesInPlay, 6, 160);
+            next.latestOutputs = uniqueWorkingMemoryItems(value.latestOutputs, 4, 260);
+            next.sourceMessageCount = Math.max(0, parseInt(value.sourceMessageCount, 10) || 0);
+            next.lastUpdatedAt = value.lastUpdatedAt ? String(value.lastUpdatedAt) : null;
+            next.stale = value.stale !== false;
+            next.refreshReason = value.refreshReason ? String(value.refreshReason).trim().slice(0, 80) : null;
+        }
+        return next;
+    }
+
+    function hasWorkingMemoryContent(value) {
+        const wm = normalizeWorkingMemoryState(value);
+        return !!(
+            wm.summary ||
+            wm.goals.length ||
+            wm.constraints.length ||
+            wm.decisions.length ||
+            wm.openQuestions.length ||
+            wm.keyFacts.length ||
+            wm.filesInPlay.length ||
+            wm.latestOutputs.length
+        );
+    }
+
+    function normalizeConversationRecord(conversation, conversationId = null) {
+        let changed = false;
+        const next = (conversation && typeof conversation === 'object' && !Array.isArray(conversation))
+            ? { ...conversation }
+            : {};
+
+        if (!Array.isArray(next.messages)) {
+            next.messages = [];
+            changed = true;
+        }
+        if (!next.id) {
+            next.id = conversationId || generateUUID();
+            changed = true;
+        }
+        if (typeof next.summary !== 'string') {
+            next.summary = getConversationSummary(next.messages);
+            changed = true;
+        }
+        if (!Number.isFinite(next.lastMessageTime)) {
+            next.lastMessageTime = Date.now();
+            changed = true;
+        }
+
+        const normalizedWorkingMemory = normalizeWorkingMemoryState(next.workingMemory);
+        if (JSON.stringify(next.workingMemory || null) !== JSON.stringify(normalizedWorkingMemory)) {
+            next.workingMemory = normalizedWorkingMemory;
+            changed = true;
+        }
+
+        return { data: next, changed };
+    }
+
+    function markConversationWorkingMemoryStale(conversation, reason = 'updated') {
+        if (!conversation || typeof conversation !== 'object') return createEmptyWorkingMemory();
+        const wm = normalizeWorkingMemoryState(conversation.workingMemory);
+        wm.stale = true;
+        wm.refreshReason = reason;
+        wm.sourceMessageCount = Math.min(wm.sourceMessageCount || 0, Array.isArray(conversation.messages) ? conversation.messages.length : 0);
+        conversation.workingMemory = wm;
+        return wm;
+    }
+
+    function buildConversationFingerprint(messages) {
+        const relevant = (Array.isArray(messages) ? messages : []).filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant'));
+        const tail = relevant.slice(-4).map(msg => ({
+            role: msg.role,
+            content: String(msg.content || '').slice(0, 200),
+            pinned: msg.pinned === true,
+            attachments: (msg.attachments || []).map(att => att?.fileName || '').slice(0, 4),
+        }));
+        return JSON.stringify({ count: relevant.length, tail });
+    }
+
+    function sanitizeMessageForWorkingMemoryRequest(message) {
+        const next = {
+            role: message?.role === 'assistant' ? 'assistant' : 'user',
+            content: String(message?.content || ''),
+            pinned: message?.pinned === true,
+        };
+        const attachments = (message?.attachments || message?.images || []).map(att => ({
+            type: att?.type || null,
+            fileName: att?.fileName || null,
+            mimeType: att?.mimeType || null,
+            summary: att?.summary || null,
+            excerpt: att?.excerpt || null,
+            pageCount: att?.pageCount || null,
+            chunkCount: att?.chunkCount || null,
+            parser: att?.parser || null,
+        })).filter(att => att.fileName || att.summary || att.excerpt);
+        if (attachments.length > 0) next.attachments = attachments;
+        return next;
+    }
+
+    async function requestWorkingMemoryRefresh(messages, existingWorkingMemory, { modelName, backend } = {}) {
+        const response = await fetch(`${PROXY_BASE}/api/conversation/working-memory`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: modelName || currentModelName,
+                backend: backend || currentModelBackend,
+                messages: (Array.isArray(messages) ? messages : []).map(sanitizeMessageForWorkingMemoryRequest),
+                workingMemory: normalizeWorkingMemoryState(existingWorkingMemory),
+            }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to refresh conversation brief.');
+        }
+        return normalizeWorkingMemoryState(data.workingMemory);
+    }
+
+    async function refreshConversationWorkingMemoryState(modelName, backend, modelData, conversation, { force = false, reason = 'refresh' } = {}) {
+        if (!conversation || !modelData) return null;
+        const key = `${modelName}::${conversation.id}`;
+        const relevantMessages = (conversation.messages || []).filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant'));
+        if (!force && relevantMessages.length < WORKING_MEMORY_MIN_MESSAGES) {
+            conversation.workingMemory = normalizeWorkingMemoryState(conversation.workingMemory);
+            return conversation.workingMemory;
+        }
+
+        const existingJob = workingMemoryRefreshJobs.get(key);
+        if (existingJob) {
+            const result = await existingJob.catch(() => null);
+            if (result) return result;
+        }
+
+        const snapshotFingerprint = buildConversationFingerprint(relevantMessages);
+        const snapshotMessages = relevantMessages.map(msg => sanitizeMessageForWorkingMemoryRequest(msg));
+        const snapshotWorkingMemory = normalizeWorkingMemoryState(conversation.workingMemory);
+
+        const job = (async () => {
+            const nextWorkingMemory = await requestWorkingMemoryRefresh(snapshotMessages, snapshotWorkingMemory, {
+                modelName,
+                backend,
+            });
+            if (buildConversationFingerprint(conversation.messages || []) !== snapshotFingerprint) {
+                return null;
+            }
+            conversation.workingMemory = {
+                ...nextWorkingMemory,
+                stale: false,
+                refreshReason: reason,
+            };
+            await saveModelChatState(modelName, modelData);
+            if (currentModelName === modelName && modelData.activeConversationId === conversation.id) {
+                upsertConversationBriefCard(conversation);
+            }
+            return conversation.workingMemory;
+        })();
+
+        workingMemoryRefreshJobs.set(key, job);
+        try {
+            return await job;
+        } finally {
+            if (workingMemoryRefreshJobs.get(key) === job) {
+                workingMemoryRefreshJobs.delete(key);
+            }
+        }
+    }
+
+    async function queueConversationWorkingMemoryRefresh(modelName, backend, conversationId, { force = false, reason = 'background' } = {}) {
+        const modelData = await loadModelChatState(modelName);
+        const conversation = modelData?.conversations?.[conversationId];
+        if (!conversation) return null;
+        return refreshConversationWorkingMemoryState(modelName, backend, modelData, conversation, { force, reason });
+    }
+
+    function formatWorkingMemoryTimestamp(value) {
+        if (!value) return 'Not generated yet';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return 'Not generated yet';
+        return date.toLocaleString();
+    }
+
+    function appendWorkingMemorySection(cardBody, title, items) {
+        if (!Array.isArray(items) || items.length === 0) return;
+        const section = document.createElement('div');
+        section.className = 'conversation-brief-section';
+
+        const label = document.createElement('div');
+        label.className = 'conversation-brief-section-title';
+        label.textContent = title;
+        section.appendChild(label);
+
+        const list = document.createElement('ul');
+        list.className = 'conversation-brief-list';
+        items.forEach(item => {
+            const li = document.createElement('li');
+            li.textContent = item;
+            list.appendChild(li);
+        });
+        section.appendChild(list);
+        cardBody.appendChild(section);
+    }
+
+    function createConversationBriefCard(conversation) {
+        if (!conversation) return null;
+        const wm = normalizeWorkingMemoryState(conversation.workingMemory);
+        const totalMessages = Array.isArray(conversation.messages) ? conversation.messages.filter(msg => msg.role === 'user' || msg.role === 'assistant').length : 0;
+        if (totalMessages < 2 && !hasWorkingMemoryContent(wm)) return null;
+
+        const card = document.createElement('section');
+        card.id = 'conversationBriefCard';
+        card.className = 'conversation-brief-card';
+
+        const header = document.createElement('div');
+        header.className = 'conversation-brief-header';
+
+        const titleWrap = document.createElement('div');
+        const kicker = document.createElement('div');
+        kicker.className = 'conversation-brief-kicker';
+        kicker.textContent = 'Conversation Brief';
+        const title = document.createElement('div');
+        title.className = 'conversation-brief-title';
+        title.textContent = wm.stale ? 'Needs refresh before the next long turn' : 'Tracking the current task state';
+        const meta = document.createElement('div');
+        meta.className = 'conversation-brief-meta';
+        meta.textContent = `${totalMessages} messages · ${formatWorkingMemoryTimestamp(wm.lastUpdatedAt)}`;
+        titleWrap.appendChild(kicker);
+        titleWrap.appendChild(title);
+        titleWrap.appendChild(meta);
+        header.appendChild(titleWrap);
+
+        const actions = document.createElement('div');
+        actions.className = 'conversation-brief-actions';
+
+        const status = document.createElement('span');
+        status.className = `conversation-brief-status${wm.stale ? ' stale' : ''}`;
+        status.textContent = wm.stale ? 'Stale' : 'Ready';
+        actions.appendChild(status);
+
+        const refreshBtn = document.createElement('button');
+        refreshBtn.className = 'conversation-brief-refresh';
+        refreshBtn.textContent = 'Refresh';
+        refreshBtn.addEventListener('click', async () => {
+            refreshBtn.disabled = true;
+            const original = refreshBtn.textContent;
+            refreshBtn.textContent = 'Refreshing...';
+            try {
+                const modelData = await loadModelChatState(currentModelName);
+                const activeConvId = modelData?.activeConversationId;
+                const activeConversation = activeConvId ? modelData?.conversations?.[activeConvId] : null;
+                if (activeConversation) {
+                    await refreshConversationWorkingMemoryState(currentModelName, currentModelBackend, modelData, activeConversation, {
+                        force: true,
+                        reason: 'manual',
+                    });
+                }
+            } catch (err) {
+                console.error('[WorkingMemory] Manual refresh failed:', err);
+                alert(`Could not refresh the conversation brief: ${err.message}`);
+            } finally {
+                refreshBtn.disabled = false;
+                refreshBtn.textContent = original;
+            }
+        });
+        actions.appendChild(refreshBtn);
+        header.appendChild(actions);
+
+        const body = document.createElement('div');
+        body.className = 'conversation-brief-body';
+
+        const summary = document.createElement('div');
+        summary.className = 'conversation-brief-summary';
+        summary.textContent = wm.summary || 'The app will start building a compact brief as the conversation grows.';
+        body.appendChild(summary);
+
+        appendWorkingMemorySection(body, 'Goals', wm.goals);
+        appendWorkingMemorySection(body, 'Constraints', wm.constraints);
+        appendWorkingMemorySection(body, 'Decisions', wm.decisions);
+        appendWorkingMemorySection(body, 'Open Questions', wm.openQuestions);
+        appendWorkingMemorySection(body, 'Key Facts', wm.keyFacts);
+        appendWorkingMemorySection(body, 'Files In Play', wm.filesInPlay);
+        appendWorkingMemorySection(body, 'Recent Outputs', wm.latestOutputs);
+
+        card.appendChild(header);
+        card.appendChild(body);
+        return card;
+    }
+
+    function upsertConversationBriefCard(conversation) {
+        const existing = document.getElementById('conversationBriefCard');
+        if (existing) existing.remove();
+        const card = createConversationBriefCard(conversation);
+        if (!card) return;
+        const readinessCard = document.getElementById('startupReadinessCard');
+        if (readinessCard && readinessCard.parentElement === chatContainer) {
+            if (readinessCard.nextSibling) {
+                chatContainer.insertBefore(card, readinessCard.nextSibling);
+            } else {
+                chatContainer.appendChild(card);
+            }
+            return;
+        }
+        chatContainer.prepend(card);
+    }
+
+    function scorePromptMessageRelevance(message, queryTokens) {
+        if (!queryTokens || queryTokens.size === 0) return 0;
+        const attachments = (message.attachments || []).map(att => `${att.fileName || ''} ${att.summary || ''} ${att.excerpt || ''}`).join(' ');
+        const haystack = `${message.content || ''} ${attachments}`.toLowerCase();
+        let score = 0;
+        queryTokens.forEach(token => {
+            if (haystack.includes(token)) score += token.length >= 6 ? 2 : 1;
+        });
+        if (message.pinned) score += 6;
+        return score;
+    }
+
+    function addPromptContextWindow(selected, messages, index) {
+        if (!Array.isArray(messages) || index < 0 || index >= messages.length) return;
+        selected.add(index);
+        if (messages[index].role === 'assistant' && index > 0 && messages[index - 1].role === 'user') {
+            selected.add(index - 1);
+        }
+        if (messages[index].role === 'user' && index + 1 < messages.length && messages[index + 1].role === 'assistant') {
+            selected.add(index + 1);
+        }
+    }
+
+    function buildConversationPromptPlan(conversation, modelData) {
+        const roleMessages = (conversation?.messages || []).filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant'));
+        const effectiveLimit = Math.max(1, getEffectiveContextLimit(currentModelName, modelData));
+        const rawEstimatedTokens = getConversationTokenCount(roleMessages) + estimateTokens(modelData?.systemPrompt || '');
+        const usageRatio = rawEstimatedTokens / effectiveLimit;
+        const workingMemory = normalizeWorkingMemoryState(conversation?.workingMemory);
+        const shouldRefreshWorkingMemory = roleMessages.length >= WORKING_MEMORY_MIN_MESSAGES
+            && (usageRatio >= WORKING_MEMORY_USAGE_THRESHOLD
+                || roleMessages.length >= WORKING_MEMORY_LONG_CHAT_MESSAGES
+                || (workingMemory.stale && hasWorkingMemoryContent(workingMemory)));
+        const useWorkingMemory = hasWorkingMemoryContent(workingMemory)
+            && (usageRatio >= WORKING_MEMORY_USAGE_THRESHOLD || roleMessages.length >= WORKING_MEMORY_LONG_CHAT_MESSAGES);
+
+        if (!useWorkingMemory) {
+            return {
+                selectedMessages: roleMessages,
+                useWorkingMemory: false,
+                shouldRefreshWorkingMemory,
+                usageRatio,
+                droppedMessageCount: 0,
+            };
+        }
+
+        const selected = new Set();
+        const tailStart = Math.max(0, roleMessages.length - WORKING_MEMORY_RECENT_TURNS);
+        for (let i = tailStart; i < roleMessages.length; i += 1) {
+            selected.add(i);
+        }
+
+        roleMessages.forEach((message, index) => {
+            if (message.pinned) addPromptContextWindow(selected, roleMessages, index);
+        });
+
+        const latestUserMessage = [...roleMessages].reverse().find(msg => msg.role === 'user');
+        const queryTokens = tokenizeAttachmentQuery(latestUserMessage?.content || '');
+        const candidates = roleMessages
+            .map((message, index) => ({ index, score: scorePromptMessageRelevance(message, queryTokens) }))
+            .filter(item => item.index < tailStart && item.score > 0)
+            .sort((a, b) => b.score - a.score || a.index - b.index)
+            .slice(0, WORKING_MEMORY_RELEVANT_WINDOWS);
+        candidates.forEach(item => addPromptContextWindow(selected, roleMessages, item.index));
+
+        const selectedMessages = [...selected]
+            .sort((a, b) => a - b)
+            .map(index => roleMessages[index]);
+
+        return {
+            selectedMessages,
+            useWorkingMemory: true,
+            shouldRefreshWorkingMemory,
+            usageRatio,
+            droppedMessageCount: Math.max(0, roleMessages.length - selectedMessages.length),
+        };
+    }
+
     async function updateContextIndicator(messages, systemPrompt = '', modelData = null, realPromptTokens = null) {
         const messageTokens = getConversationTokenCount(messages);
         const systemPromptTokens = estimateTokens(systemPrompt);
@@ -2091,35 +2517,40 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         // --- Segmented bar ---
         const segSystem = document.getElementById('segSystem');
         const segSearch = document.getElementById('segSearch');
+        const segWorkingMemory = document.getElementById('segWorkingMemory');
         const segConversation = document.getElementById('segConversation');
         const meterLabel = document.getElementById('contextMeterLabel');
 
-        let sysPct = 0, searchPct = 0, convPct = 0;
-        let sysTokens = systemPromptTokens, searchTokens = 0, convTokens = messageTokens;
+        let sysPct = 0, searchPct = 0, workingMemoryPct = 0, convPct = 0;
+        let sysTokens = systemPromptTokens, searchTokens = 0, workingMemoryTokens = 0, convTokens = messageTokens;
 
         if (lastContextBreakdown) {
             // Use proxy-reported breakdown (includes injected context)
             sysTokens = lastContextBreakdown.systemPromptTokens || 0;
             searchTokens = lastContextBreakdown.searchContextTokens || 0;
+            workingMemoryTokens = lastContextBreakdown.workingMemoryTokens || 0;
             convTokens = lastContextBreakdown.conversationTokens || 0;
         }
 
-        const totalForBar = isActual ? lastRealPromptTokens : (sysTokens + searchTokens + convTokens);
+        const totalForBar = isActual ? lastRealPromptTokens : (sysTokens + searchTokens + workingMemoryTokens + convTokens);
         if (effectiveLimit > 0) {
             sysPct = Math.min((sysTokens / effectiveLimit) * 100, 100);
             searchPct = Math.min((searchTokens / effectiveLimit) * 100, 100);
+            workingMemoryPct = Math.min((workingMemoryTokens / effectiveLimit) * 100, 100);
             convPct = Math.min((convTokens / effectiveLimit) * 100, 100);
             // If we have actual tokens, scale segments proportionally
-            if (isActual && (sysTokens + searchTokens + convTokens) > 0) {
-                const scale = lastRealPromptTokens / (sysTokens + searchTokens + convTokens);
+            if (isActual && (sysTokens + searchTokens + workingMemoryTokens + convTokens) > 0) {
+                const scale = lastRealPromptTokens / (sysTokens + searchTokens + workingMemoryTokens + convTokens);
                 sysPct = Math.min((sysTokens * scale / effectiveLimit) * 100, 100);
                 searchPct = Math.min((searchTokens * scale / effectiveLimit) * 100, 100);
+                workingMemoryPct = Math.min((workingMemoryTokens * scale / effectiveLimit) * 100, 100);
                 convPct = Math.min((convTokens * scale / effectiveLimit) * 100, 100);
             }
         }
 
         if (segSystem) segSystem.style.width = `${sysPct}%`;
         if (segSearch) segSearch.style.width = `${searchPct}%`;
+        if (segWorkingMemory) segWorkingMemory.style.width = `${workingMemoryPct}%`;
         if (segConversation) segConversation.style.width = `${convPct}%`;
 
         // Hover label
@@ -2127,6 +2558,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             const parts = [];
             if (sysTokens > 0) parts.push(`System: ${formatTokenCount(sysTokens)}`);
             if (searchTokens > 0) parts.push(`Search: ${formatTokenCount(searchTokens)}`);
+            if (workingMemoryTokens > 0) parts.push(`Brief: ${formatTokenCount(workingMemoryTokens)}`);
             if (convTokens > 0) parts.push(`Chat: ${formatTokenCount(convTokens)}`);
             meterLabel.textContent = parts.join(' · ');
         }
@@ -2144,6 +2576,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         tooltipText += `\n`;
         if (sysTokens > 0) tooltipText += `🔵 System prompt: ${formatTokenCount(sysTokens)}\n`;
         if (searchTokens > 0) tooltipText += `🟢 Search/web context: ${formatTokenCount(searchTokens)}\n`;
+        if (workingMemoryTokens > 0) tooltipText += `🟣 Conversation brief: ${formatTokenCount(workingMemoryTokens)}\n`;
         tooltipText += `⚪ Conversation: ${formatTokenCount(convTokens)}\n`;
         tooltipText += `\nWindow: ${formatContextLimit(effectiveLimit)}`;
         if (isCloud) tooltipText += ` (cloud)`;
@@ -2638,6 +3071,11 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             modelSpecificData.conversations = {};
             needsSave = true;
         }
+        Object.keys(modelSpecificData.conversations).forEach(conversationId => {
+            const normalizedConversation = normalizeConversationRecord(modelSpecificData.conversations[conversationId], conversationId);
+            if (normalizedConversation.changed) needsSave = true;
+            modelSpecificData.conversations[conversationId] = normalizedConversation.data;
+        });
         if (typeof modelSpecificData.activeConversationId === 'undefined') {
             modelSpecificData.activeConversationId = null;
             needsSave = true;
@@ -3781,9 +4219,13 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         lastContextBreakdown = null;
         lastRealPromptTokens = null;
         let messages = [];
+        const conversation = modelData?.conversations?.[conversationId] || null;
+        if (conversation) {
+            upsertConversationBriefCard(conversation);
+        }
 
-        if (modelData.conversations[conversationId] && modelData.conversations[conversationId].messages) {
-            messages = modelData.conversations[conversationId].messages;
+        if (conversation && conversation.messages) {
+            messages = conversation.messages;
             const totalMessages = messages.length;
             const startIndex = showFullHistory ? 0 : Math.max(0, totalMessages - MAX_VISIBLE_MESSAGES);
 
@@ -3857,7 +4299,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             id: newConversationId,
             messages: [],
             summary: 'New Chat',
-            lastMessageTime: Date.now()
+            lastMessageTime: Date.now(),
+            workingMemory: createEmptyWorkingMemory(),
         };
         modelData.activeConversationId = newConversationId;
         await saveModelChatState(modelForNewChat, modelData);
@@ -4106,6 +4549,15 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             messages: sourceMessages,
             summary: forkSummary,
             lastMessageTime: Date.now(),
+            workingMemory: {
+                ...normalizeWorkingMemoryState(sourceConversation.workingMemory),
+                stale: true,
+                refreshReason: 'forked_conversation',
+                sourceMessageCount: Math.min(
+                    normalizeWorkingMemoryState(sourceConversation.workingMemory).sourceMessageCount || 0,
+                    sourceMessages.length
+                ),
+            },
             forkedFrom: {
                 model: currentModelName,
                 backend: currentModelBackend,
@@ -6598,6 +7050,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
         // Track if content has started arriving for gap-filling loading state
         let contentHasStarted = false;
+        let shouldQueueWorkingMemoryRefresh = false;
+        let workingMemoryConversationId = currentConversation?.id || null;
 
         const botTextElement = addMessageToChatUI(currentModelName, '', 'bot-message', modelData);
         const botMessageDiv = botTextElement.parentElement;
@@ -6637,10 +7091,38 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         try {
             console.log(`Sending to /proxy/api/chat with model: ${currentModelName} for streaming.`);
 
-            // Prepare messages for API - convert attachment data for Ollama format
+            let promptPlan = {
+                selectedMessages: (currentConversation.messages || []).filter(msg => msg && (msg.role === 'user' || msg.role === 'assistant')),
+                useWorkingMemory: false,
+                shouldRefreshWorkingMemory: false,
+                usageRatio: 0,
+                droppedMessageCount: 0,
+            };
+            if (chatWorkflowMode !== 'agent') {
+                const initialPromptPlan = buildConversationPromptPlan(currentConversation, modelData);
+                if (initialPromptPlan.shouldRefreshWorkingMemory) {
+                    try {
+                        await refreshConversationWorkingMemoryState(currentModelName, currentModelBackend, modelData, currentConversation, {
+                            reason: 'pre_send',
+                        });
+                    } catch (err) {
+                        console.warn('[WorkingMemory] Pre-send refresh failed:', err.message);
+                    }
+                }
+                promptPlan = buildConversationPromptPlan(currentConversation, modelData);
+            }
             const latestUserMessage = [...currentConversation.messages].reverse().find(m => m.role === 'user');
             const attachmentQuery = latestUserMessage?.content || '';
-            const apiMessages = currentConversation.messages
+            const sourceMessages = promptPlan.selectedMessages;
+            console.log('[WorkingMemory] Prompt plan:', {
+                useWorkingMemory: promptPlan.useWorkingMemory,
+                selectedMessages: sourceMessages.length,
+                droppedMessages: promptPlan.droppedMessageCount,
+                usageRatio: promptPlan.usageRatio,
+            });
+
+            // Prepare messages for API - convert attachment data for Ollama format
+            const apiMessages = sourceMessages
                 .filter(m => m.role === 'user' || m.role === 'assistant')
                 .map(message => {
                     let content = message.content;
@@ -6707,6 +7189,9 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                 messages: apiMessages,
                 stream: true
             };
+            if (promptPlan.useWorkingMemory && hasWorkingMemoryContent(currentConversation.workingMemory)) {
+                requestBody._workingMemory = normalizeWorkingMemoryState(currentConversation.workingMemory);
+            }
             if (currentModelBackend === 'llamacpp' && currentLlamaCppPath) {
                 requestBody._path = currentLlamaCppPath;
             }
@@ -7070,12 +7555,15 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             currentConversation.messages.push(messageToSave);
             currentConversation.summary = getConversationSummary(currentConversation.messages);
             currentConversation.lastMessageTime = Date.now();
+            markConversationWorkingMemoryStale(currentConversation, 'assistant_response');
+            shouldQueueWorkingMemoryRefresh = true;
             const savedMessageIndex = currentConversation.messages.length - 1;
             botMessageDiv.dataset.messageIndex = String(savedMessageIndex);
             renderMessageMetadata(botMessageDiv, messageToSave, savedMessageIndex);
             if (memoryUsageMeta?.used?.length && botMessageDiv) {
                 addMemoryUsageToMessage(botMessageDiv, memoryUsageMeta.used);
             }
+            upsertConversationBriefCard(currentConversation);
 
             // Auto-extract memories from this exchange (fire-and-forget)
             if ((activeMemoryMode !== 'off' || memoryAutoExtract) && lastUserMsg) {
@@ -7098,9 +7586,12 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                     currentConversation.messages.push(partialMessage);
                     currentConversation.summary = getConversationSummary(currentConversation.messages);
                     currentConversation.lastMessageTime = Date.now();
+                    markConversationWorkingMemoryStale(currentConversation, 'assistant_response');
+                    shouldQueueWorkingMemoryRefresh = true;
                     const savedMessageIndex = currentConversation.messages.length - 1;
                     botMessageDiv.dataset.messageIndex = String(savedMessageIndex);
                     renderMessageMetadata(botMessageDiv, partialMessage, savedMessageIndex);
+                    upsertConversationBriefCard(currentConversation);
                 }
             } else {
                 console.error('Error in triggerLLMCompletion:', error);
@@ -7127,10 +7618,14 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                     errorMessageToSave.alternatives = responseVersionState.alternatives.map(normalizeMessageVersion);
                 }
                 currentConversation.messages.push(errorMessageToSave);
+                currentConversation.summary = getConversationSummary(currentConversation.messages);
                 currentConversation.lastMessageTime = Date.now();
+                markConversationWorkingMemoryStale(currentConversation, 'assistant_response');
+                shouldQueueWorkingMemoryRefresh = true;
                 const savedMessageIndex = currentConversation.messages.length - 1;
                 botMessageDiv.dataset.messageIndex = String(savedMessageIndex);
                 renderMessageMetadata(botMessageDiv, errorMessageToSave, savedMessageIndex);
+                upsertConversationBriefCard(currentConversation);
             }
         } finally {
             console.log('triggerLLMCompletion finally block completed');
@@ -7168,6 +7663,12 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             populateConversationSidebar(currentModelName, modelData);
             console.log('UI unlocked, state saved, sidebar repopulated in finally block.');
             await updateRegenerateButton();
+
+            if (shouldQueueWorkingMemoryRefresh && chatWorkflowMode !== 'agent' && workingMemoryConversationId) {
+                queueConversationWorkingMemoryRefresh(currentModelName, currentModelBackend, workingMemoryConversationId, {
+                    reason: 'post_response',
+                }).catch(err => console.warn('[WorkingMemory] Background refresh failed:', err.message));
+            }
         }
     }
 
@@ -7247,7 +7748,9 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         currentConversation.messages.push(userMessage);
         currentConversation.summary = getConversationSummary(currentConversation.messages);
         currentConversation.lastMessageTime = Date.now();
+        markConversationWorkingMemoryStale(currentConversation, 'new_user_turn');
         addMessageToChatUI('You', prompt, 'user-message', modelData, userMessage.attachments, currentConversation.messages.length - 1);
+        upsertConversationBriefCard(currentConversation);
 
         messageInput.value = '';
         autoResizeInput();
@@ -7342,6 +7845,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         conversation.messages.push(updatedMsg);
         conversation.summary = getConversationSummary(conversation.messages);
         conversation.lastMessageTime = Date.now();
+        markConversationWorkingMemoryStale(conversation, 'message_edited');
 
         await saveModelChatState(currentModelName, modelData);
         displayConversationMessages(modelData, activeConvId);
@@ -7363,6 +7867,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         conversation.messages = messages.slice(0, messageIndex);
         conversation.summary = getConversationSummary(conversation.messages);
         conversation.lastMessageTime = Date.now();
+        markConversationWorkingMemoryStale(conversation, 'response_regenerated');
         await saveModelChatState(currentModelName, modelData);
         await displayConversationMessages(modelData, activeConvId);
         await triggerLLMCompletion(modelData, { alternatives: previousVersions });

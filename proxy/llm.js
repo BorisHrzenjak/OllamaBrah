@@ -20,6 +20,7 @@ const {
     extractUrls,
 } = require('./search');
 const skillsModule = require('./skills');
+const conversationMemory = require('./conversation-memory');
 const {
     executeTool,
     getEnabledTools,
@@ -602,14 +603,42 @@ function prependSystemBlock(messages, block) {
     return nextMessages;
 }
 
-function buildContextBreakdown(messages, searchMeta) {
+function buildWorkingMemoryBlock(workingMemory) {
+    const normalized = conversationMemory.normalizeWorkingMemory(workingMemory);
+    const sections = [];
+    if (normalized.summary) sections.push(`Conversation brief:\n${normalized.summary}`);
+    if (normalized.goals.length) sections.push('Active goals:\n' + normalized.goals.map(item => `- ${item}`).join('\n'));
+    if (normalized.constraints.length) sections.push('Constraints and preferences:\n' + normalized.constraints.map(item => `- ${item}`).join('\n'));
+    if (normalized.decisions.length) sections.push('Decisions already made:\n' + normalized.decisions.map(item => `- ${item}`).join('\n'));
+    if (normalized.openQuestions.length) sections.push('Open questions:\n' + normalized.openQuestions.map(item => `- ${item}`).join('\n'));
+    if (normalized.keyFacts.length) sections.push('Key facts:\n' + normalized.keyFacts.map(item => `- ${item}`).join('\n'));
+    if (normalized.filesInPlay.length) sections.push('Files in play:\n' + normalized.filesInPlay.map(item => `- ${item}`).join('\n'));
+    if (normalized.latestOutputs.length) sections.push('Recent outputs:\n' + normalized.latestOutputs.map(item => `- ${item}`).join('\n'));
+    if (sections.length === 0) return { block: '', tokens: 0 };
+
+    const block =
+        'You have a conversation working-memory brief. Use it to preserve continuity when earlier turns are not included verbatim. ' +
+        'Treat it as grounded context distilled from prior messages in this same conversation.\n\n' +
+        sections.join('\n\n');
+    return {
+        block,
+        tokens: Math.ceil(block.length / 3.5),
+    };
+}
+
+function buildContextBreakdown(messages, meta = {}) {
     const _estTok = (s) => Math.ceil((s || '').length / 3.5);
     const msgs = messages || [];
-    const sysMsg = msgs.find(m => m.role === 'system');
+    const systemTokensTotal = msgs
+        .filter(m => m.role === 'system')
+        .reduce((sum, m) => sum + _estTok(m.content) + 4, 0);
     const convMsgs = msgs.filter(m => m.role === 'user' || m.role === 'assistant');
+    const searchTokens = meta?.searchMeta?.contextTokens || 0;
+    const workingMemoryTokens = meta?.workingMemoryMeta?.tokens || 0;
     return {
-        systemPromptTokens: _estTok(sysMsg?.content || ''),
-        searchContextTokens: searchMeta?.contextTokens || 0,
+        systemPromptTokens: Math.max(0, systemTokensTotal - searchTokens - workingMemoryTokens),
+        searchContextTokens: searchTokens,
+        workingMemoryTokens,
         conversationTokens: convMsgs.reduce((sum, m) => sum + _estTok(m.content) + 4, 0),
         totalEstimated: msgs.reduce((sum, m) => sum + _estTok(m.content) + 4, 0)
     };
@@ -735,7 +764,10 @@ async function prepareAgentMessages(messages, capabilityConfig = {}, logPrefix =
     return {
         ...augmentation,
         messages: finalMessages,
-        contextBreakdown: buildContextBreakdown(finalMessages, augmentation.searchMeta)
+        contextBreakdown: buildContextBreakdown(finalMessages, {
+            searchMeta: augmentation.searchMeta,
+            workingMemoryMeta: augmentation.workingMemoryMeta,
+        })
     };
 }
 
@@ -775,6 +807,19 @@ async function augmentChatMessages(messages, flags = {}, logPrefix = 'Chat') {
     let sourcesBlock = null;
     let searchMeta = null;
     let memoryMeta = null;
+    let workingMemoryMeta = null;
+
+    if (flags.workingMemory) {
+        const workingMemory = buildWorkingMemoryBlock(flags.workingMemory);
+        if (workingMemory.block) {
+            finalMessages = prependSystemBlock(finalMessages, workingMemory.block);
+            workingMemoryMeta = {
+                used: true,
+                tokens: workingMemory.tokens,
+                lastUpdatedAt: flags.workingMemory?.lastUpdatedAt || null,
+            };
+        }
+    }
 
     if (lastUserMsg) {
         const messageContent = lastUserMsg.content || '';
@@ -907,8 +952,12 @@ async function augmentChatMessages(messages, flags = {}, logPrefix = 'Chat') {
         messages: finalMessages,
         searchMeta,
         memoryMeta,
+        workingMemoryMeta,
         sourcesBlock,
-        contextBreakdown: buildContextBreakdown(finalMessages, searchMeta)
+        contextBreakdown: buildContextBreakdown(finalMessages, {
+            searchMeta,
+            workingMemoryMeta,
+        })
     };
 }
 
@@ -950,6 +999,7 @@ async function handleLlamacppChat(req, res) {
         webSearchRequested: req.body?._webSearch === true,
         deepResearchRequested: req.body?._deepResearch === true,
         memoryRequested: req.body?._memory === true,
+        workingMemory: req.body?._workingMemory || null,
         saveToMemory: req.body?._saveToMemory,
     }, 'llama.cpp');
     const finalMessages = augmentation.messages;
@@ -1352,6 +1402,30 @@ async function handleResearch(req, res) {
     } catch (err) {
         console.error('[Research] Error:', err.message);
         res.status(500).json({ error: err.message });
+    }
+}
+
+async function handleConversationWorkingMemory(req, res) {
+    const { messages, workingMemory, model, backend = 'ollama' } = req.body || {};
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return res.status(400).json({ error: 'messages are required' });
+    }
+    if (!model || typeof model !== 'string') {
+        return res.status(400).json({ error: 'model is required' });
+    }
+
+    try {
+        const prompt = conversationMemory.buildWorkingMemoryPrompt({
+            existingMemory: workingMemory,
+            messages,
+        });
+        const raw = await callModelSync(model, backend, prompt, 45000);
+        const parsed = conversationMemory.parseWorkingMemoryResponse(raw);
+        const merged = conversationMemory.mergeWorkingMemory(workingMemory, parsed, messages, 'refresh');
+        res.json({ workingMemory: merged });
+    } catch (err) {
+        console.error('[ConversationMemory] Refresh failed:', err.message);
+        res.status(500).json({ error: err.message || 'Failed to refresh working memory.' });
     }
 }
 
@@ -2405,6 +2479,7 @@ async function handleOllamaProxy(req, res) {
                         webSearchRequested: ollamaPayload._webSearch === true,
                         deepResearchRequested: ollamaPayload._deepResearch === true,
                         memoryRequested: ollamaPayload._memory === true,
+                        workingMemory: ollamaPayload._workingMemory || null,
                         saveToMemory: ollamaPayload._saveToMemory,
                     }, 'Search');
                     ollamaPayload.messages = augmentation.messages;
@@ -2416,6 +2491,7 @@ async function handleOllamaProxy(req, res) {
                     delete ollamaPayload._webSearch; // strip internal flag before forwarding
                     delete ollamaPayload._deepResearch; // strip internal flag before forwarding
                     delete ollamaPayload._memory; // strip internal flag before forwarding
+                    delete ollamaPayload._workingMemory; // strip internal flag before forwarding
                     delete ollamaPayload._saveToMemory; // strip internal flag before forwarding
 
                     bodyToSend = JSON.stringify(ollamaPayload);
@@ -2486,6 +2562,7 @@ module.exports = {
     handleDetectContextLimit,
     handleLlmfitRecommend,
     handleResearch,
+    handleConversationWorkingMemory,
     handleAgentChat,
     handleAgentRunList,
     handleAgentRunCreate,

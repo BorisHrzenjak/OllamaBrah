@@ -8,11 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.18.4
+## What's New - v1.19.0
 
-- **Windows installs no longer crash on startup** — the packaged app now ships the `builder-util-runtime` module required by the in-app updater instead of failing with `Cannot find module 'builder-util-runtime'`
-- **The updater fixes from v1.18.3 are preserved** — dismissed update banners still stay dismissed per version, and stalled downloads still time out into a retryable error state
-- **This release is a packaging hotfix** — it patches the installed Windows build without changing the intended updater behavior introduced in the previous release
+- **Normal chat now keeps a conversation brief** — long-running chats maintain a compact working-memory summary of goals, constraints, decisions, open questions, files in play, and recent outputs
+- **Prompt assembly is smarter under context pressure** — the app now preserves recent and pinned turns, retains a few older relevant exchanges, and injects the brief when it helps reduce prompt bloat
+- **You can inspect and refresh the brief directly in chat** — a new Conversation Brief card shows the app’s current task state, lets you refresh it manually, and exposes its token usage in the context meter
 
 ---
 
