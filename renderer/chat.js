@@ -1881,7 +1881,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
         // Define icon paths
         const icons = {
-            'copy': '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+            'copy': '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
             'file-down': '<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6"/><path d="M9 15l3 3 3-3"/>',
             'file-code': '<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><polyline points="9 13 11 15 9 17"/><polyline points="15 13 13 15 15 17"/>',
             'square': '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>',
@@ -3828,6 +3828,17 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         if (messageClass === 'user-message' && messageIndex >= 0) {
             const actionsDiv = document.createElement('div');
             actionsDiv.classList.add('message-actions');
+
+            const copyButton = document.createElement('button');
+            copyButton.classList.add('action-button', 'copy-button');
+            copyButton.title = 'Copy to clipboard';
+            copyButton.appendChild(createLucideIcon('copy', 16));
+            copyButton.addEventListener('click', (e) => {
+                e.stopPropagation();
+                copyToClipboard(textContentDiv.textContent, copyButton);
+            });
+            actionsDiv.appendChild(copyButton);
+
             const editButton = document.createElement('button');
             editButton.classList.add('action-button', 'edit-button');
             editButton.title = 'Edit message';
