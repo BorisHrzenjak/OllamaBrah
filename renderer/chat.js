@@ -922,36 +922,68 @@ document.addEventListener('DOMContentLoaded', async () => {
         return raw.slice(0, limit);
     }
 
-    function createAgentRunSection(title, description = '', { visible = false } = {}) {
+    function createAgentRunSection(title, description = '', { visible = false, autoExpand = false, expanded = false } = {}) {
         const section = document.createElement('section');
-        section.className = 'agent-run-section';
+        section.className = 'agent-run-section' + (expanded ? '' : ' collapsed');
         section.style.display = visible ? '' : 'none';
 
-        const header = document.createElement('div');
+        const header = document.createElement('button');
+        header.type = 'button';
         header.className = 'agent-run-section-header';
 
-        const titleEl = document.createElement('div');
+        const chevron = document.createElement('span');
+        chevron.className = 'agent-run-section-chevron';
+        chevron.setAttribute('aria-hidden', 'true');
+        chevron.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10"><path d="M5.5 3.5l5 4.5-5 4.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+        const titleEl = document.createElement('span');
         titleEl.className = 'agent-run-section-title';
         titleEl.textContent = title;
-        header.appendChild(titleEl);
+
+        const countEl = document.createElement('span');
+        countEl.className = 'agent-run-section-count';
+        countEl.textContent = '0';
+
+        header.append(chevron, titleEl, countEl);
+
+        const body = document.createElement('div');
+        body.className = 'agent-run-section-body';
 
         if (description) {
             const descEl = document.createElement('div');
             descEl.className = 'agent-run-section-description';
             descEl.textContent = description;
-            header.appendChild(descEl);
+            body.appendChild(descEl);
         }
 
-        const body = document.createElement('div');
-        body.className = 'agent-run-section-body';
         section.append(header, body);
-        return { section, body };
+
+        header.addEventListener('click', () => {
+            section.classList.toggle('collapsed');
+        });
+
+        return { section, body, countEl, autoExpand, count: 0 };
     }
 
     function appendAgentSectionItem(sectionRef, element) {
         if (!sectionRef || !element) return element;
         sectionRef.section.style.display = '';
         sectionRef.body.appendChild(element);
+
+        sectionRef.count = (sectionRef.count || 0) + 1;
+        if (sectionRef.countEl) sectionRef.countEl.textContent = String(sectionRef.count);
+
+        const cls = element.className || '';
+        if (/agent-run-card-error|agent-error|agent-permission-card/.test(cls)) {
+            sectionRef.section.classList.add('has-error');
+        } else if (/agent-run-card-warning/.test(cls)) {
+            sectionRef.section.classList.add('has-warning');
+        }
+
+        if (sectionRef.autoExpand) {
+            sectionRef.section.classList.remove('collapsed');
+        }
+
         return element;
     }
 
@@ -983,11 +1015,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         root.className = 'agent-run-sections';
 
         const sections = {
+            final: createAgentRunSection('Answer', workspaceRoot ? `Workspace: ${workspaceRoot}` : 'Workspace: Not set', { autoExpand: true }),
             timeline: createAgentRunSection('Timeline', 'Reasoning, approvals, and tool activity', { visible: true }),
-            files: createAgentRunSection('File Edits', 'Files changed during this run'),
-            diffs: createAgentRunSection('Diff Preview', 'Patch and diff output when available'),
-            shell: createAgentRunSection('Shell Output', 'Command execution and output'),
-            final: createAgentRunSection('Final Summary', workspaceRoot ? `Workspace: ${workspaceRoot}` : 'Workspace: Not set'),
+            files: createAgentRunSection('Files', 'Files changed during this run'),
+            diffs: createAgentRunSection('Diffs', 'Patch and diff output when available'),
+            shell: createAgentRunSection('Shell', 'Command execution and output'),
         };
 
         Object.values(sections).forEach(section => root.appendChild(section.section));

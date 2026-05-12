@@ -8,11 +8,12 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.19.0
+## What's New - v1.20.0
 
-- **Normal chat now keeps a conversation brief** — long-running chats maintain a compact working-memory summary of goals, constraints, decisions, open questions, files in play, and recent outputs
-- **Prompt assembly is smarter under context pressure** — the app now preserves recent and pinned turns, retains a few older relevant exchanges, and injects the brief when it helps reduce prompt bloat
-- **You can inspect and refresh the brief directly in chat** — a new Conversation Brief card shows the app’s current task state, lets you refresh it manually, and exposes its token usage in the context meter
+- **Agent run UI is now collapsible and dev-tool styled** — the Timeline, Files, Diffs, and Shell panels start collapsed so the actual answer is no longer buried under warnings and status cards
+- **Each section shows a live count badge** — see at a glance how many timeline events, file edits, or shell outputs happened without expanding anything
+- **The Answer panel auto-expands when content arrives** — model responses, permission prompts, and action items are surfaced instantly while the noisy reasoning trail stays tucked away
+- **Tone-coded panels** — warning and error events tint the section border and count badge so you spot trouble at a glance
 
 ---
 
@@ -69,6 +70,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - **Durable agent run APIs** — persisted run metadata plus event log streaming, cancel, and resume endpoints for longer-lived agent workflows
 - **Renderer run recovery** — the desktop UI can reconnect to active runs, replay recent runs, and resume from max-step limits through the durable run API
 - **Workspace-aware run panels** — Agent workflow shows the active workspace, a dedicated changed-files panel, diff previews when patches are available, shell output separated from chat text, and a per-run final summary
+- **Collapsible dev-tool run panels** — each panel (Answer, Timeline, Files, Diffs, Shell) is a foldable section with a count badge and tone-coded border; everything but the Answer starts collapsed so warnings, statuses, and tool calls don't bury the actual response
 - **Optional YOLO mode** — Agent workflow can skip permission and plan prompts for a run while still keeping blocked-path and workspace safety boundaries in place
 - **Persistent agent progress strip** — active runs keep the current step and status visible at the bottom of the response so long multi-step tasks are easier to monitor
 - **Memory** — semantic memory using `nomic-embed-text` embeddings; auto-inject and auto-extract toggles; full memory manager with search, add, and clear
