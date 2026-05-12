@@ -1,0 +1,3 @@
+{"timestamp":1710000000001,"type":"model_step_diagnostics","model":"empty-model","backend":"ollama","step":1,"elapsedMs":42,"requestOptions":{"model":"empty-model","stream":false,"options":{"temperature":0.2},"messageCount":2,"toolCount":12},"response":{"hasContent":false,"contentChars":0,"hasThinking":false,"thinkingChars":0,"hasToolCalls":false,"toolCallCount":0,"rawParseError":false,"malformedToolCalls":[],"finishReason":null,"doneReason":"stop"}}
+{"timestamp":1710000000002,"type":"empty_model_response","model":"empty-model","backend":"ollama","step":1,"elapsedMs":42,"finishReason":null,"doneReason":"stop","retryAttempted":true,"canResume":true,"text":"Model returned an empty response."}
+{"timestamp":1710000000003,"type":"done"}

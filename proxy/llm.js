@@ -22,6 +22,13 @@ const {
 const skillsModule = require('./skills');
 const conversationMemory = require('./conversation-memory');
 const {
+    buildAgentModelRequestBody,
+    buildModelCallErrorDiagnostics,
+    buildModelStepDiagnostics,
+    extractResponseDetails,
+    summarizeDiagnostics,
+} = require('./agent-diagnostics');
+const {
     executeTool,
     getEnabledTools,
     getAgentMaxSteps,
@@ -37,6 +44,7 @@ const {
     getRun,
     updateRun,
     appendRunEvent,
+    readRunEvents,
 } = require('./agent-runs');
 const {
     configureAgentRunManager,
@@ -1176,6 +1184,7 @@ async function callOllamaSync(model, userPrompt, timeoutMs = 30000) {
     const body = JSON.stringify({
         model,
         messages: [{ role: 'user', content: userPrompt }],
+        think: false,
         stream: false,
         options: { temperature: 0 }
     });
@@ -1230,8 +1239,16 @@ async function callModelSync(model, backend, userPrompt, timeoutMs = 30000) {
 const AGENT_TOOL_CALL_TIMEOUT_MS = 120000; // 2 min timeout for backend tool calls (large contexts need more time)
 
 // Call Ollama with tools, collect full response (streaming internally, return complete message)
-async function callOllamaWithTools(messages, tools, model) {
-    const body = JSON.stringify({ model, messages, tools, stream: false });
+async function callOllamaWithTools(messages, tools, model, requestConfig = {}) {
+    const requestBody = requestConfig.requestBody || buildAgentModelRequestBody({
+        backend: 'ollama',
+        model,
+        messages,
+        tools,
+        options: requestConfig.options,
+        think: requestConfig.think,
+    });
+    const body = JSON.stringify(requestBody);
     return fetchOllama('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1242,19 +1259,21 @@ async function callOllamaWithTools(messages, tools, model) {
         try { return JSON.parse(raw); }
         catch { throw new Error('Bad Ollama response'); }
     }).catch(err => {
-        if (err.name === 'TimeoutError') throw new Error('Ollama tool call timed out after 30s');
+        if (err.name === 'TimeoutError') throw new Error(`Ollama tool call timed out after ${Math.round(AGENT_TOOL_CALL_TIMEOUT_MS / 1000)}s`);
         throw err;
     });
 }
 
 // Call llama.cpp with tools (OpenAI format), return response object
-async function callLlamaCppWithTools(messages, tools, model) {
-    // Convert messages to OpenAI format (tool results use role:'tool')
-    const oaiMessages = messages.map(m => {
-        if (m.role === 'tool') return { role: 'tool', tool_call_id: m.tool_call_id || 'call_0', content: m.content };
-        return { role: m.role, content: m.content };
+async function callLlamaCppWithTools(messages, tools, model, requestConfig = {}) {
+    const requestBody = requestConfig.requestBody || buildAgentModelRequestBody({
+        backend: 'llamacpp',
+        model,
+        messages,
+        tools,
+        options: requestConfig.options,
     });
-    const body = JSON.stringify({ model, messages: oaiMessages, tools, stream: false });
+    const body = JSON.stringify(requestBody);
     return new Promise((resolve, reject) => {
         const req = http.request({
             hostname: '127.0.0.1', port: llamaPort, path: '/v1/chat/completions', method: 'POST',
@@ -1270,7 +1289,7 @@ async function callLlamaCppWithTools(messages, tools, model) {
         });
         const timer = setTimeout(() => {
             req.destroy();
-            reject(new Error('llama.cpp tool call timed out after 30s'));
+            reject(new Error(`llama.cpp tool call timed out after ${Math.round(AGENT_TOOL_CALL_TIMEOUT_MS / 1000)}s`));
         }, AGENT_TOOL_CALL_TIMEOUT_MS);
         req.on('error', (err) => { clearTimeout(timer); reject(err); });
         req.write(body);
@@ -1280,34 +1299,13 @@ async function callLlamaCppWithTools(messages, tools, model) {
 
 // Extract tool_calls from Ollama or llama.cpp response, normalize to [{id, name, args}]
 function extractToolCalls(response, backend) {
-    if (backend === 'llamacpp') {
-        const choice = response.choices && response.choices[0];
-        if (!choice) return null;
-        const tcs = choice.message && choice.message.tool_calls;
-        if (!tcs || tcs.length === 0) return null;
-        return tcs.map(tc => ({
-            id: tc.id || 'call_0',
-            name: tc.function.name,
-            args: (() => { try { return JSON.parse(tc.function.arguments); } catch { return {}; } })()
-        }));
-    } else {
-        // Ollama
-        const msg = response.message;
-        if (!msg || !msg.tool_calls || msg.tool_calls.length === 0) return null;
-        return msg.tool_calls.map((tc, i) => ({
-            id: 'call_' + i,
-            name: tc.function.name,
-            args: tc.function.arguments || {}
-        }));
-    }
+    const details = extractResponseDetails(response, backend);
+    return Array.isArray(details.toolCalls) && details.toolCalls.length ? details.toolCalls : null;
 }
 
 // Extract final text content from a model response
 function extractContent(response, backend) {
-    if (backend === 'llamacpp') {
-        return (response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content) || '';
-    }
-    return (response.message && response.message.content) || '';
+    return extractResponseDetails(response, backend).content || '';
 }
 
 // --- Route handlers: detect-context-limit, llmfit, research ---
@@ -1681,6 +1679,75 @@ function isRunCancelledError(err) {
     return err?.code === RUN_CANCELLED_ERROR_CODE;
 }
 
+function decideNoToolResponseAction({
+    content = '',
+    thinking = '',
+    toolCalls = null,
+    emptyRetryAttempted = false,
+    reasoningRetryAttempted = false,
+} = {}) {
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) return 'use_tools';
+    const hasContent = String(content || '').trim().length > 0;
+    const hasThinking = String(thinking || '').trim().length > 0;
+    if (!hasContent && !hasThinking) {
+        return emptyRetryAttempted ? 'pause_empty_response' : 'retry_empty_response';
+    }
+    if (!hasContent && hasThinking) {
+        return reasoningRetryAttempted ? 'pause_reasoning_only' : 'retry_reasoning_only';
+    }
+    return 'complete';
+}
+
+function buildEmptyModelResponseEvent({ model, backend, step, elapsedMs, details = {}, retryAttempted = false, canResume = true } = {}) {
+    return {
+        type: 'empty_model_response',
+        model: model || null,
+        backend: backend || 'ollama',
+        step: step || null,
+        elapsedMs: Math.max(0, Math.round(elapsedMs || 0)),
+        finishReason: details.finishReason || null,
+        doneReason: details.doneReason || null,
+        retryAttempted: retryAttempted === true,
+        canResume: canResume === true,
+        text: 'Model returned an empty response.',
+    };
+}
+
+function buildEmptyResponseRetryMessages(messages = []) {
+    return [
+        ...messages,
+        {
+            role: 'user',
+            content: 'The previous model response was empty. Return a concise final answer now. If more work is needed, call exactly one valid tool. Do not return an empty message.',
+        },
+    ];
+}
+
+function buildReasoningOnlyResponseEvent({ model, backend, step, elapsedMs, details = {}, retryAttempted = false, canResume = true } = {}) {
+    return {
+        type: 'reasoning_only_response',
+        model: model || null,
+        backend: backend || 'ollama',
+        step: step || null,
+        elapsedMs: Math.max(0, Math.round(elapsedMs || 0)),
+        finishReason: details.finishReason || null,
+        doneReason: details.doneReason || null,
+        retryAttempted: retryAttempted === true,
+        canResume: canResume === true,
+        text: 'Model returned reasoning but no final answer.',
+    };
+}
+
+function buildReasoningOnlyRetryMessages(messages = []) {
+    return [
+        ...messages,
+        {
+            role: 'user',
+            content: 'The previous model response only contained reasoning/thinking and no final answer or tool call. Return only the final answer or a valid tool call. Do not continue thinking.',
+        },
+    ];
+}
+
 function emitRunEvent(runId, payload) {
     appendRunEvent(runId, payload);
     if (payload.type === 'permission_request') {
@@ -1765,6 +1832,8 @@ async function executeDurableAgentRun(runId, body = {}) {
         _skillHint,
         workspaceRoot,
         yoloMode,
+        options: modelOptions = {},
+        think,
     } = body;
     const tools = getEnabledTools();
     const existingRun = getRun(runId);
@@ -1917,13 +1986,31 @@ async function executeDurableAgentRun(runId, body = {}) {
                 writer.write(JSON.stringify({ type: 'status', phase, text: statusText, step, maxSteps: maxComputeSteps }));
 
                 let response;
+                const requestModel = backend === 'llamacpp' ? (model || 'default') : (model || 'llama3.2');
+                const modelRequestBody = buildAgentModelRequestBody({
+                    backend,
+                    model: requestModel,
+                    messages,
+                    tools,
+                    options: modelOptions,
+                    think,
+                });
+                const modelCallStartedAt = Date.now();
                 const heartbeat = setInterval(() => writer.write(JSON.stringify({ type: 'heartbeat' })), 15000);
                 try {
                     response = backend === 'llamacpp'
-                        ? await callLlamaCppWithTools(messages, tools, model || 'default')
-                        : await callOllamaWithTools(messages, tools, model || 'llama3.2');
+                        ? await callLlamaCppWithTools(messages, tools, requestModel, { requestBody: modelRequestBody })
+                        : await callOllamaWithTools(messages, tools, requestModel, { requestBody: modelRequestBody });
                 } catch (err) {
                     clearInterval(heartbeat);
+                    writer.write(JSON.stringify(buildModelCallErrorDiagnostics({
+                        error: err,
+                        backend,
+                        model: requestModel,
+                        step,
+                        elapsedMs: Date.now() - modelCallStartedAt,
+                        requestBody: modelRequestBody,
+                    })));
                     writer.write(JSON.stringify({ type: 'error', text: 'Model call failed: ' + err.message }));
                     setRunStatus(runId, 'failed', {
                         lastError: err.message,
@@ -1937,11 +2024,236 @@ async function executeDurableAgentRun(runId, body = {}) {
                 }
                 clearInterval(heartbeat);
 
-                const toolCalls = extractToolCalls(response, backend);
-                const content = extractContent(response, backend);
+                let responseElapsedMs = Date.now() - modelCallStartedAt;
+                writer.write(JSON.stringify(buildModelStepDiagnostics({
+                    response,
+                    backend,
+                    model: requestModel,
+                    step,
+                    elapsedMs: responseElapsedMs,
+                    requestBody: modelRequestBody,
+                })));
+                let responseDetails = extractResponseDetails(response, backend);
+                let toolCalls = extractToolCalls(response, backend);
+                let content = extractContent(response, backend);
+                let noToolAction = decideNoToolResponseAction({
+                    content,
+                    thinking: responseDetails.thinking,
+                    toolCalls,
+                    emptyRetryAttempted: false,
+                });
+                if (noToolAction === 'retry_empty_response') {
+                    writer.write(JSON.stringify(buildEmptyModelResponseEvent({
+                        model: requestModel,
+                        backend,
+                        step,
+                        elapsedMs: responseElapsedMs,
+                        details: responseDetails,
+                        retryAttempted: false,
+                        canResume: false,
+                    })));
+                    writer.write(JSON.stringify({
+                        type: 'status',
+                        phase: 'empty_response_retry',
+                        text: 'Model returned an empty response. Asking once for a concise final answer...',
+                        step,
+                        maxSteps: maxComputeSteps,
+                    }));
+
+                    const retryMessages = buildEmptyResponseRetryMessages(messages);
+                    const retryRequestBody = buildAgentModelRequestBody({
+                        backend,
+                        model: requestModel,
+                        messages: retryMessages,
+                        tools,
+                        options: modelOptions,
+                        think,
+                    });
+                    const retryStartedAt = Date.now();
+                    const retryHeartbeat = setInterval(() => writer.write(JSON.stringify({ type: 'heartbeat' })), 15000);
+                    try {
+                        response = backend === 'llamacpp'
+                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody })
+                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody });
+                        messages = retryMessages;
+                    } catch (err) {
+                        clearInterval(retryHeartbeat);
+                        writer.write(JSON.stringify(buildModelCallErrorDiagnostics({
+                            error: err,
+                            backend,
+                            model: requestModel,
+                            step,
+                            elapsedMs: Date.now() - retryStartedAt,
+                            requestBody: retryRequestBody,
+                        })));
+                        writer.write(JSON.stringify({ type: 'error', text: 'Model retry failed: ' + err.message }));
+                        setRunStatus(runId, 'failed', {
+                            lastError: err.message,
+                            latestMessages: messages,
+                            lastStep: stepsCompleted,
+                            stepsCompleted,
+                            canResume: false,
+                        });
+                        stopRun = true;
+                        break;
+                    }
+                    clearInterval(retryHeartbeat);
+
+                    responseElapsedMs = Date.now() - retryStartedAt;
+                    writer.write(JSON.stringify(buildModelStepDiagnostics({
+                        response,
+                        backend,
+                        model: requestModel,
+                        step,
+                        elapsedMs: responseElapsedMs,
+                        requestBody: retryRequestBody,
+                    })));
+                    responseDetails = extractResponseDetails(response, backend);
+                    toolCalls = extractToolCalls(response, backend);
+                    content = extractContent(response, backend);
+                    noToolAction = decideNoToolResponseAction({
+                        content,
+                        thinking: responseDetails.thinking,
+                        toolCalls,
+                        emptyRetryAttempted: true,
+                        reasoningRetryAttempted: true,
+                    });
+                }
+                if (noToolAction === 'retry_reasoning_only') {
+                    writer.write(JSON.stringify(buildReasoningOnlyResponseEvent({
+                        model: requestModel,
+                        backend,
+                        step,
+                        elapsedMs: responseElapsedMs,
+                        details: responseDetails,
+                        retryAttempted: false,
+                        canResume: false,
+                    })));
+                    writer.write(JSON.stringify({
+                        type: 'status',
+                        phase: 'reasoning_only_retry',
+                        text: 'Model returned reasoning without a final answer. Asking once for a final answer or valid tool call...',
+                        step,
+                        maxSteps: maxComputeSteps,
+                    }));
+
+                    const retryMessages = buildReasoningOnlyRetryMessages(messages);
+                    const retryRequestBody = buildAgentModelRequestBody({
+                        backend,
+                        model: requestModel,
+                        messages: retryMessages,
+                        tools,
+                        options: modelOptions,
+                        think,
+                    });
+                    const retryStartedAt = Date.now();
+                    const retryHeartbeat = setInterval(() => writer.write(JSON.stringify({ type: 'heartbeat' })), 15000);
+                    try {
+                        response = backend === 'llamacpp'
+                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody })
+                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody });
+                        messages = retryMessages;
+                    } catch (err) {
+                        clearInterval(retryHeartbeat);
+                        writer.write(JSON.stringify(buildModelCallErrorDiagnostics({
+                            error: err,
+                            backend,
+                            model: requestModel,
+                            step,
+                            elapsedMs: Date.now() - retryStartedAt,
+                            requestBody: retryRequestBody,
+                        })));
+                        writer.write(JSON.stringify({ type: 'error', text: 'Model retry failed: ' + err.message }));
+                        setRunStatus(runId, 'failed', {
+                            lastError: err.message,
+                            latestMessages: messages,
+                            lastStep: stepsCompleted,
+                            stepsCompleted,
+                            canResume: false,
+                        });
+                        stopRun = true;
+                        break;
+                    }
+                    clearInterval(retryHeartbeat);
+
+                    responseElapsedMs = Date.now() - retryStartedAt;
+                    writer.write(JSON.stringify(buildModelStepDiagnostics({
+                        response,
+                        backend,
+                        model: requestModel,
+                        step,
+                        elapsedMs: responseElapsedMs,
+                        requestBody: retryRequestBody,
+                    })));
+                    responseDetails = extractResponseDetails(response, backend);
+                    toolCalls = extractToolCalls(response, backend);
+                    content = extractContent(response, backend);
+                    noToolAction = decideNoToolResponseAction({
+                        content,
+                        thinking: responseDetails.thinking,
+                        toolCalls,
+                        emptyRetryAttempted: true,
+                        reasoningRetryAttempted: true,
+                    });
+                }
                 if (content && content.trim()) writer.write(JSON.stringify({ type: 'content', text: content }));
 
                 if (!toolCalls || toolCalls.length === 0) {
+                    if (noToolAction === 'pause_empty_response') {
+                        writer.write(JSON.stringify(buildEmptyModelResponseEvent({
+                            model: requestModel,
+                            backend,
+                            step,
+                            elapsedMs: responseElapsedMs,
+                            details: responseDetails,
+                            retryAttempted: true,
+                            canResume: true,
+                        })));
+                        setRunStatus(runId, 'paused', {
+                            latestMessages: messages,
+                            pendingPermission: null,
+                            pendingPlan: null,
+                            lastStep: step,
+                            stepsCompleted: step,
+                            canResume: true,
+                            pauseReason: 'empty_model_response',
+                            interruptionReason: null,
+                            lastError: 'Model returned an empty response.',
+                            completedAt: null,
+                        });
+                        stepsCompleted = step;
+                        stopRun = true;
+                        break;
+                    }
+                    if (noToolAction === 'pause_reasoning_only') {
+                        writer.write(JSON.stringify(buildReasoningOnlyResponseEvent({
+                            model: requestModel,
+                            backend,
+                            step,
+                            elapsedMs: responseElapsedMs,
+                            details: responseDetails,
+                            retryAttempted: true,
+                            canResume: true,
+                        })));
+                        setRunStatus(runId, 'paused', {
+                            latestMessages: messages,
+                            pendingPermission: null,
+                            pendingPlan: null,
+                            lastStep: step,
+                            stepsCompleted: step,
+                            canResume: true,
+                            pauseReason: 'reasoning_only_response',
+                            interruptionReason: null,
+                            lastError: 'Model returned reasoning but no final answer.',
+                            completedAt: null,
+                        });
+                        stepsCompleted = step;
+                        stopRun = true;
+                        break;
+                    }
+                    if (content && content.trim()) {
+                        messages.push({ role: 'assistant', content });
+                    }
                     writer.write(JSON.stringify({ type: 'step_done', step, maxSteps: maxComputeSteps }));
                     const current = getRun(runId);
                     if (current?.filesTouched?.length) writer.write(JSON.stringify({ type: 'files_touched', files: current.filesTouched }));
@@ -2276,6 +2588,36 @@ function handleAgentRunGet(req, res) {
     res.json(run);
 }
 
+function handleAgentRunDiagnostics(req, res) {
+    const run = getRun(req.params.id);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+
+    const events = readRunEvents(run.id);
+    const modelSteps = events.filter(event => event?.type === 'model_step_diagnostics');
+    res.json({
+        run: {
+            id: run.id,
+            status: run.status,
+            model: run.model,
+            backend: run.backend,
+            createdAt: run.createdAt,
+            updatedAt: run.updatedAt,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt,
+            stepsCompleted: run.stepsCompleted,
+            lastStep: run.lastStep,
+            requestOptions: {
+                options: run.requestBody?.options || null,
+                think: run.requestBody?.think,
+                maxSteps: run.requestBody?.maxSteps,
+                maxComputeSteps: run.requestBody?.maxComputeSteps,
+            },
+        },
+        summary: summarizeDiagnostics(events),
+        modelSteps,
+    });
+}
+
 function handleAgentRunStream(req, res) {
     attachRunStream(req.params.id, res);
 }
@@ -2551,6 +2893,11 @@ module.exports = {
     callLlamaCppWithTools,
     extractToolCalls,
     extractContent,
+    decideNoToolResponseAction,
+    buildEmptyModelResponseEvent,
+    buildEmptyResponseRetryMessages,
+    buildReasoningOnlyResponseEvent,
+    buildReasoningOnlyRetryMessages,
     handleLlamacppStatus,
     handleLlamacppConfig,
     handleLlamacppModels,
@@ -2567,6 +2914,7 @@ module.exports = {
     handleAgentRunList,
     handleAgentRunCreate,
     handleAgentRunGet,
+    handleAgentRunDiagnostics,
     handleAgentRunStream,
     handleAgentRunCancel,
     handleAgentRunResume,

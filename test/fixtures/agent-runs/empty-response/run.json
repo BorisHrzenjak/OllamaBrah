@@ -1,0 +1,20 @@
+{
+  "id": "fixture_empty_response",
+  "status": "paused",
+  "model": "empty-model",
+  "backend": "ollama",
+  "createdAt": 1710000000000,
+  "updatedAt": 1710000000100,
+  "stepsCompleted": 1,
+  "lastStep": 1,
+  "canResume": true,
+  "pauseReason": "empty_model_response",
+  "lastError": "Model returned an empty response.",
+  "requestBody": {
+    "model": "empty-model",
+    "backend": "ollama",
+    "options": {
+      "temperature": 0.2
+    }
+  }
+}

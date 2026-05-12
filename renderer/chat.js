@@ -1061,6 +1061,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         let lastTimelineStatus = '';
         let finalState = 'completed';
         let seenEventCount = Math.max(0, parseInt(handlers.after, 10) || 0);
+        let sawEmptyModelResponse = false;
+        let sawReasoningOnlyResponse = false;
+        let sawModelTimeout = false;
+        let sawMalformedToolCalls = false;
         const onSearchEvent = typeof handlers.onSearchEvent === 'function' ? handlers.onSearchEvent : null;
         const onMemoryEvent = typeof handlers.onMemoryEvent === 'function' ? handlers.onMemoryEvent : null;
         const onContextBreakdown = typeof handlers.onContextBreakdown === 'function' ? handlers.onContextBreakdown : null;
@@ -1225,6 +1229,77 @@ document.addEventListener('DOMContentLoaded', async () => {
                     liveStatusEl.classList.add('pulse');
                     setTimeout(() => liveStatusEl.classList.remove('pulse'), 400);
                 }
+                return false;
+            }
+
+            if (chunk.type === 'model_step_diagnostics') {
+                const r = chunk.response || {};
+                const empty = !r.hasContent && !r.hasThinking && !r.hasToolCalls && !r.error;
+                const reasoningOnly = r.hasThinking && !r.hasContent && !r.hasToolCalls;
+                if (empty) sawEmptyModelResponse = true;
+                if (reasoningOnly) sawReasoningOnlyResponse = true;
+                if (r.timedOut) sawModelTimeout = true;
+                if (r.rawParseError) sawMalformedToolCalls = true;
+
+                if (empty || reasoningOnly || r.timedOut || r.rawParseError) {
+                    const title = r.timedOut ? 'Model Timeout'
+                        : (r.rawParseError ? 'Model Parse Issue'
+                            : (reasoningOnly ? 'Reasoning Only Response' : 'Empty Model Response'));
+                    const body = [
+                        `Step: ${chunk.step || '?'}`,
+                        `Model: ${chunk.model || 'unknown'}`,
+                        `Backend: ${chunk.backend || 'unknown'}`,
+                        `Elapsed: ${chunk.elapsedMs || 0} ms`,
+                        r.finishReason ? `Finish reason: ${r.finishReason}` : null,
+                        r.doneReason ? `Done reason: ${r.doneReason}` : null,
+                        r.error ? `Error: ${r.error}` : null,
+                    ].filter(Boolean).join('\n');
+                    appendAgentSectionItem(panels.sections.timeline, createAgentRunCard(title, body, r.timedOut || r.rawParseError ? 'error' : 'warning'));
+                }
+                return false;
+            }
+
+            if (chunk.type === 'empty_model_response') {
+                sawEmptyModelResponse = true;
+                if (chunk.canResume !== false) {
+                    finalState = 'paused';
+                    continueRunId = continueRunId || handlers.runId || currentAgentRunId;
+                }
+                const message = chunk.text || 'Model returned an empty response.';
+                setLiveStatus(message, 'waiting');
+                setBottomProgressState(message, 'waiting', { completed: true });
+                const body = [
+                    `Step: ${chunk.step || '?'}`,
+                    `Model: ${chunk.model || 'unknown'}`,
+                    `Backend: ${chunk.backend || 'unknown'}`,
+                    `Elapsed: ${chunk.elapsedMs || 0} ms`,
+                    chunk.finishReason ? `Finish reason: ${chunk.finishReason}` : null,
+                    chunk.doneReason ? `Done reason: ${chunk.doneReason}` : null,
+                    chunk.retryAttempted ? 'Retry attempted: yes' : 'Retry attempted: no',
+                ].filter(Boolean).join('\n');
+                appendAgentSectionItem(panels.sections.final, createAgentRunCard('Model Returned an Empty Response', body, 'warning'));
+                return false;
+            }
+
+            if (chunk.type === 'reasoning_only_response') {
+                sawReasoningOnlyResponse = true;
+                if (chunk.canResume !== false) {
+                    finalState = 'paused';
+                    continueRunId = continueRunId || handlers.runId || currentAgentRunId;
+                }
+                const message = chunk.text || 'Model returned reasoning but no final answer.';
+                setLiveStatus(message, 'waiting');
+                setBottomProgressState(message, 'waiting', { completed: true });
+                const body = [
+                    `Step: ${chunk.step || '?'}`,
+                    `Model: ${chunk.model || 'unknown'}`,
+                    `Backend: ${chunk.backend || 'unknown'}`,
+                    `Elapsed: ${chunk.elapsedMs || 0} ms`,
+                    chunk.finishReason ? `Finish reason: ${chunk.finishReason}` : null,
+                    chunk.doneReason ? `Done reason: ${chunk.doneReason}` : null,
+                    chunk.retryAttempted ? 'Retry attempted: yes' : 'Retry attempted: no',
+                ].filter(Boolean).join('\n');
+                appendAgentSectionItem(panels.sections.final, createAgentRunCard('Model Returned Reasoning Only', body, 'warning'));
                 return false;
             }
 
@@ -1489,6 +1564,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             contextBreakdown,
             finalState,
             seenEventCount,
+            emptyModelResponse: sawEmptyModelResponse,
+            reasoningOnlyResponse: sawReasoningOnlyResponse,
+            modelTimeout: sawModelTimeout,
+            malformedToolCalls: sawMalformedToolCalls,
         };
     }
 
@@ -3648,6 +3727,18 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         }
     }
 
+    function formatOllamaApiErrorMessage(rawMessage, { modelName = '' } = {}) {
+        const message = String(rawMessage || '').trim();
+        const normalized = message.toLowerCase();
+        const displayModel = modelName || 'This model';
+
+        if (normalized.includes('403') && normalized.includes('requires a subscription')) {
+            return `${displayModel} is visible in Ollama, but Ollama denied the chat request for this specific cloud model. Your cloud usage may still be available; this usually means the model itself is gated behind a paid subscription or premium access on Ollama's side. Try another cloud model or upgrade your Ollama plan.`;
+        }
+
+        return message || 'Error communicating with the model. Please check the proxy server and Ollama status.';
+    }
+
     function clearSelectedFiles() {
         // Clean up preview URLs
         selectedFiles.forEach(fileData => {
@@ -4906,6 +4997,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         if (numPredict) numPredict.value = (p.num_predict != null) ? p.num_predict : '';
         const seed = document.getElementById('paramSeed');
         if (seed) seed.value = (p.seed != null) ? p.seed : '';
+        const thinking = document.getElementById('paramThinking');
+        if (thinking) thinking.checked = p.think === true;
     }
 
     function collectParams() {
@@ -4928,12 +5021,14 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         const repeat_penalty = getFloat('paramRepeatPenalty');
         const num_predict = getInt('paramNumPredict');
         const seed = getInt('paramSeed');
+        const thinking = document.getElementById('paramThinking');
         if (temperature != null) params.temperature = temperature;
         if (top_p != null) params.top_p = top_p;
         if (top_k != null) params.top_k = top_k;
         if (repeat_penalty != null) params.repeat_penalty = repeat_penalty;
         if (num_predict != null) params.num_predict = num_predict;
         if (seed != null && seed !== 0) params.seed = seed;
+        if (thinking) params.think = thinking.checked === true;
         return Object.keys(params).length > 0 ? params : null;
     }
 
@@ -4947,6 +5042,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             const el = document.getElementById(id);
             if (el) el.value = def;
         }
+        const thinking = document.getElementById('paramThinking');
+        if (thinking) thinking.checked = false;
     }
 
     // --- Model Update Functions ---
@@ -7133,10 +7230,17 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             });
 
             // Prepare messages for API - convert attachment data for Ollama format
+            const stripThinkingBlocksForModelInput = (content) => {
+                if (typeof content !== 'string') return content;
+                return content.replace(/<\s*think[^>]*>[\s\S]*?<\/\s*think\s*>\n*/gi, '').trim();
+            };
+
             const apiMessages = sourceMessages
                 .filter(m => m.role === 'user' || m.role === 'assistant')
                 .map(message => {
-                    let content = message.content;
+                    let content = message.role === 'assistant'
+                        ? stripThinkingBlocksForModelInput(message.content)
+                        : message.content;
                     let images = undefined;
 
                     // Handle attachments (both images and documents)
@@ -7219,6 +7323,9 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
             // Attach non-null model params as Ollama options
             const p = modelData.params || {};
+            if (currentModelBackend !== 'llamacpp') {
+                requestBody.think = p.think === true;
+            }
             const options = {};
             if (p.temperature != null) options.temperature = p.temperature;
             if (p.top_p != null) options.top_p = p.top_p;
@@ -7256,6 +7363,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                     _memoryPolicy: memoryPolicy,
                     _skillsPolicy: pendingSkillName ? 'manual' : getActiveSkillsPolicy()
                 };
+                if (requestBody.options) agentBody.options = requestBody.options;
+                if (requestBody.think !== undefined) agentBody.think = requestBody.think;
                 if (researchPolicy === 'web') agentBody._webSearch = true;
                 if (researchPolicy === 'deep') agentBody._deepResearch = true;
                 if (memoryPolicy !== 'off') agentBody._memory = true;
@@ -7297,9 +7406,14 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                 if (botMessageDiv) botMessageDiv.classList.remove('streaming');
 
                 const wasCancelled = agentFinalState === 'cancelled';
+                const fallbackAgentText = agentResult?.emptyModelResponse
+                    ? '*(Model returned an empty response)*'
+                    : (agentResult?.reasoningOnlyResponse
+                        ? '*(Model returned only reasoning and no final response.)*'
+                        : '*(Agent response — see steps above)*');
                 const messageToSave = {
                     role: 'assistant',
-                    content: finalText || (wasCancelled ? '*(Agent run cancelled.)*' : '*(Agent response — see steps above)*')
+                    content: finalText || (wasCancelled ? '*(Agent run cancelled.)*' : fallbackAgentText)
                 };
                 if (wasCancelled) {
                     messageToSave.metadata = {
@@ -7378,6 +7492,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             let messageMetadata = null;
             let memoryUsageMeta = null;
             let streamBuf = '';
+            let finalDoneReason = null;
 
             while (!done) {
                 const { value, done: readerDone } = await reader.read();
@@ -7464,6 +7579,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
 
                             if (jsonResponse.done) {
                                 console.log('Stream finished by Ollama (jsonResponse.done is true)');
+                                finalDoneReason = jsonResponse.done_reason || jsonResponse.doneReason || null;
                                 done = true;
                                 // Swap stop → send when streaming completes
                                 if (stopButton) { stopButton.style.display = 'none'; }
@@ -7525,7 +7641,9 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                 || (!hasThinking && !contentMinusThink && /<think>/i.test(accumulatedContent));
             if (onlyThinkingGenerated) {
                 console.warn('[Stream] Only thinking generated — no actual content from model. Showing fallback note.');
-                const note = '*(No response was generated — the model stopped after its thinking phase. Try rephrasing your message or reducing context length.)*';
+                const note = finalDoneReason === 'length'
+                    ? '*(No response was generated — the model used its max-token budget during thinking. Increase Settings -> Model Parameters -> Max Tokens, clear the value to use the model default, or reduce context length.)*'
+                    : '*(No response was generated — the model stopped after its thinking phase. Try rephrasing your message, increasing Max Tokens, or reducing context length.)*';
                 // Set accumulatedContent so finalBotMessageToSave builds cleanly
                 if (hasThinking) {
                     accumulatedContent = note; // thinking is in accumulatedThinking
@@ -7609,7 +7727,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                 let errorMessage = 'Error communicating with the model. Please check the proxy server and Ollama status.';
 
                 if (error.message && error.message.includes('Ollama API Error')) {
-                    errorMessage = error.message;
+                    errorMessage = formatOllamaApiErrorMessage(error.message, { modelName: currentModelName });
 
                     // Handle vision model specific errors
                     if (selectedFiles.length > 0 && (

@@ -60,6 +60,7 @@ const {
     handleAgentRunList,
     handleAgentRunCreate,
     handleAgentRunGet,
+    handleAgentRunDiagnostics,
     handleAgentRunStream,
     handleAgentRunCancel,
     handleAgentRunResume,
@@ -68,7 +69,7 @@ const {
     getLlamaProcess,
 } = require('./llm');
 
-const PORT = 3456;
+const PORT = parseInt(process.env.OLLAMA_BRAH_PROXY_PORT || '3456', 10);
 const extensionOrigin = 'chrome-extension://gkpfpdekobmonacdgjgbfehilnloaacm';
 
 function normalizeFactText(text) {
@@ -590,6 +591,7 @@ app.post('/api/agent/config', handleAgentConfigPost);
 app.get('/api/agent/runs', handleAgentRunList);
 app.post('/api/agent/runs', handleAgentRunCreate);
 app.get('/api/agent/runs/:id', handleAgentRunGet);
+app.get('/api/agent/runs/:id/diagnostics', handleAgentRunDiagnostics);
 app.get('/api/agent/runs/:id/stream', handleAgentRunStream);
 app.post('/api/agent/runs/:id/cancel', handleAgentRunCancel);
 app.post('/api/agent/runs/:id/resume', handleAgentRunResume);
@@ -798,6 +800,7 @@ app.post('/api/memory/extract', async (req, res) => {
             const payload = JSON.stringify({
                 model,
                 messages: [{ role: 'user', content: extractionPrompt }],
+                think: false,
                 stream: false,
                 options: { temperature: 0 }
             });

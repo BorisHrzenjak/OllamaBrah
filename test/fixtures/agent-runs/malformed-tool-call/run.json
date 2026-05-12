@@ -1,0 +1,18 @@
+{
+  "id": "fixture_malformed_tool_call",
+  "status": "failed",
+  "model": "tool-model",
+  "backend": "llamacpp",
+  "createdAt": 1710000030000,
+  "updatedAt": 1710000030100,
+  "stepsCompleted": 1,
+  "lastStep": 1,
+  "requestBody": {
+    "model": "tool-model",
+    "backend": "llamacpp",
+    "options": {
+      "temperature": 0.1,
+      "num_predict": 256
+    }
+  }
+}

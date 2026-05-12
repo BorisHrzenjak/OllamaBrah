@@ -1,0 +1,18 @@
+{
+  "id": "fixture_reasoning_only",
+  "status": "paused",
+  "model": "thinking-model",
+  "backend": "ollama",
+  "createdAt": 1710000010000,
+  "updatedAt": 1710000010100,
+  "stepsCompleted": 1,
+  "lastStep": 1,
+  "canResume": true,
+  "pauseReason": "reasoning_only_response",
+  "lastError": "Model returned reasoning but no final answer.",
+  "requestBody": {
+    "model": "thinking-model",
+    "backend": "ollama",
+    "think": true
+  }
+}

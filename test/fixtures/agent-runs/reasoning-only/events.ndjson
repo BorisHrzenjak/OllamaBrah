@@ -1,0 +1,3 @@
+{"timestamp":1710000010001,"type":"model_step_diagnostics","model":"thinking-model","backend":"ollama","step":1,"elapsedMs":83,"requestOptions":{"model":"thinking-model","stream":false,"think":true,"messageCount":2,"toolCount":12},"response":{"hasContent":false,"contentChars":0,"hasThinking":true,"thinkingChars":34,"hasToolCalls":false,"toolCallCount":0,"rawParseError":false,"malformedToolCalls":[],"finishReason":null,"doneReason":"length"}}
+{"timestamp":1710000010002,"type":"reasoning_only_response","model":"thinking-model","backend":"ollama","step":1,"elapsedMs":83,"finishReason":null,"doneReason":"length","retryAttempted":true,"canResume":true,"text":"Model returned reasoning but no final answer."}
+{"timestamp":1710000010002,"type":"done"}
