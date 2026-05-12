@@ -1,9 +1,11 @@
 document.addEventListener('DOMContentLoaded', async () => {
     // ─── Electron / Chrome API Shim ──────────────────────────────────────────
     const isElectron = typeof window.electronAPI !== 'undefined';
+    let appBuildInfo = null;
     let chrome;
     if (isElectron) {
-        window._appVersion = await window.electronAPI.getAppVersion();
+        appBuildInfo = await window.electronAPI.getAppBuildInfo().catch(() => null);
+        window._appVersion = appBuildInfo?.appVersion || await window.electronAPI.getAppVersion();
         chrome = {
             storage: {
                 local: {
@@ -2844,12 +2846,106 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
     }
 
     async function fetchReadinessReport() {
+        const proxyMismatch = await verifyProxyVersion();
+        if (proxyMismatch) {
+            latestReadinessReport = proxyMismatch;
+            return proxyMismatch;
+        }
+
         const response = await fetch(`${PROXY_BASE}/api/readiness`);
         if (!response.ok) {
             throw new Error(`Readiness API error: ${response.status}`);
         }
         latestReadinessReport = await response.json();
         return latestReadinessReport;
+    }
+
+    function proxyBuildMatchesApp(proxyInfo) {
+        if (!proxyInfo || proxyInfo.appName !== 'ollama-brah') return false;
+
+        const expectedVersion = appBuildInfo?.appVersion || window._appVersion;
+        const expectedPackageVersion = appBuildInfo?.packageVersion || expectedVersion;
+        const versionMatches = proxyInfo.appVersion === expectedVersion || proxyInfo.packageVersion === expectedPackageVersion;
+        if (!versionMatches) return false;
+
+        if (appBuildInfo?.sourceHash && proxyInfo.sourceHash && appBuildInfo.sourceHash !== proxyInfo.sourceHash) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function buildProxyMismatchReport(proxyInfo, detail, { restartable = true } = {}) {
+        const expectedLabel = [
+            appBuildInfo?.appVersion || window._appVersion ? `app ${appBuildInfo?.appVersion || window._appVersion}` : null,
+            appBuildInfo?.sourceHash ? `source ${appBuildInfo.sourceHash}` : null,
+        ].filter(Boolean).join(', ');
+
+        const detectedLabel = proxyInfo
+            ? [
+                proxyInfo.appVersion ? `app ${proxyInfo.appVersion}` : null,
+                proxyInfo.sourceHash ? `source ${proxyInfo.sourceHash}` : null,
+                proxyInfo.pid ? `pid ${proxyInfo.pid}` : null,
+            ].filter(Boolean).join(', ')
+            : detail;
+
+        return {
+            checkedAt: new Date().toISOString(),
+            overallState: 'blocked',
+            chatAvailable: false,
+            primaryBackend: null,
+            blockingIssues: [{
+                id: 'stale_proxy',
+                title: 'Internal proxy needs restart',
+                detail: `The UI is not connected to the proxy build it started with. Expected ${expectedLabel || 'this app build'}; detected ${detectedLabel || 'an older proxy'}.`
+            }],
+            warnings: [],
+            recommendedActions: isElectron && restartable
+                ? [
+                    { id: 'restart_proxy', label: 'Restart proxy', description: 'Stop the old proxy and start the current app proxy.' },
+                    { id: 'retry', label: 'Check again', description: 'Refresh the proxy version check.' }
+                ]
+                : [{ id: 'retry', label: 'Check again', description: 'Refresh the proxy version check.' }],
+            checks: {
+                proxy: {
+                    status: 'stale',
+                    message: detail || 'The proxy build does not match the UI build.',
+                    expected: appBuildInfo || { appVersion: window._appVersion },
+                    detected: proxyInfo || null,
+                }
+            }
+        };
+    }
+
+    async function verifyProxyVersion() {
+        try {
+            const response = await fetch(`${PROXY_BASE}/api/version`, { cache: 'no-store' });
+            if (!response.ok) {
+                let restartable = false;
+                try {
+                    const readiness = await fetch(`${PROXY_BASE}/api/readiness`, { cache: 'no-store' });
+                    if (readiness.ok) {
+                        const readinessBody = await readiness.json();
+                        restartable = !!readinessBody?.checks?.proxy;
+                    }
+                } catch {
+                    restartable = false;
+                }
+                const detail = restartable
+                    ? `/api/version returned HTTP ${response.status}; this looks like an older Ollama Brah proxy.`
+                    : `Port 3456 is responding, but it does not look like this app's proxy (/api/version HTTP ${response.status}).`;
+                return buildProxyMismatchReport(null, detail, { restartable });
+            }
+            const proxyInfo = await response.json();
+            if (!proxyBuildMatchesApp(proxyInfo)) {
+                return buildProxyMismatchReport(proxyInfo, 'The proxy version does not match the running app.', {
+                    restartable: proxyInfo?.appName === 'ollama-brah',
+                });
+            }
+            return null;
+        } catch (err) {
+            throw err;
+        }
     }
 
     function summarizeReadiness(report) {
@@ -2874,6 +2970,23 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
     }
 
     async function handleReadinessAction(actionId) {
+        if (actionId === 'restart_proxy') {
+            setComposerAvailability(false);
+            updateServerStatusDot('checking', 'Restarting proxy...');
+            if (!isElectron || !window.electronAPI?.restartProxy) {
+                renderReadinessCard(buildProxyMismatchReport(null, 'Restart is only available in the desktop app.'));
+                return;
+            }
+            const result = await window.electronAPI.restartProxy();
+            if (!result?.ok) {
+                renderReadinessCard(buildProxyMismatchReport(null, result?.error || 'Proxy restart failed.'));
+                updateServerStatusDot('disconnected', result?.error || 'Proxy restart failed');
+                return;
+            }
+            const report = await refreshStartupReadiness({ forceRender: true });
+            await tryRecoverStartupModel(report);
+            return;
+        }
         if (actionId === 'retry') {
             const report = await refreshStartupReadiness({ forceRender: true });
             await tryRecoverStartupModel(report);
@@ -2928,6 +3041,12 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             if (check.model) meta.push(check.model);
             if (check.pythonCommand) meta.push(check.pythonCommand);
         }
+        if (checkKey === 'proxy') {
+            const version = check.version || check.detected;
+            if (version?.appVersion) meta.push(`v${version.appVersion}`);
+            if (version?.sourceHash) meta.push(version.sourceHash);
+            if (version?.pid) meta.push(`pid ${version.pid}`);
+        }
         return meta;
     }
 
@@ -2956,6 +3075,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         const subtitle = getReadinessPrimaryNarrative(report);
 
         const checks = [
+            ['proxy', 'Proxy'],
             ['ollama', 'Ollama'],
             ['llamacpp', 'llama.cpp'],
             ['memory', 'Memory'],
@@ -8412,10 +8532,12 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         await loadWorkflowPreferences();
         const readiness = await refreshStartupReadiness({ forceRender: true });
         startReadinessRecoveryPoll();
-        let startupBlocked = false;
+        let startupBlocked = !!readiness?.blockingIssues?.some(issue => issue.id === 'stale_proxy');
 
         let urlModel = new URLSearchParams(window.location.search).get('model');
-        if (!urlModel) {
+        if (startupBlocked) {
+            modelNameDisplay.textContent = 'Proxy restart required';
+        } else if (!urlModel) {
             // No model in URL — restore the last active backend if possible
             const models = await fetchAvailableModels();
             const storedBackend = await chrome.storage.local.get(['lastUsedOllamaModel', 'lastUsedLlamaCppPath', 'lastActiveBackend']);
@@ -8474,15 +8596,19 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         }
 
         // Load slash commands and skills
-        slashCommands = await loadSlashCommands();
-        await fetchSkills();
+        if (!startupBlocked) {
+            slashCommands = await loadSlashCommands();
+            await fetchSkills();
+        }
 
         // Setup scroll detection
         chatContainer.addEventListener('scroll', handleScroll, { passive: true });
 
         // Start persistent server status indicator
         startServerStatusPoll();
-        await maybeReconnectActiveAgentRun();
+        if (!startupBlocked) {
+            await maybeReconnectActiveAgentRun();
+        }
     }
 
     // Message history navigation (persistent via chrome.storage.local)

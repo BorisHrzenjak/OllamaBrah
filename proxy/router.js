@@ -15,6 +15,7 @@ const {
     getConfiguredOllamaBaseUrl,
     setConfiguredOllamaBaseUrl,
 } = require('./ollama');
+const { getBuildInfo } = require('./build-info');
 
 const {
     handleSkillsList,
@@ -389,7 +390,8 @@ async function buildReadinessReport() {
         checks: {
             proxy: {
                 status: 'ready',
-                message: 'Internal proxy is running.'
+                message: 'Internal proxy is running.',
+                version: getBuildInfo()
             },
             ollama,
             memory: memoryStatus,
@@ -635,6 +637,10 @@ app.get('/api/readiness', async (req, res) => {
             }
         });
     }
+});
+
+app.get('/api/version', (req, res) => {
+    res.json(getBuildInfo());
 });
 
 app.post('/api/attachments/process', handleProcessAttachments);

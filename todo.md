@@ -75,15 +75,15 @@ Problem: normal chat sends model options such as `temperature`, `top_p`, `num_pr
 
 Problem: if port `3456` is already occupied, the app can reuse an old proxy process. The UI may talk to stale code after an update or local edit.
 
-- [ ] Add `/api/version` or `/api/build-info` to the proxy.
-- [ ] Include app version, package version, startup timestamp, and a source/build hash when available.
-- [ ] On renderer startup, verify the proxy version matches the app version.
-- [ ] If the proxy is stale, show a blocking readiness warning and offer a restart action.
-- [ ] Improve proxy shutdown:
+- [x] Add `/api/version` or `/api/build-info` to the proxy.
+- [x] Include app version, package version, startup timestamp, and a source/build hash when available.
+- [x] On renderer startup, verify the proxy version matches the app version.
+- [x] If the proxy is stale, show a blocking readiness warning and offer a restart action.
+- [x] Improve proxy shutdown:
   - wait longer than 1.5s when intentionally replacing the proxy
   - verify the old process actually stopped
   - fail loudly if a foreign process owns the port
-- [ ] Add tests for version endpoint shape.
+- [x] Add tests for version endpoint shape.
 
 ## Important Reliability Upgrades
 

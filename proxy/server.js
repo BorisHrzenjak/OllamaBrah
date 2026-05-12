@@ -11,6 +11,7 @@ const { spawn } = require('child_process');
 
 const { app, PORT } = require('./router');
 const { setServerInstance } = require('./router');
+const { markProxyStartup } = require('./build-info');
 const { copyBuiltinSkills, reloadSkills } = require('./skills');
 const {
     waitForWhisperServer,
@@ -32,6 +33,7 @@ function unpackedPath(...segments) {
 }
 
 // Initialize skills on startup
+markProxyStartup({ sourceHash: process.env.OLLAMA_BRAH_SOURCE_HASH });
 copyBuiltinSkills();
 reloadSkills();
 
@@ -96,11 +98,7 @@ setServerInstance(serverInstance);
 
 serverInstance.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-        // Port already in use — likely a previous app instance is still running.
-        // This is not fatal: the existing proxy is already serving requests,
-        // so we just log and continue. The renderer connects to localhost:3456
-        // regardless of which process owns it.
-        console.warn(`[Proxy] Port ${PORT} already in use — reusing existing proxy instance.`);
+        console.error(`[Proxy] Port ${PORT} already in use. Refusing to reuse an unidentified proxy instance.`);
     } else {
         console.error('[Proxy] Server error:', err);
     }

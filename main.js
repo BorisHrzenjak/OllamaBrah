@@ -6,6 +6,7 @@ const Database = require('better-sqlite3');
 const Store = require('electron-store');
 const { NsisUpdater } = require('electron-updater');
 const { CancellationToken } = require('builder-util-runtime');
+const { computeSourceHash } = require('./proxy/build-info');
 
 let win;
 let db;
@@ -17,6 +18,8 @@ let appUpdater = null;
 let updateCheckPromise = null;
 let updateDownloadPromise = null;
 let isInstallingAppUpdate = false;
+let expectedAppBuildInfo = null;
+let proxyStartupError = null;
 
 const GITHUB_RELEASES_OWNER = 'BorisHrzenjak';
 const GITHUB_RELEASES_REPO = 'OllamaBrah';
@@ -24,6 +27,10 @@ const GITHUB_RELEASES_LATEST_API = `https://api.github.com/repos/${GITHUB_RELEAS
 const GITHUB_RELEASES_PAGE = `https://github.com/${GITHUB_RELEASES_OWNER}/${GITHUB_RELEASES_REPO}/releases/latest`;
 const APP_UPDATE_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const APP_UPDATE_DOWNLOAD_TIMEOUT_MESSAGE = 'Download timed out. Please try again.';
+const PROXY_BASE_URL = 'http://127.0.0.1:3456';
+const PROXY_HTTP_TIMEOUT_MS = 2500;
+const PROXY_SHUTDOWN_WAIT_MS = 7000;
+const PROXY_READY_WAIT_MS = 7000;
 
 const updateState = {
     status: 'idle',
@@ -191,26 +198,153 @@ function initStore() {
 
 // ─── Proxy ───────────────────────────────────────────────────────────────────
 
-async function stopExistingProxy() {
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getExpectedAppBuildInfo() {
+    if (!expectedAppBuildInfo) {
+        expectedAppBuildInfo = {
+            appName: 'ollama-brah',
+            appVersion: app.getVersion(),
+            packageVersion: require('./package.json').version,
+            sourceHash: computeSourceHash(),
+        };
+    }
+    return expectedAppBuildInfo;
+}
+
+function isMatchingProxyBuild(info) {
+    const expected = getExpectedAppBuildInfo();
+    if (!info || info.appName !== expected.appName) return false;
+    if (info.appVersion !== expected.appVersion && info.packageVersion !== expected.packageVersion) return false;
+    if (expected.sourceHash && info.sourceHash && info.sourceHash !== expected.sourceHash) return false;
+    return true;
+}
+
+async function fetchProxyJson(pathname, options = {}) {
+    const response = await fetch(`${PROXY_BASE_URL}${pathname}`, {
+        ...options,
+        signal: AbortSignal.timeout(options.timeoutMs || PROXY_HTTP_TIMEOUT_MS)
+    });
+    const text = await response.text();
+    let body = null;
+    if (text) {
+        try { body = JSON.parse(text); } catch (err) { body = null; }
+    }
+    return { ok: response.ok, status: response.status, body };
+}
+
+async function inspectProxyOnPort() {
     try {
-        const response = await fetch('http://127.0.0.1:3456/api/shutdown', {
-            method: 'POST',
-            signal: AbortSignal.timeout(1500)
-        });
-        if (response.ok) {
-            console.log('[main] Existing proxy detected, requesting shutdown...');
-            await new Promise(resolve => setTimeout(resolve, 1200));
+        const version = await fetchProxyJson('/api/version');
+        if (version.ok && version.body?.appName === 'ollama-brah') {
+            return {
+                reachable: true,
+                kind: 'versioned',
+                buildInfo: version.body,
+                matches: isMatchingProxyBuild(version.body),
+            };
         }
+        const readiness = await fetchProxyJson('/api/readiness');
+        if (readiness.ok && readiness.body?.checks?.proxy) {
+            return {
+                reachable: true,
+                kind: 'legacy',
+                matches: false,
+                reason: 'Ollama Brah proxy is running without /api/version',
+            };
+        }
+        return {
+            reachable: true,
+            kind: 'foreign',
+            matches: false,
+            reason: `/api/version returned HTTP ${version.status}`,
+        };
     } catch (err) {
-        // No running proxy, or it is not ours — safe to ignore here.
+        try {
+            const readiness = await fetchProxyJson('/api/readiness');
+            if (readiness.ok && readiness.body?.checks?.proxy) {
+                return {
+                    reachable: true,
+                    kind: 'legacy',
+                    matches: false,
+                    reason: 'Ollama Brah proxy is running without /api/version',
+                };
+            }
+            return {
+                reachable: true,
+                kind: 'foreign',
+                matches: false,
+                reason: `/api/version unavailable and /api/readiness returned HTTP ${readiness.status}`,
+            };
+        } catch {
+            return { reachable: false, kind: 'none', matches: false };
+        }
     }
 }
 
-async function startProxy() {
+async function waitForProxyDown(timeoutMs = PROXY_SHUTDOWN_WAIT_MS) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const inspection = await inspectProxyOnPort();
+        if (!inspection.reachable) return true;
+        await sleep(250);
+    }
+    return false;
+}
+
+async function waitForMatchingProxy(timeoutMs = PROXY_READY_WAIT_MS) {
+    const deadline = Date.now() + timeoutMs;
+    let lastInspection = null;
+    while (Date.now() < deadline) {
+        lastInspection = await inspectProxyOnPort();
+        if (lastInspection.reachable && lastInspection.kind === 'versioned' && lastInspection.matches) {
+            return lastInspection.buildInfo;
+        }
+        await sleep(250);
+    }
+    const detail = lastInspection?.reason || (lastInspection?.buildInfo ? JSON.stringify(lastInspection.buildInfo) : 'not reachable');
+    throw new Error(`Proxy did not start with the expected build info (${detail}).`);
+}
+
+async function stopExistingProxy(reason = 'replace') {
+    const inspection = await inspectProxyOnPort();
+    if (!inspection.reachable) return { stopped: false, reason: 'not_running' };
+
+    if (inspection.kind === 'foreign') {
+        throw new Error(`Port 3456 is already owned by another process (${inspection.reason || 'unknown service'}). Stop that process and restart Ollama Brah.`);
+    }
+
+    console.log(`[main] Existing ${inspection.kind} proxy detected, requesting shutdown before ${reason}...`);
+    const response = await fetchProxyJson('/api/shutdown', {
+        method: 'POST',
+        timeoutMs: PROXY_HTTP_TIMEOUT_MS,
+    });
+    if (!response.ok) {
+        throw new Error(`Existing proxy refused shutdown with HTTP ${response.status}.`);
+    }
+
+    const stopped = await waitForProxyDown();
+    if (!stopped) {
+        throw new Error(`Existing proxy did not stop within ${PROXY_SHUTDOWN_WAIT_MS}ms.`);
+    }
+    return { stopped: true, reason: inspection.kind };
+}
+
+function prepareProxyEnvironment() {
+    const expected = getExpectedAppBuildInfo();
     process.env.ALLOWED_ORIGIN = 'electron-app';
     process.env.USER_DATA_PATH = app.getPath('userData');
     process.env.MEMORY_DIR = path.join(app.getPath('userData'), 'memory');
     process.env.SKILLS_DIR = path.join(app.getPath('userData'), 'skills');
+    process.env.OLLAMA_BRAH_APP_VERSION = expected.appVersion;
+    process.env.OLLAMA_BRAH_PACKAGE_VERSION = expected.packageVersion;
+    process.env.OLLAMA_BRAH_SOURCE_HASH = expected.sourceHash || '';
+}
+
+async function startProxy() {
+    prepareProxyEnvironment();
 
     // Load API keys saved via the settings UI into process.env so the proxy can use them
     const ollamaBaseUrl = store.get('ollamaApiBaseUrl');
@@ -222,11 +356,31 @@ async function startProxy() {
     if (tavilyKey) process.env.TAVILY_API_KEY = tavilyKey;
     if (exaKey)    process.env.EXA_API_KEY    = exaKey;
     try {
-        await stopExistingProxy();
+        await stopExistingProxy('startup');
+        delete require.cache[require.resolve('./proxy/server.js')];
         require('./proxy/server.js');
-        console.log('[main] Proxy server started');
+        const buildInfo = await waitForMatchingProxy();
+        proxyStartupError = null;
+        console.log(`[main] Proxy server started (${buildInfo.appVersion}, ${buildInfo.sourceHash || 'no-hash'})`);
     } catch (err) {
+        proxyStartupError = err.message;
         console.error('[main] Proxy server failed to start:', err);
+    }
+}
+
+async function restartProxy() {
+    prepareProxyEnvironment();
+    try {
+        await stopExistingProxy('restart');
+        delete require.cache[require.resolve('./proxy/server.js')];
+        require('./proxy/server.js');
+        const buildInfo = await waitForMatchingProxy();
+        proxyStartupError = null;
+        return { ok: true, buildInfo };
+    } catch (err) {
+        proxyStartupError = err.message;
+        console.error('[main] Proxy restart failed:', err);
+        return { ok: false, error: err.message };
     }
 }
 
@@ -341,6 +495,11 @@ function registerIpcHandlers() {
 
     // App
     ipcMain.handle('app:getVersion', () => app.getVersion());
+    ipcMain.handle('app:getBuildInfo', () => ({
+        ...getExpectedAppBuildInfo(),
+        proxyStartupError,
+    }));
+    ipcMain.handle('app:restartProxy', async () => restartProxy());
     ipcMain.handle('app:getUpdateState', () => snapshotUpdateState());
     ipcMain.handle('app:checkForUpdates', async () => {
         return checkForAppUpdate();
