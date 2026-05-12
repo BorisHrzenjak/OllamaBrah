@@ -1236,9 +1236,260 @@ async function callModelSync(model, backend, userPrompt, timeoutMs = 30000) {
     return callOllamaSync(model || 'llama3.2', userPrompt, timeoutMs);
 }
 
-const AGENT_TOOL_CALL_TIMEOUT_MS = 120000; // 2 min timeout for backend tool calls (large contexts need more time)
+const AGENT_TOOL_CALL_TIMEOUT_MS = 120000; // Legacy export; agent model calls now use phased streaming timeouts.
 
-// Call Ollama with tools, collect full response (streaming internally, return complete message)
+function parsePositiveInt(value, fallback) {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getAgentModelTimeoutConfig(overrides = {}) {
+    return {
+        connectionMs: parsePositiveInt(overrides.connectionMs ?? process.env.AGENT_MODEL_CONNECTION_TIMEOUT_MS, 10000),
+        firstTokenMs: parsePositiveInt(overrides.firstTokenMs ?? process.env.AGENT_MODEL_FIRST_TOKEN_TIMEOUT_MS, 120000),
+        inactivityMs: parsePositiveInt(overrides.inactivityMs ?? process.env.AGENT_MODEL_INACTIVITY_TIMEOUT_MS, 60000),
+        maxStepMs: parsePositiveInt(overrides.maxStepMs ?? process.env.AGENT_MODEL_MAX_STEP_MS, 300000),
+    };
+}
+
+function summarizePartialModelResponse(partial = {}) {
+    const content = String(partial.content || '');
+    const thinking = String(partial.thinking || '');
+    const toolCalls = Array.isArray(partial.toolCalls) ? partial.toolCalls : [];
+    return {
+        content,
+        thinking,
+        toolCalls,
+        hasContent: content.trim().length > 0,
+        hasThinking: thinking.trim().length > 0,
+        hasToolCalls: toolCalls.length > 0,
+        contentChars: content.length,
+        thinkingChars: thinking.length,
+        toolCallCount: toolCalls.length,
+    };
+}
+
+class AgentModelTimeoutError extends Error {
+    constructor({ backend, phase, timeoutMs, elapsedMs, partial, timeouts } = {}) {
+        const label = {
+            connection_timeout: 'connection',
+            first_token_timeout: 'first token',
+            inactivity_timeout: 'stream activity',
+            max_step_duration: 'maximum step duration',
+        }[phase] || phase || 'model response';
+        super(`${backend || 'Model'} call timed out waiting for ${label} after ${Math.round((timeoutMs || 0) / 1000)}s`);
+        this.name = 'AgentModelTimeoutError';
+        this.code = 'AGENT_MODEL_TIMEOUT';
+        this.timeoutPhase = phase || 'unknown';
+        this.timeoutMs = timeoutMs || null;
+        this.elapsedMs = Math.max(0, Math.round(elapsedMs || 0));
+        this.timeoutDetails = {
+            phase: this.timeoutPhase,
+            timeoutMs: this.timeoutMs,
+            elapsedMs: this.elapsedMs,
+            config: timeouts || null,
+            partial: summarizePartialModelResponse(partial),
+        };
+    }
+}
+
+function isAgentModelTimeoutError(err) {
+    return err?.code === 'AGENT_MODEL_TIMEOUT' || err?.name === 'AgentModelTimeoutError';
+}
+
+function buildAgentModelTimeoutEvent({ model, backend, step, elapsedMs, error, canResume = true } = {}) {
+    const details = error?.timeoutDetails || {
+        phase: error?.timeoutPhase || 'unknown',
+        timeoutMs: error?.timeoutMs || null,
+        elapsedMs: Math.max(0, Math.round(elapsedMs || 0)),
+        partial: summarizePartialModelResponse(),
+    };
+    return {
+        type: 'model_timeout',
+        model: model || null,
+        backend: backend || 'ollama',
+        step: step || null,
+        elapsedMs: details.elapsedMs ?? Math.max(0, Math.round(elapsedMs || 0)),
+        timeoutPhase: details.phase || null,
+        timeoutMs: details.timeoutMs || null,
+        timeoutDetails: details,
+        canResume: canResume === true,
+        text: error?.message || 'Model call timed out.',
+    };
+}
+
+function createStreamingTimeouts({ backend, timeouts, partial }) {
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    let timeoutError = null;
+    let connectionTimer = null;
+    let firstTokenTimer = null;
+    let inactivityTimer = null;
+    let maxStepTimer = null;
+    let sawFirstToken = false;
+
+    const clearTimer = timer => {
+        if (timer) clearTimeout(timer);
+    };
+    const clearAll = () => {
+        clearTimer(connectionTimer);
+        clearTimer(firstTokenTimer);
+        clearTimer(inactivityTimer);
+        clearTimer(maxStepTimer);
+        connectionTimer = null;
+        firstTokenTimer = null;
+        inactivityTimer = null;
+        maxStepTimer = null;
+    };
+    const trip = (phase, timeoutMs) => {
+        if (timeoutError) return;
+        timeoutError = new AgentModelTimeoutError({
+            backend,
+            phase,
+            timeoutMs,
+            elapsedMs: Date.now() - startedAt,
+            partial,
+            timeouts,
+        });
+        controller.abort(timeoutError);
+    };
+    const startInactivityTimer = () => {
+        clearTimer(inactivityTimer);
+        inactivityTimer = setTimeout(() => trip('inactivity_timeout', timeouts.inactivityMs), timeouts.inactivityMs);
+    };
+
+    connectionTimer = setTimeout(() => trip('connection_timeout', timeouts.connectionMs), timeouts.connectionMs);
+    maxStepTimer = setTimeout(() => trip('max_step_duration', timeouts.maxStepMs), timeouts.maxStepMs);
+
+    return {
+        signal: controller.signal,
+        startedAt,
+        onConnected() {
+            clearTimer(connectionTimer);
+            connectionTimer = null;
+            if (!sawFirstToken && !firstTokenTimer) {
+                firstTokenTimer = setTimeout(() => trip('first_token_timeout', timeouts.firstTokenMs), timeouts.firstTokenMs);
+            }
+        },
+        onData() {
+            if (!sawFirstToken) {
+                sawFirstToken = true;
+                clearTimer(firstTokenTimer);
+                firstTokenTimer = null;
+            }
+            startInactivityTimer();
+        },
+        clear: clearAll,
+        getTimeoutError() {
+            return timeoutError;
+        },
+        throwIfTimedOut(err) {
+            if (timeoutError) throw timeoutError;
+            if (err?.name === 'AbortError' && controller.signal.aborted && controller.signal.reason instanceof Error) {
+                throw controller.signal.reason;
+            }
+        },
+    };
+}
+
+function mergeToolCallDeltas(target, incoming = []) {
+    if (!Array.isArray(incoming)) return;
+    for (const [position, call] of incoming.entries()) {
+        const index = Number.isFinite(parseInt(call?.index, 10)) ? parseInt(call.index, 10) : position;
+        const existing = target[index] || { id: call?.id || `call_${index}`, type: call?.type || 'function', function: {} };
+        if (call?.id) existing.id = call.id;
+        if (call?.type) existing.type = call.type;
+        const fn = call?.function || {};
+        existing.function = existing.function || {};
+        if (fn.name) existing.function.name = (existing.function.name || '') + (existing.function.name && existing.function.name !== fn.name ? fn.name : (!existing.function.name ? fn.name : ''));
+        if (fn.arguments !== undefined) {
+            if (typeof fn.arguments === 'string') {
+                existing.function.arguments = String(existing.function.arguments || '') + fn.arguments;
+            } else {
+                existing.function.arguments = fn.arguments;
+            }
+        }
+        target[index] = existing;
+    }
+}
+
+function applyOllamaStreamChunk(aggregate, chunk, partial) {
+    if (!chunk || typeof chunk !== 'object') return { contentDelta: '', thinkingDelta: '', toolCallsDelta: 0 };
+    aggregate.model = chunk.model || aggregate.model;
+    aggregate.created_at = chunk.created_at || aggregate.created_at;
+    aggregate.done = chunk.done === true ? true : aggregate.done;
+    aggregate.done_reason = chunk.done_reason || chunk.doneReason || aggregate.done_reason;
+    aggregate.finish_reason = chunk.finish_reason || chunk.finishReason || aggregate.finish_reason;
+    aggregate.message = aggregate.message || { role: 'assistant', content: '' };
+
+    const message = chunk.message || {};
+    const contentDelta = typeof message.content === 'string' ? message.content : '';
+    const thinkingDelta = [message.thinking, message.reasoning_content, chunk.reasoning_content]
+        .filter(value => typeof value === 'string' && value.length > 0)
+        .join('');
+    if (contentDelta) {
+        aggregate.message.content = String(aggregate.message.content || '') + contentDelta;
+        partial.content += contentDelta;
+    }
+    if (thinkingDelta) {
+        aggregate.message.thinking = String(aggregate.message.thinking || '') + thinkingDelta;
+        partial.thinking += thinkingDelta;
+    }
+    const toolCallCountBefore = Array.isArray(aggregate.message.tool_calls) ? aggregate.message.tool_calls.length : 0;
+    if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+        aggregate.message.tool_calls = Array.isArray(aggregate.message.tool_calls) ? aggregate.message.tool_calls : [];
+        mergeToolCallDeltas(aggregate.message.tool_calls, message.tool_calls);
+        partial.toolCalls = aggregate.message.tool_calls;
+    }
+    return {
+        contentDelta,
+        thinkingDelta,
+        toolCallsDelta: Math.max(0, (aggregate.message.tool_calls || []).length - toolCallCountBefore),
+    };
+}
+
+function applyLlamaCppStreamChunk(aggregate, chunk, partial) {
+    const choice = Array.isArray(chunk?.choices) ? chunk.choices[0] : null;
+    if (!choice) return { contentDelta: '', thinkingDelta: '', toolCallsDelta: 0 };
+    aggregate.id = chunk.id || aggregate.id;
+    aggregate.model = chunk.model || aggregate.model;
+    const aggregateChoice = aggregate.choices[0];
+    const message = aggregateChoice.message;
+    const delta = choice.delta || choice.message || {};
+    const contentDelta = typeof delta.content === 'string' ? delta.content : '';
+    const thinkingDelta = [delta.reasoning_content, delta.reasoning, chunk.reasoning_content]
+        .filter(value => typeof value === 'string' && value.length > 0)
+        .join('');
+    if (contentDelta) {
+        message.content = String(message.content || '') + contentDelta;
+        partial.content += contentDelta;
+    }
+    if (thinkingDelta) {
+        message.reasoning_content = String(message.reasoning_content || '') + thinkingDelta;
+        partial.thinking += thinkingDelta;
+    }
+    const toolCallCountBefore = Array.isArray(message.tool_calls) ? message.tool_calls.length : 0;
+    if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) {
+        message.tool_calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+        mergeToolCallDeltas(message.tool_calls, delta.tool_calls);
+        partial.toolCalls = message.tool_calls;
+    }
+    if (choice.finish_reason) aggregateChoice.finish_reason = choice.finish_reason;
+    return {
+        contentDelta,
+        thinkingDelta,
+        toolCallsDelta: Math.max(0, (message.tool_calls || []).length - toolCallCountBefore),
+    };
+}
+
+function notifyModelStreamDelta(onStream, delta) {
+    if (typeof onStream !== 'function') return;
+    if (delta.contentDelta) onStream({ type: 'content_delta', text: delta.contentDelta });
+    if (delta.thinkingDelta) onStream({ type: 'thinking_delta', text: delta.thinkingDelta });
+    if (delta.toolCallsDelta) onStream({ type: 'tool_call_delta', count: delta.toolCallsDelta });
+}
+
+// Call Ollama with tools, collect full response from a streaming backend response.
 async function callOllamaWithTools(messages, tools, model, requestConfig = {}) {
     const requestBody = requestConfig.requestBody || buildAgentModelRequestBody({
         backend: 'ollama',
@@ -1248,23 +1499,61 @@ async function callOllamaWithTools(messages, tools, model, requestConfig = {}) {
         options: requestConfig.options,
         think: requestConfig.think,
     });
+    requestBody.stream = true;
     const body = JSON.stringify(requestBody);
-    return fetchOllama('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-        signal: AbortSignal.timeout(AGENT_TOOL_CALL_TIMEOUT_MS)
-    }).then(async (res2) => {
-        const raw = await res2.text();
-        try { return JSON.parse(raw); }
-        catch { throw new Error('Bad Ollama response'); }
-    }).catch(err => {
-        if (err.name === 'TimeoutError') throw new Error(`Ollama tool call timed out after ${Math.round(AGENT_TOOL_CALL_TIMEOUT_MS / 1000)}s`);
+    const timeouts = getAgentModelTimeoutConfig(requestConfig.timeouts);
+    const partial = { content: '', thinking: '', toolCalls: [] };
+    const timeoutState = createStreamingTimeouts({ backend: 'Ollama', timeouts, partial });
+    const aggregate = { message: { role: 'assistant', content: '' }, done: false };
+    let lineBuffer = '';
+    try {
+        const ollamaBaseUrl = await resolveOllamaBaseUrl('/api/tags');
+        // fetch() does not expose TCP connect timing; the probe above proves the backend is reachable,
+        // so treat the model request as connected and classify a silent backend as first-token timeout.
+        timeoutState.onConnected();
+        const res2 = await fetch(`${ollamaBaseUrl}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            signal: timeoutState.signal,
+        });
+        if (!res2.ok) throw new Error(`Ollama returned HTTP ${res2.status}`);
+        if (!res2.body || typeof res2.body.getReader !== 'function') {
+            throw new Error('Ollama streaming response was not readable');
+        }
+        const reader = res2.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            timeoutState.onData();
+            lineBuffer += decoder.decode(value, { stream: true });
+            const lines = lineBuffer.split(/\r?\n/);
+            lineBuffer = lines.pop();
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                let parsed;
+                try { parsed = JSON.parse(line); }
+                catch { throw new Error('Bad Ollama streaming response'); }
+                notifyModelStreamDelta(requestConfig.onStream, applyOllamaStreamChunk(aggregate, parsed, partial));
+            }
+        }
+        if (lineBuffer.trim()) {
+            let parsed;
+            try { parsed = JSON.parse(lineBuffer); }
+            catch { throw new Error('Bad Ollama streaming response'); }
+            notifyModelStreamDelta(requestConfig.onStream, applyOllamaStreamChunk(aggregate, parsed, partial));
+        }
+        return aggregate;
+    } catch (err) {
+        timeoutState.throwIfTimedOut(err);
         throw err;
-    });
+    } finally {
+        timeoutState.clear();
+    }
 }
 
-// Call llama.cpp with tools (OpenAI format), return response object
+// Call llama.cpp with tools (OpenAI format), collect full response from SSE streaming.
 async function callLlamaCppWithTools(messages, tools, model, requestConfig = {}) {
     const requestBody = requestConfig.requestBody || buildAgentModelRequestBody({
         backend: 'llamacpp',
@@ -1273,25 +1562,83 @@ async function callLlamaCppWithTools(messages, tools, model, requestConfig = {})
         tools,
         options: requestConfig.options,
     });
+    requestBody.stream = true;
     const body = JSON.stringify(requestBody);
+    const timeouts = getAgentModelTimeoutConfig(requestConfig.timeouts);
+    const partial = { content: '', thinking: '', toolCalls: [] };
+    const timeoutState = createStreamingTimeouts({ backend: 'llama.cpp', timeouts, partial });
+    const aggregate = { choices: [{ finish_reason: null, message: { role: 'assistant', content: '', tool_calls: [] } }] };
     return new Promise((resolve, reject) => {
+        let eventBuffer = '';
+        let settled = false;
+        const settle = (fn, value) => {
+            if (settled) return;
+            settled = true;
+            timeoutState.clear();
+            fn(value);
+        };
+        const handleSseData = data => {
+            const trimmed = String(data || '').trim();
+            if (!trimmed || trimmed === '[DONE]') return;
+            let parsed;
+            try { parsed = JSON.parse(trimmed); }
+            catch { throw new Error('Bad llama.cpp streaming response'); }
+            notifyModelStreamDelta(requestConfig.onStream, applyLlamaCppStreamChunk(aggregate, parsed, partial));
+        };
         const req = http.request({
             hostname: '127.0.0.1', port: llamaPort, path: '/v1/chat/completions', method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Accept': 'text/event-stream' },
+            signal: timeoutState.signal,
         }, (res2) => {
-            clearTimeout(timer);
-            let raw = '';
-            res2.on('data', d => { raw += d; });
-            res2.on('end', () => {
-                try { resolve(JSON.parse(raw)); } catch { reject(new Error('Bad llama.cpp response')); }
+            timeoutState.onConnected();
+            if (res2.statusCode < 200 || res2.statusCode >= 300) {
+                let rawError = '';
+                res2.on('data', d => { rawError += d; });
+                res2.on('end', () => settle(reject, new Error(`llama.cpp returned HTTP ${res2.statusCode}${rawError ? `: ${rawError.slice(0, 200)}` : ''}`)));
+                return;
+            }
+            res2.on('data', d => {
+                timeoutState.onData();
+                eventBuffer += d.toString();
+                const events = eventBuffer.split(/\r?\n\r?\n/);
+                eventBuffer = events.pop();
+                try {
+                    for (const event of events) {
+                        const dataLines = event.split(/\r?\n/)
+                            .filter(line => line.startsWith('data:'))
+                            .map(line => line.replace(/^data:\s?/, ''));
+                        if (dataLines.length) handleSseData(dataLines.join('\n'));
+                    }
+                } catch (err) {
+                    req.destroy(err);
+                }
             });
-            res2.on('error', reject);
+            res2.on('end', () => {
+                try {
+                    if (eventBuffer.trim()) {
+                        const dataLines = eventBuffer.split(/\r?\n/)
+                            .filter(line => line.startsWith('data:'))
+                            .map(line => line.replace(/^data:\s?/, ''));
+                        if (dataLines.length) handleSseData(dataLines.join('\n'));
+                    }
+                    settle(resolve, aggregate);
+                } catch (err) {
+                    settle(reject, err);
+                }
+            });
+            res2.on('error', err => settle(reject, err));
         });
-        const timer = setTimeout(() => {
-            req.destroy();
-            reject(new Error(`llama.cpp tool call timed out after ${Math.round(AGENT_TOOL_CALL_TIMEOUT_MS / 1000)}s`));
-        }, AGENT_TOOL_CALL_TIMEOUT_MS);
-        req.on('error', (err) => { clearTimeout(timer); reject(err); });
+        req.on('socket', socket => {
+            socket.once('connect', () => timeoutState.onConnected());
+        });
+        req.on('error', err => {
+            try {
+                timeoutState.throwIfTimedOut(err);
+                settle(reject, err);
+            } catch (timeoutErr) {
+                settle(reject, timeoutErr);
+            }
+        });
         req.write(body);
         req.end();
     });
@@ -1864,6 +2211,59 @@ async function executeDurableAgentRun(runId, body = {}) {
     );
     const initialResumeCount = parseInt(existingRun?.resumeCount, 10) || 0;
     const initialStartedAt = existingRun?.startedAt || Date.now();
+    let streamedContentForCurrentResponse = false;
+    const handleModelStreamDelta = (delta = {}) => {
+        if (delta.type === 'content_delta' && delta.text) {
+            streamedContentForCurrentResponse = true;
+            writer.write(JSON.stringify({ type: 'content', text: delta.text, streaming: true }));
+        } else if (delta.type === 'thinking_delta' && delta.text) {
+            writer.write(JSON.stringify({ type: 'model_stream_delta', field: 'thinking', chars: delta.text.length }));
+        } else if (delta.type === 'tool_call_delta') {
+            writer.write(JSON.stringify({ type: 'model_stream_delta', field: 'tool_calls', count: delta.count || 0 }));
+        }
+    };
+    const handleModelCallFailure = ({ err, backend, requestModel, step, startedAt, requestBody, label = 'Model call failed' }) => {
+        const elapsedMs = Date.now() - startedAt;
+        writer.write(JSON.stringify(buildModelCallErrorDiagnostics({
+            error: err,
+            backend,
+            model: requestModel,
+            step,
+            elapsedMs,
+            requestBody,
+        })));
+        if (isAgentModelTimeoutError(err)) {
+            writer.write(JSON.stringify(buildAgentModelTimeoutEvent({
+                error: err,
+                backend,
+                model: requestModel,
+                step,
+                elapsedMs,
+                canResume: true,
+            })));
+            setRunStatus(runId, 'paused', {
+                lastError: err.message,
+                latestMessages: messages,
+                lastStep: stepsCompleted,
+                stepsCompleted,
+                canResume: true,
+                pauseReason: 'model_timeout',
+                interruptionReason: null,
+                timeoutDetails: err.timeoutDetails || null,
+                partialModelResponse: err.timeoutDetails?.partial || null,
+                completedAt: null,
+            });
+        } else {
+            writer.write(JSON.stringify({ type: 'error', text: `${label}: ${err.message}` }));
+            setRunStatus(runId, 'failed', {
+                lastError: err.message,
+                latestMessages: messages,
+                lastStep: stepsCompleted,
+                stepsCompleted,
+                canResume: false,
+            });
+        }
+    };
     const markRunCancelled = (step = stepsCompleted) => {
         writer.write(JSON.stringify({ type: 'cancelled', step }));
         setRunStatus(runId, 'cancelled', {
@@ -1998,26 +2398,20 @@ async function executeDurableAgentRun(runId, body = {}) {
                 const modelCallStartedAt = Date.now();
                 const heartbeat = setInterval(() => writer.write(JSON.stringify({ type: 'heartbeat' })), 15000);
                 try {
+                    streamedContentForCurrentResponse = false;
                     response = backend === 'llamacpp'
-                        ? await callLlamaCppWithTools(messages, tools, requestModel, { requestBody: modelRequestBody })
-                        : await callOllamaWithTools(messages, tools, requestModel, { requestBody: modelRequestBody });
+                        ? await callLlamaCppWithTools(messages, tools, requestModel, { requestBody: modelRequestBody, onStream: handleModelStreamDelta })
+                        : await callOllamaWithTools(messages, tools, requestModel, { requestBody: modelRequestBody, onStream: handleModelStreamDelta });
                 } catch (err) {
                     clearInterval(heartbeat);
-                    writer.write(JSON.stringify(buildModelCallErrorDiagnostics({
-                        error: err,
+                    handleModelCallFailure({
+                        err,
                         backend,
-                        model: requestModel,
+                        requestModel,
                         step,
-                        elapsedMs: Date.now() - modelCallStartedAt,
+                        startedAt: modelCallStartedAt,
                         requestBody: modelRequestBody,
-                    })));
-                    writer.write(JSON.stringify({ type: 'error', text: 'Model call failed: ' + err.message }));
-                    setRunStatus(runId, 'failed', {
-                        lastError: err.message,
-                        latestMessages: messages,
-                        lastStep: stepsCompleted,
-                        stepsCompleted,
-                        canResume: false,
+                        label: 'Model call failed',
                     });
                     stopRun = true;
                     break;
@@ -2072,27 +2466,21 @@ async function executeDurableAgentRun(runId, body = {}) {
                     const retryStartedAt = Date.now();
                     const retryHeartbeat = setInterval(() => writer.write(JSON.stringify({ type: 'heartbeat' })), 15000);
                     try {
+                        streamedContentForCurrentResponse = false;
                         response = backend === 'llamacpp'
-                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody })
-                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody });
+                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta })
+                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta });
                         messages = retryMessages;
                     } catch (err) {
                         clearInterval(retryHeartbeat);
-                        writer.write(JSON.stringify(buildModelCallErrorDiagnostics({
-                            error: err,
+                        handleModelCallFailure({
+                            err,
                             backend,
-                            model: requestModel,
+                            requestModel,
                             step,
-                            elapsedMs: Date.now() - retryStartedAt,
+                            startedAt: retryStartedAt,
                             requestBody: retryRequestBody,
-                        })));
-                        writer.write(JSON.stringify({ type: 'error', text: 'Model retry failed: ' + err.message }));
-                        setRunStatus(runId, 'failed', {
-                            lastError: err.message,
-                            latestMessages: messages,
-                            lastStep: stepsCompleted,
-                            stepsCompleted,
-                            canResume: false,
+                            label: 'Model retry failed',
                         });
                         stopRun = true;
                         break;
@@ -2149,27 +2537,21 @@ async function executeDurableAgentRun(runId, body = {}) {
                     const retryStartedAt = Date.now();
                     const retryHeartbeat = setInterval(() => writer.write(JSON.stringify({ type: 'heartbeat' })), 15000);
                     try {
+                        streamedContentForCurrentResponse = false;
                         response = backend === 'llamacpp'
-                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody })
-                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody });
+                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta })
+                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta });
                         messages = retryMessages;
                     } catch (err) {
                         clearInterval(retryHeartbeat);
-                        writer.write(JSON.stringify(buildModelCallErrorDiagnostics({
-                            error: err,
+                        handleModelCallFailure({
+                            err,
                             backend,
-                            model: requestModel,
+                            requestModel,
                             step,
-                            elapsedMs: Date.now() - retryStartedAt,
+                            startedAt: retryStartedAt,
                             requestBody: retryRequestBody,
-                        })));
-                        writer.write(JSON.stringify({ type: 'error', text: 'Model retry failed: ' + err.message }));
-                        setRunStatus(runId, 'failed', {
-                            lastError: err.message,
-                            latestMessages: messages,
-                            lastStep: stepsCompleted,
-                            stepsCompleted,
-                            canResume: false,
+                            label: 'Model retry failed',
                         });
                         stopRun = true;
                         break;
@@ -2196,7 +2578,7 @@ async function executeDurableAgentRun(runId, body = {}) {
                         reasoningRetryAttempted: true,
                     });
                 }
-                if (content && content.trim()) writer.write(JSON.stringify({ type: 'content', text: content }));
+                if (content && content.trim() && !streamedContentForCurrentResponse) writer.write(JSON.stringify({ type: 'content', text: content }));
 
                 if (!toolCalls || toolCalls.length === 0) {
                     if (noToolAction === 'pause_empty_response') {
@@ -2889,6 +3271,10 @@ module.exports = {
     callLlamaCppSync,
     callModelSync,
     AGENT_TOOL_CALL_TIMEOUT_MS,
+    AgentModelTimeoutError,
+    getAgentModelTimeoutConfig,
+    buildAgentModelTimeoutEvent,
+    isAgentModelTimeoutError,
     callOllamaWithTools,
     callLlamaCppWithTools,
     extractToolCalls,

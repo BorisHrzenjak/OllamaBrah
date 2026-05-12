@@ -1303,6 +1303,32 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return false;
             }
 
+            if (chunk.type === 'model_timeout') {
+                sawModelTimeout = true;
+                if (chunk.canResume !== false) {
+                    finalState = 'paused';
+                    continueRunId = continueRunId || handlers.runId || currentAgentRunId;
+                }
+                const phase = chunk.timeoutPhase ? String(chunk.timeoutPhase).replace(/_/g, ' ') : 'timeout';
+                const message = chunk.text || 'Model call timed out.';
+                setLiveStatus(message, 'waiting');
+                setBottomProgressState(message, 'waiting', { completed: true });
+                const partial = chunk.timeoutDetails?.partial || {};
+                const body = [
+                    `Step: ${chunk.step || '?'}`,
+                    `Model: ${chunk.model || 'unknown'}`,
+                    `Backend: ${chunk.backend || 'unknown'}`,
+                    `Phase: ${phase}`,
+                    chunk.timeoutMs ? `Timeout: ${chunk.timeoutMs} ms` : null,
+                    `Elapsed: ${chunk.elapsedMs || 0} ms`,
+                    partial.contentChars ? `Partial content: ${partial.contentChars} chars` : null,
+                    partial.thinkingChars ? `Partial thinking: ${partial.thinkingChars} chars` : null,
+                    partial.toolCallCount ? `Partial tool calls: ${partial.toolCallCount}` : null,
+                ].filter(Boolean).join('\n');
+                appendAgentSectionItem(panels.sections.final, createAgentRunCard('Model Timeout', body, 'warning'));
+                return false;
+            }
+
             if (chunk.type === 'content' && chunk.text) {
                 setLiveStatus('Streaming response...', 'streaming');
                 if (!currentContentDiv) {

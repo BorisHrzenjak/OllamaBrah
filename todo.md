@@ -45,17 +45,18 @@ Problem: normal chat detects thinking-only output, but agent mode ignores reason
 
 Problem: agent mode uses non-streaming model calls with a hard 120s timeout. Local reasoning models can spend that budget thinking, then the app loses useful partial state.
 
-- [ ] Replace non-streaming agent model calls with streaming calls where possible.
-- [ ] Track partial content, thinking, and tool calls as they stream.
-- [ ] Use separate timeout settings:
+- [x] Replace non-streaming agent model calls with streaming calls where possible.
+- [x] Track partial content, thinking, and tool calls as they stream.
+- [x] Use separate timeout settings:
   - connection timeout
   - first-token timeout
   - inactivity timeout
   - max step duration
-- [ ] Make these values configurable through environment variables and later through Settings.
-- [ ] Fix incorrect timeout messages that still say "30s" while using 120s.
-- [ ] Persist timeout details into `run.json` and `events.ndjson`.
-- [ ] Add tests for timeout classification and resumability.
+- [x] Make these values configurable through environment variables.
+- [ ] Expose agent timeout controls through Settings.
+- [x] Fix incorrect timeout messages that still say "30s" while using 120s.
+- [x] Persist timeout details into `run.json` and `events.ndjson`.
+- [x] Add tests for timeout classification and resumability.
 
 ## 4. Agent Mode Must Honor Model Parameters
 

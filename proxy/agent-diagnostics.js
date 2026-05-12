@@ -38,7 +38,7 @@ function buildAgentModelRequestBody({ backend = 'ollama', model, messages = [], 
             model,
             messages: toOpenAiMessages(messages),
             tools,
-            stream: false,
+            stream: true,
             ...mapOptionsForLlamaCpp(options),
         });
     }
@@ -47,7 +47,7 @@ function buildAgentModelRequestBody({ backend = 'ollama', model, messages = [], 
         model,
         messages,
         tools,
-        stream: false,
+        stream: true,
         think: think === true,
         options: Object.keys(sanitizeOptions(options)).length ? sanitizeOptions(options) : undefined,
     });
@@ -212,6 +212,7 @@ function buildModelStepDiagnostics({ response, backend, model, step, elapsedMs, 
 
 function buildModelCallErrorDiagnostics({ error, backend, model, step, elapsedMs, requestBody } = {}) {
     const message = error?.message || String(error || 'Unknown model error');
+    const timeoutDetails = error?.timeoutDetails || null;
     return {
         type: 'model_step_diagnostics',
         model: model || null,
@@ -232,6 +233,9 @@ function buildModelCallErrorDiagnostics({ error, backend, model, step, elapsedMs
             doneReason: null,
             error: message,
             timedOut: /timed out|timeout/i.test(message),
+            timeoutPhase: timeoutDetails?.phase || error?.timeoutPhase || null,
+            timeoutMs: timeoutDetails?.timeoutMs || error?.timeoutMs || null,
+            timeoutDetails,
         },
     };
 }

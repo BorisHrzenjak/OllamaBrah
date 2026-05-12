@@ -16,7 +16,7 @@ try {
         model: 'empty-model',
         step: 1,
         elapsedMs: 42,
-        requestBody: { model: 'empty-model', stream: false, options: { temperature: 0.2 }, tools: [] },
+        requestBody: { model: 'empty-model', stream: true, options: { temperature: 0.2 }, tools: [] },
         response: { message: { content: '' }, done_reason: 'stop' },
     });
     assert.strictEqual(empty.response.hasContent, false);
@@ -29,7 +29,7 @@ try {
         model: 'thinking-model',
         step: 1,
         elapsedMs: 83,
-        requestBody: { model: 'thinking-model', stream: false, think: true },
+        requestBody: { model: 'thinking-model', stream: true, think: true },
         response: { message: { content: '', thinking: 'I should reason but never answer.' }, done_reason: 'length' },
     });
     assert.strictEqual(reasoningOnly.response.hasContent, false);
@@ -48,7 +48,7 @@ try {
         model: 'qwen3.gguf',
         step: 1,
         elapsedMs: 51,
-        requestBody: { model: 'qwen3.gguf', stream: false },
+        requestBody: { model: 'qwen3.gguf', stream: true },
         response: {
             choices: [{
                 finish_reason: 'length',
@@ -65,7 +65,7 @@ try {
         model: 'slow-model',
         step: 1,
         elapsedMs: 120001,
-        requestBody: { model: 'slow-model', stream: false },
+        requestBody: { model: 'slow-model', stream: true },
         error: new Error('Ollama tool call timed out after 120s'),
     });
     assert.strictEqual(timeout.response.timedOut, true);
@@ -76,7 +76,7 @@ try {
         model: 'tool-model',
         step: 2,
         elapsedMs: 19,
-        requestBody: { model: 'tool-model', stream: false, tools: [{ function: { name: 'readFile' } }] },
+        requestBody: { model: 'tool-model', stream: true, tools: [{ function: { name: 'readFile' } }] },
         response: {
             choices: [{
                 finish_reason: 'tool_calls',
@@ -102,6 +102,7 @@ try {
         options: { temperature: 0.15, top_p: 0.8, num_predict: 256, num_ctx: 8192 },
         think: true,
     });
+    assert.strictEqual(ollamaBody.stream, true);
     assert.strictEqual(ollamaBody.think, true);
     assert.deepStrictEqual(ollamaBody.options, { temperature: 0.15, top_p: 0.8, num_predict: 256, num_ctx: 8192 });
 
@@ -112,6 +113,7 @@ try {
         tools: [],
         options: { temperature: 0.25, top_p: 0.7, num_predict: 128, repeat_penalty: 1.05 },
     });
+    assert.strictEqual(llamaBody.stream, true);
     assert.strictEqual(llamaBody.max_tokens, 128);
     assert.strictEqual(llamaBody.temperature, 0.25);
     assert.strictEqual(llamaBody.repeat_penalty, 1.05);
@@ -137,6 +139,13 @@ try {
             assert.strictEqual(run.status, 'paused');
             assert.strictEqual(run.canResume, true);
             assert.strictEqual(run.pauseReason, 'reasoning_only_response');
+        }
+        if (entry.name === 'timeout') {
+            assert.notStrictEqual(run.status, 'failed', 'timeout fixture should be paused and resumable');
+            assert.strictEqual(run.status, 'paused');
+            assert.strictEqual(run.canResume, true);
+            assert.strictEqual(run.pauseReason, 'model_timeout');
+            assert.strictEqual(run.timeoutDetails?.phase, 'first_token_timeout');
         }
         const events = fs.readFileSync(eventsPath, 'utf8')
             .split(/\r?\n/)

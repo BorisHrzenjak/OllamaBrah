@@ -1,13 +1,48 @@
 {
   "id": "fixture_timeout",
-  "status": "failed",
+  "status": "paused",
   "model": "slow-model",
   "backend": "ollama",
   "createdAt": 1710000020000,
   "updatedAt": 1710000140000,
   "stepsCompleted": 0,
   "lastStep": 0,
-  "lastError": "Ollama tool call timed out after 120s",
+  "canResume": true,
+  "pauseReason": "model_timeout",
+  "lastError": "Ollama call timed out waiting for first token after 120s",
+  "timeoutDetails": {
+    "phase": "first_token_timeout",
+    "timeoutMs": 120000,
+    "elapsedMs": 120001,
+    "config": {
+      "connectionMs": 10000,
+      "firstTokenMs": 120000,
+      "inactivityMs": 60000,
+      "maxStepMs": 300000
+    },
+    "partial": {
+      "content": "",
+      "thinking": "",
+      "toolCalls": [],
+      "hasContent": false,
+      "hasThinking": false,
+      "hasToolCalls": false,
+      "contentChars": 0,
+      "thinkingChars": 0,
+      "toolCallCount": 0
+    }
+  },
+  "partialModelResponse": {
+    "content": "",
+    "thinking": "",
+    "toolCalls": [],
+    "hasContent": false,
+    "hasThinking": false,
+    "hasToolCalls": false,
+    "contentChars": 0,
+    "thinkingChars": 0,
+    "toolCallCount": 0
+  },
   "requestBody": {
     "model": "slow-model",
     "backend": "ollama"
