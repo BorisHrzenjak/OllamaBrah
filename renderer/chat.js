@@ -371,10 +371,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             agentRunHistoryList.innerHTML = runs.map(run => {
                 const statusClass = run.status || 'queued';
-                return `<div class="agent-run-item" data-run-id="${run.id}" data-run-status="${statusClass}" title="${run.status} — ${run.model || ''}">
+                const health = run.healthStatus || run.status || 'queued';
+                return `<div class="agent-run-item" data-run-id="${run.id}" data-run-status="${statusClass}" title="${escapeHTML(health)} - ${escapeHTML(run.model || '')}">
                     <span class="agent-run-status-dot ${statusClass}"></span>
                     <span class="agent-run-label">${escapeHTML(getRunLabel(run))}</span>
-                    <span class="agent-run-time">${formatRunTimestamp(run.updatedAt)}</span>
+                    <span class="agent-run-time">${escapeHTML(health)} - ${formatRunTimestamp(run.updatedAt)}</span>
                 </div>`;
             }).join('');
         } catch {
@@ -1147,10 +1148,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         function renderContinueButtons(runId) {
             const row = document.createElement('div');
             row.className = 'agent-continue-row';
-            for (const extraSteps of [5, 15]) {
+            const options = [
+                { label: 'Continue Safely', extraSteps: 5, saferPrompt: true },
+                { label: 'Continue (+5 steps)', extraSteps: 5 },
+                { label: 'Continue (+15 steps)', extraSteps: 15 },
+            ];
+            for (const option of options) {
                 const btn = document.createElement('button');
                 btn.className = 'agent-continue-btn';
-                btn.textContent = `Continue (+${extraSteps} steps)`;
+                btn.textContent = option.label;
                 btn.onclick = async () => {
                     row.remove();
                     currentContentDiv = null;
@@ -1159,7 +1165,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const resp = await fetch(`${PROXY_BASE}/api/agent/runs/${encodeURIComponent(runId)}/resume`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ extendBudgetBy: extraSteps })
+                            body: JSON.stringify({ extendBudgetBy: option.extraSteps, saferPrompt: option.saferPrompt === true })
                         });
                         if (!resp.ok) throw new Error(`Agent API Error: ${resp.status}`);
                         const resumedRun = await resp.json();
@@ -1230,6 +1236,26 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (lastStatusText) {
                     liveStatusEl.classList.add('pulse');
                     setTimeout(() => liveStatusEl.classList.remove('pulse'), 400);
+                }
+                return false;
+            }
+
+            if (chunk.type === 'agent_model_capabilities') {
+                if (Array.isArray(chunk.warnings) && chunk.warnings.length) {
+                    const title = chunk.agentModeAllowed === false ? 'Agent Model Disabled' : 'Agent Model Warning';
+                    const body = [
+                        `Model: ${chunk.model || 'unknown'}`,
+                        `Backend: ${chunk.backend || 'unknown'}`,
+                        `Tool calls: ${chunk.supportsToolCalls ? 'supported/assumed' : 'not supported'}`,
+                        `Structured arguments: ${chunk.supportsStructuredJsonToolArguments ? 'supported/assumed' : 'not supported'}`,
+                        chunk.reasoningModelLikely ? 'Reasoning model likely: yes' : null,
+                        '',
+                        ...chunk.warnings,
+                    ].filter(line => line !== null).join('\n');
+                    appendAgentSectionItem(
+                        panels.sections.timeline,
+                        createAgentRunCard(title, body, chunk.agentModeAllowed === false ? 'error' : 'warning')
+                    );
                 }
                 return false;
             }
@@ -7502,6 +7528,7 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
                     maxSteps: configuredMaxSteps,
                     maxComputeSteps: configuredMaxComputeSteps,
                     executionPolicy: agentConfig?.executionPolicy || 'run_until_blocked',
+                    modelTimeouts: agentConfig?.modelTimeouts || null,
                     autoResumeOnRestart: true,
                     workspaceRoot: agentWorkspaceRoot || null,
                     yoloMode: agentYoloMode === true,
@@ -9009,6 +9036,17 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         maxSteps: 15,
         maxComputeSteps: 120,
         executionPolicy: 'run_until_blocked',
+        modelTimeouts: {
+            connectionMs: 10000,
+            firstTokenMs: 120000,
+            inactivityMs: 60000,
+            maxStepMs: 300000,
+        },
+        toolTimeouts: {
+            runShellMs: 120000,
+            runCodeJsMs: 10000,
+            runCodePythonMs: 60000,
+        },
         allowedDirs: [],
         blockedPaths: ['C:\\Windows\\System32', 'C:\\Windows\\SysWOW64'],
         toolPermissions: {
@@ -9041,6 +9079,19 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         if (computeSliderVal) computeSliderVal.textContent = agentConfig.maxComputeSteps;
         if (executionPolicySelect) executionPolicySelect.value = agentConfig.executionPolicy || 'run_until_blocked';
         if (yoloToggle) yoloToggle.checked = !!agentYoloMode;
+        const timeoutInputs = {
+            agentModelConnectionTimeoutInput: agentConfig.modelTimeouts?.connectionMs,
+            agentModelFirstTokenTimeoutInput: agentConfig.modelTimeouts?.firstTokenMs,
+            agentModelInactivityTimeoutInput: agentConfig.modelTimeouts?.inactivityMs,
+            agentModelMaxStepTimeoutInput: agentConfig.modelTimeouts?.maxStepMs,
+            agentRunShellTimeoutInput: agentConfig.toolTimeouts?.runShellMs,
+            agentRunCodeJsTimeoutInput: agentConfig.toolTimeouts?.runCodeJsMs,
+            agentRunCodePythonTimeoutInput: agentConfig.toolTimeouts?.runCodePythonMs,
+        };
+        for (const [id, value] of Object.entries(timeoutInputs)) {
+            const input = document.getElementById(id);
+            if (input && value != null) input.value = value;
+        }
 
         // Tool permissions
         const permContainer = document.getElementById('agentToolPermissions');
@@ -9117,6 +9168,22 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
         if (executionPolicySelect) agentConfig.executionPolicy = executionPolicySelect.value;
         const yoloToggle = document.getElementById('agentYoloSettingsToggle');
         if (yoloToggle) setAgentYoloMode(yoloToggle.checked);
+        const readTimeoutInput = (id, fallback) => {
+            const el = document.getElementById(id);
+            const value = parseInt(el?.value, 10);
+            return Number.isFinite(value) && value > 0 ? value : fallback;
+        };
+        agentConfig.modelTimeouts = {
+            connectionMs: readTimeoutInput('agentModelConnectionTimeoutInput', agentConfig.modelTimeouts?.connectionMs || 10000),
+            firstTokenMs: readTimeoutInput('agentModelFirstTokenTimeoutInput', agentConfig.modelTimeouts?.firstTokenMs || 120000),
+            inactivityMs: readTimeoutInput('agentModelInactivityTimeoutInput', agentConfig.modelTimeouts?.inactivityMs || 60000),
+            maxStepMs: readTimeoutInput('agentModelMaxStepTimeoutInput', agentConfig.modelTimeouts?.maxStepMs || 300000),
+        };
+        agentConfig.toolTimeouts = {
+            runShellMs: readTimeoutInput('agentRunShellTimeoutInput', agentConfig.toolTimeouts?.runShellMs || 120000),
+            runCodeJsMs: readTimeoutInput('agentRunCodeJsTimeoutInput', agentConfig.toolTimeouts?.runCodeJsMs || 10000),
+            runCodePythonMs: readTimeoutInput('agentRunCodePythonTimeoutInput', agentConfig.toolTimeouts?.runCodePythonMs || 60000),
+        };
 
         const statusEl = document.getElementById('agentConfigStatus');
         try {

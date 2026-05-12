@@ -57,6 +57,12 @@ try {
     assert.strictEqual(body.startedAt, 2000);
     assert.strictEqual(body.resumeCount, 2);
 
+    const saferBody = buildResumeRunBody({ ...existing, pauseReason: 'empty_model_response' }, { extendBudgetBy: 5, saferPrompt: true });
+    assert.strictEqual(saferBody.saferPrompt, true);
+    assert.strictEqual(saferBody.continueFrom.length, existing.latestMessages.length + 1);
+    assert.match(saferBody.continueFrom.at(-1).content, /safer recovery prompt/i);
+    assert.match(saferBody.continueFrom.at(-1).content, /empty_model_response/i);
+
     console.log('agent-run-resume: ok');
 } catch (err) {
     console.error('agent-run-resume: failed');

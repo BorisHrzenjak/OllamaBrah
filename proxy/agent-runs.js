@@ -31,6 +31,7 @@ function createRun(body = {}) {
     const record = {
         id: runId,
         status: 'queued',
+        healthStatus: 'queued',
         createdAt: now,
         updatedAt: now,
         conversationId: body.conversationId || null,
@@ -78,6 +79,19 @@ function getRun(runId) {
     }
 }
 
+function deriveRunHealthStatus(record = {}) {
+    if (record.status === 'paused') {
+        if (record.pauseReason === 'empty_model_response') return 'paused_empty_response';
+        if (record.pauseReason === 'reasoning_only_response') return 'paused_reasoning_only';
+        if (record.pauseReason === 'model_timeout') return 'paused_timeout';
+        return `paused_${record.pauseReason || 'unknown'}`;
+    }
+    if (record.status === 'failed') {
+        return record.backendFailure === true ? 'failed_backend' : 'failed';
+    }
+    return record.status || 'queued';
+}
+
 function updateRun(runId, updates = {}) {
     const current = getRun(runId);
     if (!current) return null;
@@ -86,6 +100,9 @@ function updateRun(runId, updates = {}) {
         ...updates,
         updatedAt: Date.now(),
     };
+    if (!Object.prototype.hasOwnProperty.call(updates, 'healthStatus')) {
+        next.healthStatus = deriveRunHealthStatus(next);
+    }
     fs.writeFileSync(getRunMetaPath(runId), JSON.stringify(next, null, 2), 'utf8');
     return next;
 }

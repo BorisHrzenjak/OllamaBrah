@@ -83,9 +83,11 @@ try {
 
     const pausedAfter = agentRuns.getRun(paused.id);
     assert.strictEqual(pausedAfter.status, 'paused');
+    assert.strictEqual(pausedAfter.healthStatus, 'paused_max_steps');
 
     const completedAfter = agentRuns.getRun(completed.id);
     assert.strictEqual(completedAfter.status, 'completed');
+    assert.strictEqual(completedAfter.healthStatus, 'completed');
 
     const recoveredEvents = agentRuns.readRunEvents(running.id);
     assert(recoveredEvents.some(event => event.type === 'interrupted'), 'recovered run should append interrupted event');

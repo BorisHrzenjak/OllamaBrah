@@ -13,6 +13,7 @@ const {
     getAgentModelTimeoutConfig,
     isAgentModelTimeoutError,
 } = require('../proxy/llm');
+const tools = require('../proxy/tools');
 const { buildModelCallErrorDiagnostics } = require('../proxy/agent-diagnostics');
 const agentRuns = require('../proxy/agent-runs');
 
@@ -25,10 +26,16 @@ function cleanup() {
 }
 
 try {
-    process.env.AGENT_MODEL_CONNECTION_TIMEOUT_MS = '1111';
-    process.env.AGENT_MODEL_FIRST_TOKEN_TIMEOUT_MS = '2222';
-    process.env.AGENT_MODEL_INACTIVITY_TIMEOUT_MS = '3333';
-    process.env.AGENT_MODEL_MAX_STEP_MS = '4444';
+    tools.handleAgentConfigPost({
+        body: {
+            modelTimeouts: {
+                connectionMs: 1111,
+                firstTokenMs: 2222,
+                inactivityMs: 3333,
+                maxStepMs: 4444,
+            },
+        },
+    }, { json() {} });
     assert.deepStrictEqual(getAgentModelTimeoutConfig(), {
         connectionMs: 1111,
         firstTokenMs: 2222,

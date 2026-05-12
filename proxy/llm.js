@@ -34,6 +34,7 @@ const {
     getAgentMaxSteps,
     getAgentMaxComputeSteps,
     getAgentExecutionPolicy,
+    getAgentModelTimeouts,
     createToolCache,
     buildExecutionPlan,
     requestPlanApproval,
@@ -1244,11 +1245,12 @@ function parsePositiveInt(value, fallback) {
 }
 
 function getAgentModelTimeoutConfig(overrides = {}) {
+    const configured = typeof getAgentModelTimeouts === 'function' ? getAgentModelTimeouts() : {};
     return {
-        connectionMs: parsePositiveInt(overrides.connectionMs ?? process.env.AGENT_MODEL_CONNECTION_TIMEOUT_MS, 10000),
-        firstTokenMs: parsePositiveInt(overrides.firstTokenMs ?? process.env.AGENT_MODEL_FIRST_TOKEN_TIMEOUT_MS, 120000),
-        inactivityMs: parsePositiveInt(overrides.inactivityMs ?? process.env.AGENT_MODEL_INACTIVITY_TIMEOUT_MS, 60000),
-        maxStepMs: parsePositiveInt(overrides.maxStepMs ?? process.env.AGENT_MODEL_MAX_STEP_MS, 300000),
+        connectionMs: parsePositiveInt(overrides.connectionMs ?? configured.connectionMs ?? process.env.AGENT_MODEL_CONNECTION_TIMEOUT_MS, 10000),
+        firstTokenMs: parsePositiveInt(overrides.firstTokenMs ?? configured.firstTokenMs ?? process.env.AGENT_MODEL_FIRST_TOKEN_TIMEOUT_MS, 120000),
+        inactivityMs: parsePositiveInt(overrides.inactivityMs ?? configured.inactivityMs ?? process.env.AGENT_MODEL_INACTIVITY_TIMEOUT_MS, 60000),
+        maxStepMs: parsePositiveInt(overrides.maxStepMs ?? configured.maxStepMs ?? process.env.AGENT_MODEL_MAX_STEP_MS, 300000),
     };
 }
 
@@ -1997,8 +1999,21 @@ async function handleAgentChat(req, res) {
     res.end();
 }
 
+function deriveRunHealthStatus(status, extra = {}) {
+    if (status === 'paused') {
+        if (extra.pauseReason === 'empty_model_response') return 'paused_empty_response';
+        if (extra.pauseReason === 'reasoning_only_response') return 'paused_reasoning_only';
+        if (extra.pauseReason === 'model_timeout') return 'paused_timeout';
+        return `paused_${extra.pauseReason || 'unknown'}`;
+    }
+    if (status === 'failed') {
+        return extra.backendFailure === true ? 'failed_backend' : 'failed';
+    }
+    return status;
+}
+
 function setRunStatus(runId, status, extra = {}) {
-    return updateRun(runId, { status, ...extra });
+    return updateRun(runId, { status, healthStatus: extra.healthStatus || deriveRunHealthStatus(status, extra), ...extra });
 }
 
 function loadSessionPermissionsFromRun(run) {
@@ -2024,6 +2039,69 @@ function normalizeComputeBudget(value, fallback) {
 
 function isRunCancelledError(err) {
     return err?.code === RUN_CANCELLED_ERROR_CODE;
+}
+
+function detectAgentModelCapabilities({ model, backend = 'ollama' } = {}) {
+    const name = String(model || '').toLowerCase();
+    const warnings = [];
+    const isLlamaCpp = backend === 'llamacpp';
+    const nonChatPattern = /\b(embed|embedding|nomic|bge|e5|rerank|clip|whisper|tts|kokoro|sdxl|stable-diffusion)\b/;
+    const visionOnlyPattern = /\b(llava|bakllava|moondream|vision)\b/;
+    const knownToolPattern = /\b(qwen2\.5|qwen3|llama3\.[123]|mistral|mixtral|hermes|granite|command-r|phi4|gpt-oss|functionary|tool)\b/;
+    const reasoningPattern = /\b(deepseek-r1|qwen3|reason|reasoner|thinking|o1|o3|o4|gpt-oss)\b/;
+    const capabilities = {
+        model: model || null,
+        backend: backend || 'ollama',
+        supportsToolCalls: true,
+        supportsStructuredJsonToolArguments: true,
+        reasoningModelLikely: reasoningPattern.test(name),
+        reliableForAgentMode: true,
+        agentModeAllowed: true,
+        recommendedAgentDefaults: {
+            temperature: 0,
+            think: reasoningPattern.test(name) ? false : undefined,
+            maxSteps: 15,
+        },
+        warnings,
+    };
+
+    if (!name) {
+        capabilities.reliableForAgentMode = false;
+        warnings.push('No model name was provided; tool-call support cannot be verified.');
+    }
+    if (nonChatPattern.test(name)) {
+        capabilities.supportsToolCalls = false;
+        capabilities.supportsStructuredJsonToolArguments = false;
+        capabilities.reliableForAgentMode = false;
+        capabilities.agentModeAllowed = false;
+        warnings.push('This looks like an embedding, audio, or non-chat model and cannot run agent tools.');
+    } else if (visionOnlyPattern.test(name)) {
+        capabilities.reliableForAgentMode = false;
+        warnings.push('Vision-tuned models often ignore structured tool calls; use a text/tool-capable chat model for agent mode.');
+    } else if (!knownToolPattern.test(name)) {
+        capabilities.reliableForAgentMode = false;
+        warnings.push(`${isLlamaCpp ? 'llama.cpp' : 'Ollama'} model tool-call support is unknown for this model name. Continue only if the model reliably emits function/tool calls.`);
+    }
+    if (capabilities.reasoningModelLikely) {
+        warnings.push('This looks like a reasoning model; disabling thinking or using a low temperature is recommended for agent runs.');
+    }
+
+    return capabilities;
+}
+
+function buildAgentModelCapabilitiesEvent(capabilities = {}) {
+    return {
+        type: 'agent_model_capabilities',
+        model: capabilities.model || null,
+        backend: capabilities.backend || 'ollama',
+        supportsToolCalls: capabilities.supportsToolCalls === true,
+        supportsStructuredJsonToolArguments: capabilities.supportsStructuredJsonToolArguments === true,
+        reasoningModelLikely: capabilities.reasoningModelLikely === true,
+        reliableForAgentMode: capabilities.reliableForAgentMode === true,
+        agentModeAllowed: capabilities.agentModeAllowed !== false,
+        recommendedAgentDefaults: capabilities.recommendedAgentDefaults || {},
+        warnings: Array.isArray(capabilities.warnings) ? capabilities.warnings : [],
+    };
 }
 
 function decideNoToolResponseAction({
@@ -2093,6 +2171,13 @@ function buildReasoningOnlyRetryMessages(messages = []) {
             content: 'The previous model response only contained reasoning/thinking and no final answer or tool call. Return only the final answer or a valid tool call. Do not continue thinking.',
         },
     ];
+}
+
+function buildPostToolFinalAnswerGuardMessage() {
+    return {
+        role: 'user',
+        content: 'You have tool results in the previous messages. If more work is required, call the next needed tool. Otherwise provide the final answer now, summarizing the concrete result for the user. Do not stop with tool output only.',
+    };
 }
 
 function emitRunEvent(runId, payload) {
@@ -2175,6 +2260,7 @@ async function executeDurableAgentRun(runId, body = {}) {
         maxComputeSteps: requestedMaxComputeSteps,
         executionPolicy: requestedExecutionPolicy,
         autoResumeOnRestart: requestedAutoResumeOnRestart,
+        modelTimeouts,
         continueFrom,
         _skillHint,
         workspaceRoot,
@@ -2201,6 +2287,8 @@ async function executeDurableAgentRun(runId, body = {}) {
     sessionPermissions._persist = () => persistSessionPermissions(runId, sessionPermissions);
     const toolCache = createToolCache();
     const writer = createRunWriter(runId, { yoloMode: yoloMode === true });
+    const requestModelForCapabilities = backend === 'llamacpp' ? (model || 'default') : (model || 'llama3.2');
+    const modelCapabilities = detectAgentModelCapabilities({ model: requestModelForCapabilities, backend });
     let previousStepUsedTools = false;
     let messages = continueFrom ? [...continueFrom] : [...(initialMessages || [])];
     let stepsCompleted = Math.max(
@@ -2261,6 +2349,7 @@ async function executeDurableAgentRun(runId, body = {}) {
                 lastStep: stepsCompleted,
                 stepsCompleted,
                 canResume: false,
+                backendFailure: true,
             });
         }
     };
@@ -2290,6 +2379,7 @@ async function executeDurableAgentRun(runId, body = {}) {
         sessionPermissionGrants: Array.isArray(existingRun?.sessionPermissionGrants) ? existingRun.sessionPermissionGrants : [],
         approvedPlans: Array.isArray(existingRun?.approvedPlans) ? existingRun.approvedPlans : [],
         filesTouched: Array.isArray(existingRun?.filesTouched) ? existingRun.filesTouched : [],
+        modelCapabilities,
         lastError: null,
         canResume: true,
         pauseReason: null,
@@ -2303,6 +2393,24 @@ async function executeDurableAgentRun(runId, body = {}) {
     });
     if (yoloMode === true) {
         writer.write(JSON.stringify({ type: 'yolo_mode', enabled: true, text: 'YOLO mode enabled: plan and permission prompts will be auto-approved for this run.' }));
+    }
+    writer.write(JSON.stringify(buildAgentModelCapabilitiesEvent(modelCapabilities)));
+    if (modelCapabilities.agentModeAllowed === false) {
+        const text = modelCapabilities.warnings[0] || 'Selected model cannot run agent tools reliably.';
+        writer.write(JSON.stringify({ type: 'error', text }));
+        setRunStatus(runId, 'failed', {
+            latestMessages: messages,
+            lastStep: stepsCompleted,
+            stepsCompleted,
+            canResume: false,
+            pauseReason: null,
+            lastError: text,
+            healthStatus: 'failed_backend',
+            completedAt: Date.now(),
+        });
+        writer.write(JSON.stringify({ type: 'done' }));
+        clearActiveRun(runId);
+        return;
     }
 
     if (!continueFrom) {
@@ -2400,8 +2508,8 @@ async function executeDurableAgentRun(runId, body = {}) {
                 try {
                     streamedContentForCurrentResponse = false;
                     response = backend === 'llamacpp'
-                        ? await callLlamaCppWithTools(messages, tools, requestModel, { requestBody: modelRequestBody, onStream: handleModelStreamDelta })
-                        : await callOllamaWithTools(messages, tools, requestModel, { requestBody: modelRequestBody, onStream: handleModelStreamDelta });
+                        ? await callLlamaCppWithTools(messages, tools, requestModel, { requestBody: modelRequestBody, onStream: handleModelStreamDelta, timeouts: modelTimeouts })
+                        : await callOllamaWithTools(messages, tools, requestModel, { requestBody: modelRequestBody, onStream: handleModelStreamDelta, timeouts: modelTimeouts });
                 } catch (err) {
                     clearInterval(heartbeat);
                     handleModelCallFailure({
@@ -2468,8 +2576,8 @@ async function executeDurableAgentRun(runId, body = {}) {
                     try {
                         streamedContentForCurrentResponse = false;
                         response = backend === 'llamacpp'
-                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta })
-                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta });
+                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta, timeouts: modelTimeouts })
+                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta, timeouts: modelTimeouts });
                         messages = retryMessages;
                     } catch (err) {
                         clearInterval(retryHeartbeat);
@@ -2539,8 +2647,8 @@ async function executeDurableAgentRun(runId, body = {}) {
                     try {
                         streamedContentForCurrentResponse = false;
                         response = backend === 'llamacpp'
-                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta })
-                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta });
+                            ? await callLlamaCppWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta, timeouts: modelTimeouts })
+                            : await callOllamaWithTools(retryMessages, tools, requestModel, { requestBody: retryRequestBody, onStream: handleModelStreamDelta, timeouts: modelTimeouts });
                         messages = retryMessages;
                     } catch (err) {
                         clearInterval(retryHeartbeat);
@@ -2736,6 +2844,7 @@ async function executeDurableAgentRun(runId, body = {}) {
                     messages.push({ role: 'assistant', content: '', tool_calls: execResults.map(({ tc }) => ({ function: { name: tc.name, arguments: tc.args } })) });
                     for (const { result } of execResults) messages.push({ role: 'tool', content: String(result) });
                 }
+                messages.push(buildPostToolFinalAnswerGuardMessage());
 
                 updateRun(runId, {
                     latestMessages: messages,
@@ -2896,6 +3005,17 @@ function buildResumeRunBody(existing, overrides = {}) {
         startedAt: existing.startedAt || existing.createdAt || null,
         resumeCount: existing.resumeCount || 0,
     };
+    if (overrides.saferPrompt === true) {
+        const reason = existing.pauseReason || existing.healthStatus || 'paused';
+        body.continueFrom = [
+            ...(body.continueFrom || []),
+            {
+                role: 'user',
+                content: `Continue this paused agent run using a safer recovery prompt. Pause reason: ${reason}. Return a concise final answer if the work is done. If more work is required, call exactly one valid tool with well-formed JSON arguments. Do not emit hidden thinking as the final answer and do not return an empty response.`,
+            },
+        ];
+        body.saferPrompt = true;
+    }
     return body;
 }
 
@@ -3042,9 +3162,11 @@ function handleAgentRunResume(req, res) {
     }
     const overrideMaxSteps = parseInt(req.body?.maxSteps, 10);
     const extendBudgetBy = parseInt(req.body?.extendBudgetBy, 10);
+    const saferPrompt = req.body?.saferPrompt === true;
     const run = resumeExistingAgentRun(existing, {
         ...(Number.isFinite(overrideMaxSteps) ? { maxSteps: overrideMaxSteps } : {}),
         ...(Number.isFinite(extendBudgetBy) ? { extendBudgetBy } : {}),
+        ...(saferPrompt ? { saferPrompt: true } : {}),
     });
     res.status(202).json({ ok: true, run, resumedFrom: existing.id, sameRun: true });
 }
@@ -3279,11 +3401,14 @@ module.exports = {
     callLlamaCppWithTools,
     extractToolCalls,
     extractContent,
+    detectAgentModelCapabilities,
+    buildAgentModelCapabilitiesEvent,
     decideNoToolResponseAction,
     buildEmptyModelResponseEvent,
     buildEmptyResponseRetryMessages,
     buildReasoningOnlyResponseEvent,
     buildReasoningOnlyRetryMessages,
+    buildPostToolFinalAnswerGuardMessage,
     handleLlamacppStatus,
     handleLlamacppConfig,
     handleLlamacppModels,

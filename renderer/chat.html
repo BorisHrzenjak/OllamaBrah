@@ -6706,6 +6706,27 @@ body {
                         </div>
 
                         <div class="llamacpp-field" style="margin-top:var(--space-md)">
+                            <label class="llamacpp-field-label">Model Timeouts</label>
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-sm)">
+                                <input type="number" id="agentModelConnectionTimeoutInput" class="llamacpp-input" min="1000" step="1000" placeholder="Connection ms">
+                                <input type="number" id="agentModelFirstTokenTimeoutInput" class="llamacpp-input" min="1000" step="1000" placeholder="First token ms">
+                                <input type="number" id="agentModelInactivityTimeoutInput" class="llamacpp-input" min="1000" step="1000" placeholder="Inactivity ms">
+                                <input type="number" id="agentModelMaxStepTimeoutInput" class="llamacpp-input" min="1000" step="1000" placeholder="Max step ms">
+                            </div>
+                            <p class="modal-description" style="margin:4px 0 0 0">Connection, first-token, stream-inactivity, and maximum step duration in milliseconds.</p>
+                        </div>
+
+                        <div class="llamacpp-field" style="margin-top:var(--space-md)">
+                            <label class="llamacpp-field-label">Tool Timeouts</label>
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:var(--space-sm)">
+                                <input type="number" id="agentRunShellTimeoutInput" class="llamacpp-input" min="1000" step="1000" placeholder="Shell ms">
+                                <input type="number" id="agentRunCodeJsTimeoutInput" class="llamacpp-input" min="1000" step="1000" placeholder="JS ms">
+                                <input type="number" id="agentRunCodePythonTimeoutInput" class="llamacpp-input" min="1000" step="1000" placeholder="Python ms">
+                            </div>
+                            <p class="modal-description" style="margin:4px 0 0 0">Per-tool execution caps. Shell commands default higher than before for test/build tasks.</p>
+                        </div>
+
+                        <div class="llamacpp-field" style="margin-top:var(--space-md)">
                             <label class="llamacpp-field-label">Tool Permissions</label>
                             <p class="modal-description" style="margin:2px 0 8px 0">auto = runs silently &nbsp;|&nbsp;
                                 confirm = ask before each use &nbsp;|&nbsp; disabled = never use</p>

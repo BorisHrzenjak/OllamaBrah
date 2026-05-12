@@ -52,12 +52,55 @@ function stableHash(...parts) {
     return crypto.createHash('md5').update(joined).digest('hex').slice(0, 12);
 }
 
+function evaluateSearchQuality(searchResult) {
+    const results = Array.isArray(searchResult?.results) ? searchResult.results : [];
+    const usable = results.filter(r => {
+        const url = String(r?.url || '').trim();
+        const title = String(r?.title || '').trim();
+        const snippet = String(r?.content || r?.text || '').trim();
+        return /^https?:\/\//i.test(url) && (title || snippet);
+    });
+    const hosts = new Set(usable.map(r => {
+        try { return new URL(r.url).hostname.replace(/^www\./, '').toLowerCase(); }
+        catch { return ''; }
+    }).filter(Boolean));
+    const warnings = [];
+    if (results.length === 0) warnings.push('Search returned no results. Refine the query with more specific terms or ask the user for a source URL.');
+    if (results.length > 0 && usable.length === 0) warnings.push('Search returned results without usable URLs or snippets. Do not loop on the same query; refine it or fetch a known URL.');
+    if (usable.length === 1) warnings.push('Search returned only one usable result. Fetch that page and, if the answer depends on freshness, run one refined search for corroboration.');
+    if (usable.length > 1 && hosts.size === 1) warnings.push('Search results all came from one host. Fetch the best page and run one refined search for an independent source if needed.');
+    return {
+        resultCount: results.length,
+        usableResultCount: usable.length,
+        uniqueHostCount: hosts.size,
+        ok: usable.length > 0,
+        warnings,
+    };
+}
+
+function parsePositiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+    const parsed = parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.max(min, Math.min(max, parsed));
+}
+
 // --- Agent config (updated via POST /api/agent/config) ---
 let agentMaxSteps = parseInt(process.env.AGENT_MAX_STEPS || '15', 10);
 let agentMaxComputeSteps = parseInt(process.env.AGENT_MAX_COMPUTE_STEPS || '120', 10);
 let agentExecutionPolicy = ['pause_on_limit', 'run_until_blocked'].includes(process.env.AGENT_EXECUTION_POLICY)
     ? process.env.AGENT_EXECUTION_POLICY
     : 'run_until_blocked';
+let agentModelTimeouts = {
+    connectionMs: parsePositiveInt(process.env.AGENT_MODEL_CONNECTION_TIMEOUT_MS, 10000, { max: 600000 }),
+    firstTokenMs: parsePositiveInt(process.env.AGENT_MODEL_FIRST_TOKEN_TIMEOUT_MS, 120000, { max: 1800000 }),
+    inactivityMs: parsePositiveInt(process.env.AGENT_MODEL_INACTIVITY_TIMEOUT_MS, 60000, { max: 1800000 }),
+    maxStepMs: parsePositiveInt(process.env.AGENT_MODEL_MAX_STEP_MS, 300000, { max: 3600000 }),
+};
+let agentToolTimeouts = {
+    runShellMs: parsePositiveInt(process.env.AGENT_RUN_SHELL_TIMEOUT_MS, 120000, { max: 3600000 }),
+    runCodeJsMs: parsePositiveInt(process.env.AGENT_RUN_CODE_JS_TIMEOUT_MS, 10000, { max: 600000 }),
+    runCodePythonMs: parsePositiveInt(process.env.AGENT_RUN_CODE_PYTHON_TIMEOUT_MS, 60000, { max: 1800000 }),
+};
 
 // When AGENT_ALLOWED_DIRS is unset, default to the user's home directory as a safe boundary.
 // File tools will only operate inside these directories unless explicitly expanded via env/config.
@@ -565,7 +608,15 @@ const AGENT_TOOLS = [
         function: {
             name: 'runCode',
             description: 'Execute a code snippet. Supports "js" (Node.js vm sandbox) and "python" (subprocess).',
-            parameters: { type: 'object', properties: { lang: { type: 'string', description: '"js" or "python"' }, code: { type: 'string', description: 'Code to execute' } }, required: ['lang', 'code'] }
+            parameters: {
+                type: 'object',
+                properties: {
+                    lang: { type: 'string', description: '"js" or "python"' },
+                    code: { type: 'string', description: 'Code to execute' },
+                    timeoutMs: { type: 'integer', description: 'Optional execution timeout in milliseconds, capped by agent settings' }
+                },
+                required: ['lang', 'code']
+            }
         }
     },
     {
@@ -573,7 +624,14 @@ const AGENT_TOOLS = [
         function: {
             name: 'runShell',
             description: 'Run a shell command on the local machine. Use with caution.',
-            parameters: { type: 'object', properties: { cmd: { type: 'string', description: 'Shell command to execute' } }, required: ['cmd'] }
+            parameters: {
+                type: 'object',
+                properties: {
+                    cmd: { type: 'string', description: 'Shell command to execute' },
+                    timeoutMs: { type: 'integer', description: 'Optional command timeout in milliseconds, capped by agent settings' }
+                },
+                required: ['cmd']
+            }
         }
     },
     {
@@ -841,7 +899,18 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
                 const result = await fetchTavilyResults(query, { time_range: heuristicTimeRange(query) });
                 if (!result) return { result: 'No results', error: true };
                 if (result._configError) return { result: result._configError, error: true };
-                console.log(`[Agent/webSearch] Got ${result.results?.length || 0} result(s)`);
+                const quality = evaluateSearchQuality(result);
+                result._quality = quality;
+                if (quality.warnings.length) {
+                    result._agentGuidance = quality.warnings.join(' ');
+                }
+                if (!quality.ok) {
+                    return {
+                        result: `Search quality failed: ${quality.warnings.join(' ')}\nRaw response: ${JSON.stringify(result).slice(0, 2000)}`,
+                        error: true,
+                    };
+                }
+                console.log(`[Agent/webSearch] Got ${result.results?.length || 0} result(s), ${quality.usableResultCount} usable`);
                 return { result: JSON.stringify(result).slice(0, 3000) };
             }
             case 'fetchPage': {
@@ -1130,18 +1199,21 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
             case 'runCode': {
                 const approved = await requestPermission(res, 'runCode', { lang: args.lang, code: args.code }, 'high', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                res.write(JSON.stringify({ type: 'tool_running', name: 'runCode', preview: `${args.lang}:\n${args.code}` }) + '\n');
-                return await runCodeTool(args.lang, args.code);
+                const defaultTimeout = args.lang === 'python' ? agentToolTimeouts.runCodePythonMs : agentToolTimeouts.runCodeJsMs;
+                const timeoutMs = parsePositiveInt(args.timeoutMs, defaultTimeout, { max: defaultTimeout });
+                res.write(JSON.stringify({ type: 'tool_running', name: 'runCode', preview: `${args.lang}:\n${args.code}`, timeoutMs }) + '\n');
+                return await runCodeTool(args.lang, args.code, timeoutMs);
             }
             case 'runShell': {
                 // runShell respects agentToolPermissions (default: 'disabled').
                 // When enabled, permission level 'confirm' is strongly recommended.
                 const shellCwd = workspaceRoot ? ensureAllowedPath(workspaceRoot) : undefined;
                 validateShellCommandForWorkspace(args.cmd, shellCwd);
-                const approved = await requestPermission(res, 'runShell', { cmd: args.cmd, cwd: shellCwd }, 'critical', sessionPermissions);
+                const timeoutMs = parsePositiveInt(args.timeoutMs, agentToolTimeouts.runShellMs, { max: agentToolTimeouts.runShellMs });
+                const approved = await requestPermission(res, 'runShell', { cmd: args.cmd, cwd: shellCwd, timeoutMs }, 'critical', sessionPermissions);
                 if (!approved) return { result: 'User denied', error: true };
-                res.write(JSON.stringify({ type: 'tool_running', name: 'runShell', preview: args.cmd, cwd: shellCwd || process.cwd() }) + '\n');
-                return await runShellTool(args.cmd, shellCwd);
+                res.write(JSON.stringify({ type: 'tool_running', name: 'runShell', preview: args.cmd, cwd: shellCwd || process.cwd(), timeoutMs }) + '\n');
+                return await runShellTool(args.cmd, shellCwd, timeoutMs);
             }
             case 'saveMemory': {
                 const text = String(args.text || '').trim();
@@ -1286,7 +1358,7 @@ async function executeTool(res, name, args, sessionPermissions, model, backend, 
 // environments. For production use, replace vm-based execution with a hardened
 // alternative such as a separate restricted child process, a containerised worker,
 // or an external isolated service (e.g., a Docker-based code runner).
-async function runCodeTool(lang, code) {
+async function runCodeTool(lang, code, timeoutMs) {
     if (lang === 'js') {
         try {
             const vm = require('vm');
@@ -1295,30 +1367,58 @@ async function runCodeTool(lang, code) {
             // See warning above before enabling this tool in production.
             const sandbox = { console: { log: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push('[err] ' + a.join(' ')) }, Math, JSON, parseFloat, parseInt, isNaN, isFinite };
             vm.createContext(sandbox);
-            vm.runInContext(code, sandbox, { timeout: 10000 });
+            vm.runInContext(code, sandbox, { timeout: parsePositiveInt(timeoutMs, agentToolTimeouts.runCodeJsMs, { max: agentToolTimeouts.runCodeJsMs }) });
             return { result: logs.join('\n') || '(no output)' };
         } catch (e) { return { result: 'Error: ' + e.message, error: true }; }
     } else if (lang === 'python') {
         return new Promise((resolve) => {
             let out = '', err = '';
-            const proc = spawn('python', ['-c', code], { timeout: 30000 });
+            const effectiveTimeout = parsePositiveInt(timeoutMs, agentToolTimeouts.runCodePythonMs, { max: agentToolTimeouts.runCodePythonMs });
+            let timedOut = false;
+            const proc = spawn('python', ['-c', code], { timeout: effectiveTimeout });
             proc.stdout.on('data', d => { out += d; });
             proc.stderr.on('data', d => { err += d; });
-            proc.on('close', () => resolve({ result: (out + err).slice(0, 4000) || '(no output)' }));
             proc.on('error', e => resolve({ result: 'Error: ' + e.message, error: true }));
+            proc.on('spawn', () => {
+                setTimeout(() => {
+                    if (proc.exitCode == null) timedOut = true;
+                }, effectiveTimeout).unref?.();
+            });
+            proc.on('close', (code, signal) => {
+                const output = (out + err).slice(0, 4000) || '(no output)';
+                if (timedOut || signal === 'SIGTERM') {
+                    resolve({ result: `Command timed out after ${effectiveTimeout} ms.\n${output}`, error: true });
+                } else {
+                    resolve({ result: output, error: code !== 0 });
+                }
+            });
         });
     }
     return { result: 'Unsupported language: ' + lang, error: true };
 }
 
-async function runShellTool(cmd, cwd) {
+async function runShellTool(cmd, cwd, timeoutMs) {
     return new Promise((resolve) => {
         let out = '', err = '';
-        const proc = spawn(cmd, { shell: true, timeout: 30000, cwd: cwd || process.cwd() });
+        const effectiveTimeout = parsePositiveInt(timeoutMs, agentToolTimeouts.runShellMs, { max: agentToolTimeouts.runShellMs });
+        let timedOut = false;
+        const proc = spawn(cmd, { shell: true, timeout: effectiveTimeout, cwd: cwd || process.cwd() });
         proc.stdout.on('data', d => { out += d; });
         proc.stderr.on('data', d => { err += d; });
-        proc.on('close', () => resolve({ result: (out + err).slice(0, 4000) || '(no output)' }));
         proc.on('error', e => resolve({ result: 'Error: ' + e.message, error: true }));
+        proc.on('spawn', () => {
+            setTimeout(() => {
+                if (proc.exitCode == null) timedOut = true;
+            }, effectiveTimeout).unref?.();
+        });
+        proc.on('close', (code, signal) => {
+            const output = (out + err).slice(0, 4000) || '(no output)';
+            if (timedOut || signal === 'SIGTERM') {
+                resolve({ result: `Command timed out after ${effectiveTimeout} ms.\n${output}`, error: true });
+            } else {
+                resolve({ result: output, error: code !== 0 });
+            }
+        });
     });
 }
 
@@ -1346,6 +1446,8 @@ function handleAgentConfigGet(req, res) {
         maxSteps: agentMaxSteps,
         maxComputeSteps: agentMaxComputeSteps,
         executionPolicy: agentExecutionPolicy,
+        modelTimeouts: agentModelTimeouts,
+        toolTimeouts: agentToolTimeouts,
         allowedDirs: agentAllowedDirs,
         blockedPaths: agentBlockedPaths,
         toolPermissions: agentToolPermissions
@@ -1354,11 +1456,26 @@ function handleAgentConfigGet(req, res) {
 
 // POST /api/agent/config — update agent config
 function handleAgentConfigPost(req, res) {
-    const { maxSteps, maxComputeSteps, executionPolicy, allowedDirs, blockedPaths, toolPermissions } = req.body || {};
+    const { maxSteps, maxComputeSteps, executionPolicy, modelTimeouts, toolTimeouts, allowedDirs, blockedPaths, toolPermissions } = req.body || {};
     if (maxSteps !== undefined) agentMaxSteps = Math.max(1, Math.min(50, parseInt(maxSteps, 10) || 15));
     if (maxComputeSteps !== undefined) agentMaxComputeSteps = Math.max(1, Math.min(500, parseInt(maxComputeSteps, 10) || 120));
     if (executionPolicy !== undefined && ['pause_on_limit', 'run_until_blocked'].includes(executionPolicy)) {
         agentExecutionPolicy = executionPolicy;
+    }
+    if (modelTimeouts && typeof modelTimeouts === 'object') {
+        agentModelTimeouts = {
+            connectionMs: parsePositiveInt(modelTimeouts.connectionMs, agentModelTimeouts.connectionMs, { max: 600000 }),
+            firstTokenMs: parsePositiveInt(modelTimeouts.firstTokenMs, agentModelTimeouts.firstTokenMs, { max: 1800000 }),
+            inactivityMs: parsePositiveInt(modelTimeouts.inactivityMs, agentModelTimeouts.inactivityMs, { max: 1800000 }),
+            maxStepMs: parsePositiveInt(modelTimeouts.maxStepMs, agentModelTimeouts.maxStepMs, { max: 3600000 }),
+        };
+    }
+    if (toolTimeouts && typeof toolTimeouts === 'object') {
+        agentToolTimeouts = {
+            runShellMs: parsePositiveInt(toolTimeouts.runShellMs, agentToolTimeouts.runShellMs, { max: 3600000 }),
+            runCodeJsMs: parsePositiveInt(toolTimeouts.runCodeJsMs, agentToolTimeouts.runCodeJsMs, { max: 600000 }),
+            runCodePythonMs: parsePositiveInt(toolTimeouts.runCodePythonMs, agentToolTimeouts.runCodePythonMs, { max: 1800000 }),
+        };
     }
     if (Array.isArray(allowedDirs)) {
         const validated = allowedDirs.map(s => String(s).trim()).filter(Boolean);
@@ -1383,6 +1500,8 @@ function handleAgentConfigPost(req, res) {
 function getAgentMaxSteps() { return agentMaxSteps; }
 function getAgentMaxComputeSteps() { return agentMaxComputeSteps; }
 function getAgentExecutionPolicy() { return agentExecutionPolicy; }
+function getAgentModelTimeouts() { return { ...agentModelTimeouts }; }
+function getAgentToolTimeouts() { return { ...agentToolTimeouts }; }
 // Getter for agentAllowedDirs (array — live reference, but getter provided for consistency)
 function getAgentAllowedDirs() { return agentAllowedDirs; }
 // Getter for agentBlockedPaths
@@ -1399,6 +1518,7 @@ module.exports = {
     PLAN_GATED_TOOLS,
     buildToolPlan: getPlanToolEntry,
     buildExecutionPlan,
+    evaluateSearchQuality,
     abortPendingInteractionsForRun,
     generatePermissionId,
     isPathAllowed,
@@ -1420,6 +1540,8 @@ module.exports = {
     getAgentMaxSteps,
     getAgentMaxComputeSteps,
     getAgentExecutionPolicy,
+    getAgentModelTimeouts,
+    getAgentToolTimeouts,
     getAgentAllowedDirs,
     getAgentBlockedPaths,
     createToolCache,

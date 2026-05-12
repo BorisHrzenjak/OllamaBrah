@@ -287,6 +287,44 @@ test('getAgentMaxSteps returns a positive integer', () => {
     assert(steps > 0);
 });
 
+test('agent config exposes model and tool timeout settings', () => {
+    const modelTimeouts = tools.getAgentModelTimeouts();
+    const toolTimeouts = tools.getAgentToolTimeouts();
+    assert(Number.isInteger(modelTimeouts.firstTokenMs));
+    assert(modelTimeouts.firstTokenMs > 0);
+    assert(Number.isInteger(toolTimeouts.runShellMs));
+    assert(toolTimeouts.runShellMs >= 120000);
+});
+
+test('agent config POST updates timeout controls', () => {
+    const res = {
+        json(payload) {
+            this.payload = payload;
+            return this;
+        },
+    };
+    tools.handleAgentConfigPost({
+        body: {
+            modelTimeouts: { connectionMs: 9000, firstTokenMs: 130000, inactivityMs: 70000, maxStepMs: 310000 },
+            toolTimeouts: { runShellMs: 180000, runCodeJsMs: 12000, runCodePythonMs: 90000 },
+        }
+    }, res);
+    assert.strictEqual(res.payload.ok, true);
+    assert.strictEqual(tools.getAgentModelTimeouts().firstTokenMs, 130000);
+    assert.strictEqual(tools.getAgentToolTimeouts().runShellMs, 180000);
+});
+
+test('runShell tool definition has optional timeoutMs', () => {
+    const t = tools.AGENT_TOOLS.find(t => t.function.name === 'runShell');
+    assert(t.function.parameters.properties.timeoutMs);
+});
+
+test('evaluateSearchQuality rejects URL-less search output', () => {
+    const quality = tools.evaluateSearchQuality({ results: [{ title: 'No URL', content: 'snippet' }] });
+    assert.strictEqual(quality.ok, false);
+    assert(quality.warnings.some(w => /usable URLs/i.test(w)));
+});
+
 test('getAgentAllowedDirs returns a non-empty array', () => {
     const dirs = tools.getAgentAllowedDirs();
     assert(Array.isArray(dirs));

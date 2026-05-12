@@ -53,7 +53,7 @@ Problem: agent mode uses non-streaming model calls with a hard 120s timeout. Loc
   - inactivity timeout
   - max step duration
 - [x] Make these values configurable through environment variables.
-- [ ] Expose agent timeout controls through Settings.
+- [x] Expose agent timeout controls through Settings.
 - [x] Fix incorrect timeout messages that still say "30s" while using 120s.
 - [x] Persist timeout details into `run.json` and `events.ndjson`.
 - [x] Add tests for timeout classification and resumability.
@@ -87,17 +87,17 @@ Problem: if port `3456` is already occupied, the app can reuse an old proxy proc
 
 ## Important Reliability Upgrades
 
-- [ ] Add model capability detection for agent mode:
+- [x] Add model capability detection for agent mode:
   - supports tool calls
   - supports structured JSON tool arguments
   - reasoning model likely
   - recommended agent defaults
-- [ ] Warn or disable agent mode for models that do not reliably support tools.
-- [ ] Add a "final answer required" guard after tool execution so the run does not stop after tool chatter.
-- [ ] Improve web search quality gates so the agent does not loop through bad search results without progress.
-- [ ] Increase or configure `runShell` timeout beyond the current 30s default.
-- [ ] Add command timeout controls per tool instead of one hardcoded shell timeout.
-- [ ] Add run health statuses:
+- [x] Warn or disable agent mode for models that do not reliably support tools.
+- [x] Add a "final answer required" guard after tool execution so the run does not stop after tool chatter.
+- [x] Improve web search quality gates so the agent does not loop through bad search results without progress.
+- [x] Increase or configure `runShell` timeout beyond the current 30s default.
+- [x] Add command timeout controls per tool instead of one hardcoded shell timeout.
+- [x] Add run health statuses:
   - `running`
   - `waiting_permission`
   - `paused_empty_response`
@@ -105,15 +105,15 @@ Problem: if port `3456` is already occupied, the app can reuse an old proxy proc
   - `paused_timeout`
   - `failed_backend`
   - `completed`
-- [ ] Add a one-click "continue with safer prompt" action for paused/empty/reasoning-only runs.
+- [x] Add a one-click "continue with safer prompt" action for paused/empty/reasoning-only runs.
 
 ## Dependency and Platform Upgrades
 
-- [ ] Upgrade small low-risk packages first:
+- [x] Upgrade small low-risk packages first:
   - `@llamaindex/liteparse`
   - `diff`
   - `dotenv`
-- [ ] Plan larger upgrades separately with smoke testing:
+- [x] Plan larger upgrades separately with smoke testing:
   - Electron
   - Electron Builder
   - Express 5
@@ -121,6 +121,8 @@ Problem: if port `3456` is already occupied, the app can reuse an old proxy proc
   - `electron-store`
   - `pdf-parse`
   - `vectra`
+  - Defer these to a dedicated branch/release because they affect runtime packaging, native modules, routing semantics, and document/vector parsing.
+  - Upgrade one family at a time, run `npm test`, then run the Windows app smoke checklist below before merging.
 - [ ] Before major Electron upgrades, verify:
   - app startup
   - proxy startup/shutdown
@@ -131,7 +133,7 @@ Problem: if port `3456` is already occupied, the app can reuse an old proxy proc
 
 ## Verification Checklist
 
-- [ ] `npm test`
+- [x] `npm test`
 - [ ] Manual normal chat test with an Ollama local model.
 - [ ] Manual normal chat test with llama.cpp backend.
 - [ ] Agent test: simple final answer, no tools.
