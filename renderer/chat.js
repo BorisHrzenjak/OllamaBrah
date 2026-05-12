@@ -1015,11 +1015,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         root.className = 'agent-run-sections';
 
         const sections = {
-            final: createAgentRunSection('Answer', workspaceRoot ? `Workspace: ${workspaceRoot}` : 'Workspace: Not set', { autoExpand: true }),
             timeline: createAgentRunSection('Timeline', 'Reasoning, approvals, and tool activity', { visible: true }),
             files: createAgentRunSection('Files', 'Files changed during this run'),
             diffs: createAgentRunSection('Diffs', 'Patch and diff output when available'),
             shell: createAgentRunSection('Shell', 'Command execution and output'),
+            final: createAgentRunSection('Answer', workspaceRoot ? `Workspace: ${workspaceRoot}` : 'Workspace: Not set', { expanded: true, autoExpand: true }),
         };
 
         Object.values(sections).forEach(section => root.appendChild(section.section));
