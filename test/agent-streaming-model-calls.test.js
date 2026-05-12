@@ -83,10 +83,21 @@ function readBody(req) {
             [{ role: 'user', content: 'hello' }],
             [],
             'stream-model',
-            { onStream: delta => ollamaDeltas.push(delta) }
+            {
+                options: { temperature: 0.15, top_p: 0.8, num_predict: 333, num_ctx: 8192 },
+                think: true,
+                onStream: delta => ollamaDeltas.push(delta),
+            }
         );
         const ollamaDetails = extractResponseDetails(ollamaResponse, 'ollama');
         assert.strictEqual(ollamaRequest.stream, true);
+        assert.strictEqual(ollamaRequest.think, true);
+        assert.deepStrictEqual(ollamaRequest.options, {
+            temperature: 0.15,
+            top_p: 0.8,
+            num_predict: 333,
+            num_ctx: 8192,
+        });
         assert.strictEqual(ollamaDetails.content, 'Hello');
         assert.strictEqual(ollamaDetails.thinking, 'plan ');
         assert.deepStrictEqual(ollamaDeltas.filter(d => d.type === 'content_delta').map(d => d.text), ['Hel', 'lo']);
@@ -97,10 +108,19 @@ function readBody(req) {
             [{ role: 'user', content: 'read todo' }],
             [{ type: 'function', function: { name: 'readFile' } }],
             'local.gguf',
-            { onStream: delta => llamaDeltas.push(delta) }
+            {
+                options: { temperature: 0.25, top_p: 0.7, num_predict: 444, num_ctx: 16384, repeat_penalty: 1.05, seed: 7 },
+                onStream: delta => llamaDeltas.push(delta),
+            }
         );
         const llamaDetails = extractResponseDetails(llamaResponse, 'llamacpp');
         assert.strictEqual(llamaRequest.stream, true);
+        assert.strictEqual(llamaRequest.max_tokens, 444);
+        assert.strictEqual(llamaRequest.temperature, 0.25);
+        assert.strictEqual(llamaRequest.top_p, 0.7);
+        assert.strictEqual(llamaRequest.repeat_penalty, 1.05);
+        assert.strictEqual(llamaRequest.seed, 7);
+        assert.strictEqual(llamaRequest.num_ctx, undefined);
         assert.strictEqual(llamaDetails.content, 'Result');
         assert.strictEqual(llamaDetails.thinking, 'think ');
         assert.strictEqual(llamaDetails.toolCalls.length, 1);

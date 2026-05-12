@@ -11,6 +11,22 @@ function sanitizeOptions(options = {}) {
     return out;
 }
 
+const DEFAULT_AGENT_NUM_PREDICT = 1024;
+
+function getDefaultAgentNumPredict() {
+    const configured = parseInt(process.env.AGENT_MODEL_DEFAULT_NUM_PREDICT || '', 10);
+    return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_AGENT_NUM_PREDICT;
+}
+
+function withAgentDefaultTokenBudget(options = {}) {
+    const clean = sanitizeOptions(options);
+    if (clean.num_predict !== undefined || clean.max_tokens !== undefined) return clean;
+    return {
+        ...clean,
+        num_predict: getDefaultAgentNumPredict(),
+    };
+}
+
 function mapOptionsForLlamaCpp(options = {}) {
     const clean = sanitizeOptions(options);
     const mapped = {};
@@ -20,6 +36,7 @@ function mapOptionsForLlamaCpp(options = {}) {
     if (clean.repeat_penalty !== undefined) mapped.repeat_penalty = clean.repeat_penalty;
     if (clean.seed !== undefined) mapped.seed = clean.seed;
     if (clean.num_predict !== undefined) mapped.max_tokens = clean.num_predict;
+    if (clean.max_tokens !== undefined) mapped.max_tokens = clean.max_tokens;
     return mapped;
 }
 
@@ -33,13 +50,14 @@ function toOpenAiMessages(messages = []) {
 }
 
 function buildAgentModelRequestBody({ backend = 'ollama', model, messages = [], tools = [], options = {}, think } = {}) {
+    const modelOptions = withAgentDefaultTokenBudget(options);
     if (backend === 'llamacpp') {
         return compactObject({
             model,
             messages: toOpenAiMessages(messages),
             tools,
             stream: true,
-            ...mapOptionsForLlamaCpp(options),
+            ...mapOptionsForLlamaCpp(modelOptions),
         });
     }
 
@@ -49,7 +67,7 @@ function buildAgentModelRequestBody({ backend = 'ollama', model, messages = [], 
         tools,
         stream: true,
         think: think === true,
-        options: Object.keys(sanitizeOptions(options)).length ? sanitizeOptions(options) : undefined,
+        options: Object.keys(modelOptions).length ? modelOptions : undefined,
     });
 }
 
@@ -266,8 +284,10 @@ module.exports = {
     buildModelCallErrorDiagnostics,
     buildModelStepDiagnostics,
     extractResponseDetails,
+    getDefaultAgentNumPredict,
     mapOptionsForLlamaCpp,
     sanitizeOptions,
     summarizeDiagnostics,
     summarizeRequestBody,
+    withAgentDefaultTokenBudget,
 };

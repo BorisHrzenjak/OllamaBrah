@@ -39,6 +39,22 @@ try {
     const completed = agentRuns.createRun({ model: 'test-model' });
     agentRuns.updateRun(completed.id, { status: 'completed' });
 
+    const parameterized = agentRuns.createRun({
+        model: 'parameter-model',
+        backend: 'ollama',
+        messages: [{ role: 'user', content: 'use these params' }],
+        options: { temperature: 0.2, top_p: 0.75, num_predict: 321, num_ctx: 4096 },
+        think: true,
+    });
+    const parameterizedAfter = agentRuns.getRun(parameterized.id);
+    assert.deepStrictEqual(parameterizedAfter.requestBody.options, {
+        temperature: 0.2,
+        top_p: 0.75,
+        num_predict: 321,
+        num_ctx: 4096,
+    });
+    assert.strictEqual(parameterizedAfter.requestBody.think, true);
+
     const recovered = agentRuns.recoverInterruptedRuns('Recovered in test');
     const recoveredIds = new Set(recovered.map(run => run.id));
 

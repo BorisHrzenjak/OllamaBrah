@@ -62,14 +62,14 @@ Problem: agent mode uses non-streaming model calls with a hard 120s timeout. Loc
 
 Problem: normal chat sends model options such as `temperature`, `top_p`, `num_predict`, `num_ctx`, and `think`, but agent mode does not pass them through.
 
-- [ ] Include model options in the `agentBody` created in `renderer/chat.js`.
-- [ ] Store those options in the durable run request body.
-- [ ] Pass options into `callOllamaWithTools` and `callLlamaCppWithTools`.
-- [ ] Map options correctly per backend:
+- [x] Include model options in the `agentBody` created in `renderer/chat.js`.
+- [x] Store those options in the durable run request body.
+- [x] Pass options into `callOllamaWithTools` and `callLlamaCppWithTools`.
+- [x] Map options correctly per backend:
   - Ollama: `options.num_predict`, `options.num_ctx`, `think`
   - llama.cpp: `max_tokens`, context handled by server profile, supported sampling args
-- [ ] Add a conservative default max token budget for agent steps if the user has no explicit setting.
-- [ ] Add tests proving agent requests preserve and apply model settings.
+- [x] Add a conservative default max token budget for agent steps if the user has no explicit setting.
+- [x] Add tests proving agent requests preserve and apply model settings.
 
 ## 5. Prevent Stale Proxy Mismatches
 

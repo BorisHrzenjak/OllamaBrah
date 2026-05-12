@@ -7,6 +7,7 @@ const {
     buildModelCallErrorDiagnostics,
     buildModelStepDiagnostics,
     extractResponseDetails,
+    getDefaultAgentNumPredict,
     summarizeDiagnostics,
 } = require('../proxy/agent-diagnostics');
 
@@ -106,6 +107,14 @@ try {
     assert.strictEqual(ollamaBody.think, true);
     assert.deepStrictEqual(ollamaBody.options, { temperature: 0.15, top_p: 0.8, num_predict: 256, num_ctx: 8192 });
 
+    const ollamaDefaultBudgetBody = buildAgentModelRequestBody({
+        backend: 'ollama',
+        model: 'qwen3',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+    });
+    assert.strictEqual(ollamaDefaultBudgetBody.options.num_predict, getDefaultAgentNumPredict());
+
     const llamaBody = buildAgentModelRequestBody({
         backend: 'llamacpp',
         model: 'local.gguf',
@@ -118,6 +127,17 @@ try {
     assert.strictEqual(llamaBody.temperature, 0.25);
     assert.strictEqual(llamaBody.repeat_penalty, 1.05);
     assert.strictEqual(llamaBody.messages[0].tool_call_id, 'call_1');
+
+    const llamaDefaultBudgetBody = buildAgentModelRequestBody({
+        backend: 'llamacpp',
+        model: 'local.gguf',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        options: { temperature: 0.2, num_ctx: 16384 },
+    });
+    assert.strictEqual(llamaDefaultBudgetBody.max_tokens, getDefaultAgentNumPredict());
+    assert.strictEqual(llamaDefaultBudgetBody.temperature, 0.2);
+    assert.strictEqual(llamaDefaultBudgetBody.num_ctx, undefined, 'llama.cpp request body should not pass num_ctx per request');
 
     const fixtureRoot = path.join(__dirname, 'fixtures', 'agent-runs');
     const fixtureCases = fs.readdirSync(fixtureRoot, { withFileTypes: true }).filter(entry => entry.isDirectory());
