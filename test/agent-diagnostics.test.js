@@ -121,11 +121,13 @@ try {
         messages: [{ role: 'tool', tool_call_id: 'call_1', content: 'result' }],
         tools: [],
         options: { temperature: 0.25, top_p: 0.7, num_predict: 128, repeat_penalty: 1.05 },
+        think: false,
     });
     assert.strictEqual(llamaBody.stream, true);
     assert.strictEqual(llamaBody.max_tokens, 128);
     assert.strictEqual(llamaBody.temperature, 0.25);
     assert.strictEqual(llamaBody.repeat_penalty, 1.05);
+    assert.deepStrictEqual(llamaBody.chat_template_kwargs, { enable_thinking: false });
     assert.strictEqual(llamaBody.messages[0].tool_call_id, 'call_1');
 
     const llamaDefaultBudgetBody = buildAgentModelRequestBody({

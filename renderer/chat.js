@@ -7529,6 +7529,8 @@ async function replayAgentRun(run, { persistResult = false } = {}) {
             const p = modelData.params || {};
             if (currentModelBackend !== 'llamacpp') {
                 requestBody.think = p.think === true;
+            } else if (typeof p.think === 'boolean') {
+                requestBody.think = p.think;
             }
             const options = {};
             if (p.temperature != null) options.temperature = p.temperature;

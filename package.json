@@ -1,12 +1,12 @@
 {
   "name": "ollama-brah",
-  "version": "1.20.0",
+  "version": "1.20.1",
   "description": "Ollama Brah - Standalone Electron chat app for local Ollama models",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --win",
-    "test": "node test/tools.test.js && node test/conversation-brief.test.js && node test/agent-runs.test.js && node test/agent-run-manager.test.js && node test/agent-run-resume.test.js && node test/agent-empty-response.test.js && node test/agent-reasoning-only-response.test.js && node test/agent-model-timeout.test.js && node test/agent-streaming-model-calls.test.js && node test/agent-diagnostics.test.js && node test/agent-capabilities.test.js && node test/proxy-version.test.js",
+    "test": "node test/tools.test.js && node test/conversation-brief.test.js && node test/agent-runs.test.js && node test/agent-run-manager.test.js && node test/agent-run-resume.test.js && node test/agent-empty-response.test.js && node test/agent-reasoning-only-response.test.js && node test/agent-model-timeout.test.js && node test/agent-streaming-model-calls.test.js && node test/llamacpp-chat-timeout.test.js && node test/agent-diagnostics.test.js && node test/agent-capabilities.test.js && node test/proxy-version.test.js",
     "test:phase5-diff": "node test/phase5-diff-preview.test.js"
   },
   "build": {

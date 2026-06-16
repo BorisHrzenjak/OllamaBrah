@@ -57,6 +57,7 @@ function buildAgentModelRequestBody({ backend = 'ollama', model, messages = [], 
             messages: toOpenAiMessages(messages),
             tools,
             stream: true,
+            chat_template_kwargs: typeof think === 'boolean' ? { enable_thinking: think === true } : undefined,
             ...mapOptionsForLlamaCpp(modelOptions),
         });
     }

@@ -1029,17 +1029,28 @@ async function handleLlamacppChat(req, res) {
     if (opts.seed != null) openaiBody.seed = opts.seed;
     if (opts.num_predict != null) openaiBody.max_tokens = opts.num_predict;
     if (opts.repeat_penalty != null) openaiBody.repeat_penalty = opts.repeat_penalty;
+    if (typeof req.body?.think === 'boolean') {
+        openaiBody.chat_template_kwargs = { enable_thinking: req.body.think === true };
+    }
 
     const reqStartTime = Date.now();
     let firstResponseMs = null; // wall-clock ms when first response (non-thinking) token arrives
+    const modelBaseName = path.basename(llamaCurrentModel || requestedModelPath || 'unknown');
+    const partial = { content: '', thinking: '', toolCalls: [] };
+    const timeoutState = createStreamingTimeouts({
+        backend: 'llama.cpp',
+        timeouts: getLlamaCppChatTimeoutConfig(),
+        partial,
+    });
 
     try {
         const upstream = await fetch(`http://127.0.0.1:${llamaPort}/v1/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(openaiBody),
-            signal: AbortSignal.timeout(120000)
+            signal: timeoutState.signal
         });
+        timeoutState.onConnected();
 
         if (!upstream.ok) {
             const errText = await upstream.text().catch(() => '');
@@ -1058,7 +1069,6 @@ async function handleLlamacppChat(req, res) {
         try {
             res.write(JSON.stringify({ _contextBreakdown: llamaCppBreakdown }) + '\n');
         } catch (_e) { /* non-critical */ }
-        const modelBaseName = path.basename(llamaCurrentModel || 'unknown');
         const reader = upstream.body.getReader();
         const decoder = new TextDecoder();
         let buf = '';
@@ -1070,6 +1080,7 @@ async function handleLlamacppChat(req, res) {
         while (true) {
             const { value, done } = await reader.read();
             if (done) break;
+            timeoutState.onData();
             buf += decoder.decode(value, { stream: true });
             const lines = buf.split('\n');
             buf = lines.pop();
@@ -1079,6 +1090,10 @@ async function handleLlamacppChat(req, res) {
                 if (data === '[DONE]') {
                     // Emit final done chunk with stats
                     const doneChunk = { model: modelBaseName, done: true };
+                    if (dbgFinishReason) {
+                        doneChunk.done_reason = dbgFinishReason;
+                        doneChunk.doneReason = dbgFinishReason;
+                    }
                     if (usageData) {
                         doneChunk.eval_count = usageData.completion_tokens;
                         doneChunk.prompt_eval_count = usageData.prompt_tokens;
@@ -1109,6 +1124,8 @@ async function handleLlamacppChat(req, res) {
                     if (reasoning) dbgThinkTokens++;
                     if (rawContent) dbgContentTokens++;
                     if (finishReason) dbgFinishReason = finishReason;
+                    if (reasoning) partial.thinking += reasoning;
+                    if (rawContent) partial.content += rawContent;
 
                     // Track when the first real response token (not thinking) arrives for timing
                     if (rawContent && !hasActiveThinking && firstResponseMs === null) {
@@ -1119,9 +1136,15 @@ async function handleLlamacppChat(req, res) {
                     // thinking tokens into the thinking box in real time, matching Ollama behaviour.
                     const msg = { role: 'assistant', content: rawContent };
                     if (hasActiveThinking) msg.thinking = reasoning;
-                    if (hitContextLimit) msg.content += '\n\n⚠️ *Response cut off: context window full. Increase Context Size in Settings → ⚡ llama.cpp.*';
+                    if (hitContextLimit) {
+                        msg.content += '\n\n*Response cut off: llama.cpp hit the output token limit. Increase Settings -> Model Parameters -> Max Tokens, or ask for a shorter answer.*';
+                    }
 
                     const out = { model: modelBaseName, message: msg, done: isDone };
+                    if (finishReason) {
+                        out.done_reason = finishReason;
+                        out.doneReason = finishReason;
+                    }
                     res.write(JSON.stringify(out) + '\n');
                 } catch (e) { /* skip malformed chunk */ }
             }
@@ -1133,9 +1156,37 @@ async function handleLlamacppChat(req, res) {
         }
         res.end();
     } catch (err) {
+        const timeoutErr = getStreamingTimeoutError(timeoutState, err);
+        if (timeoutErr) {
+            console.error('[llama.cpp] Chat timeout:', timeoutErr.message);
+            if (!res.headersSent) {
+                res.status(504).json({
+                    error: timeoutErr.message,
+                    done_reason: timeoutErr.timeoutPhase,
+                    timeoutDetails: timeoutErr.timeoutDetails,
+                });
+            } else {
+                writeLlamaCppChatTerminalChunk(res, buildLlamaCppChatTerminalChunk({
+                    model: modelBaseName,
+                    error: timeoutErr,
+                }));
+                res.end();
+            }
+            return;
+        }
+
         console.error('[llama.cpp] Chat error:', err);
         if (!res.headersSent) res.status(500).json({ error: err.message });
-        else res.end();
+        else {
+            writeLlamaCppChatTerminalChunk(res, buildLlamaCppChatTerminalChunk({
+                model: modelBaseName,
+                error: err,
+                doneReason: 'error',
+            }));
+            res.end();
+        }
+    } finally {
+        timeoutState.clear();
     }
 }
 
@@ -1254,6 +1305,15 @@ function getAgentModelTimeoutConfig(overrides = {}) {
     };
 }
 
+function getLlamaCppChatTimeoutConfig(overrides = {}) {
+    return {
+        connectionMs: parsePositiveInt(overrides.connectionMs ?? process.env.LLAMACPP_CHAT_CONNECTION_TIMEOUT_MS, 10000),
+        firstTokenMs: parsePositiveInt(overrides.firstTokenMs ?? process.env.LLAMACPP_CHAT_FIRST_TOKEN_TIMEOUT_MS, 180000),
+        inactivityMs: parsePositiveInt(overrides.inactivityMs ?? process.env.LLAMACPP_CHAT_INACTIVITY_TIMEOUT_MS, 120000),
+        maxStepMs: parsePositiveInt(overrides.maxStepMs ?? process.env.LLAMACPP_CHAT_MAX_STREAM_MS, 3600000),
+    };
+}
+
 function summarizePartialModelResponse(partial = {}) {
     const content = String(partial.content || '');
     const thinking = String(partial.thinking || '');
@@ -1297,6 +1357,74 @@ class AgentModelTimeoutError extends Error {
 
 function isAgentModelTimeoutError(err) {
     return err?.code === 'AGENT_MODEL_TIMEOUT' || err?.name === 'AgentModelTimeoutError';
+}
+
+function getStreamingTimeoutError(timeoutState, err) {
+    if (!timeoutState) return null;
+    try {
+        timeoutState.throwIfTimedOut(err);
+    } catch (timeoutErr) {
+        return isAgentModelTimeoutError(timeoutErr) ? timeoutErr : null;
+    }
+    const timeoutErr = timeoutState.getTimeoutError?.();
+    return isAgentModelTimeoutError(timeoutErr) ? timeoutErr : null;
+}
+
+function describeLlamaCppChatStreamError(error) {
+    if (!isAgentModelTimeoutError(error)) {
+        return `llama.cpp stream ended with an error: ${error?.message || 'unknown error'}.`;
+    }
+
+    const phase = error.timeoutPhase || 'timeout';
+    const seconds = error.timeoutMs ? Math.round(error.timeoutMs / 1000) : null;
+    const partial = error.timeoutDetails?.partial || {};
+    const partialText = partial.hasContent || partial.hasThinking
+        ? ' The partial response was saved.'
+        : ' No response text was generated.';
+    const suffix = seconds ? ` after ${seconds}s` : '';
+
+    if (phase === 'connection_timeout') {
+        return `llama.cpp did not accept the chat request${suffix}.${partialText}`;
+    }
+    if (phase === 'first_token_timeout') {
+        return `llama.cpp did not start generating a response${suffix}.${partialText}`;
+    }
+    if (phase === 'inactivity_timeout') {
+        return `llama.cpp stopped sending tokens${suffix}.${partialText}`;
+    }
+    if (phase === 'max_step_duration') {
+        return `llama.cpp response exceeded the maximum stream duration${suffix}.${partialText}`;
+    }
+    return `llama.cpp chat timed out${suffix}.${partialText}`;
+}
+
+function buildLlamaCppChatTerminalChunk({ model, error, doneReason } = {}) {
+    const reason = doneReason || (isAgentModelTimeoutError(error) ? error.timeoutPhase : 'error') || 'error';
+    const chunk = {
+        model: model || 'unknown',
+        message: {
+            role: 'assistant',
+            content: `\n\n*${describeLlamaCppChatStreamError(error)}*`,
+        },
+        done: true,
+        done_reason: reason,
+        doneReason: reason,
+        error: error?.message || null,
+    };
+    if (isAgentModelTimeoutError(error)) {
+        chunk.timeoutDetails = error.timeoutDetails;
+    }
+    return chunk;
+}
+
+function writeLlamaCppChatTerminalChunk(res, chunk) {
+    if (!res || res.writableEnded || res.destroyed) return false;
+    try {
+        res.write(JSON.stringify(chunk) + '\n');
+        return true;
+    } catch (_err) {
+        return false;
+    }
 }
 
 function buildAgentModelTimeoutEvent({ model, backend, step, elapsedMs, error, canResume = true } = {}) {
@@ -3395,6 +3523,8 @@ module.exports = {
     AGENT_TOOL_CALL_TIMEOUT_MS,
     AgentModelTimeoutError,
     getAgentModelTimeoutConfig,
+    getLlamaCppChatTimeoutConfig,
+    buildLlamaCppChatTerminalChunk,
     buildAgentModelTimeoutEvent,
     isAgentModelTimeoutError,
     callOllamaWithTools,

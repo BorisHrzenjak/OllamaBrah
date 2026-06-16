@@ -8,12 +8,11 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 
 ---
 
-## What's New - v1.20.0
+## What's New - v1.20.1
 
-- **Agent run UI is now collapsible and dev-tool styled** — the Timeline, Files, Diffs, and Shell panels start collapsed so the actual answer is no longer buried under warnings and status cards
-- **Each section shows a live count badge** — see at a glance how many timeline events, file edits, or shell outputs happened without expanding anything
-- **The Answer panel auto-expands when content arrives** — model responses, permission prompts, and action items are surfaced instantly while the noisy reasoning trail stays tucked away
-- **Tone-coded panels** — warning and error events tint the section border and count badge so you spot trouble at a glance
+- **Fixed llama.cpp responses cutting off mid-stream** — normal chat now uses phased connection, first-token, inactivity, and max-stream timeouts instead of a hard 2-minute cap
+- **Clear cutoff messages for llama.cpp** — token-limit and timeout interruptions now show a visible note instead of silently saving a broken answer
+- **llama.cpp Thinking toggle support** — the existing Thinking checkbox now passes `enable_thinking` to compatible GGUF chat templates
 
 ---
 
@@ -25,6 +24,7 @@ A desktop chat client for local [Ollama](https://ollama.com) and [llama.cpp](htt
 - `llama.cpp` scans GGUFs into a manifest with per-model runtime profiles, inferred capabilities, and automatic `mmproj` pairing for multimodal setups
 - `llama.cpp` now supports the same app-side web search, deep research, memory injection, and explicit memory-save automation used by the Ollama backend
 - `llama.cpp` session state is persisted so the app can optionally recover the last active GGUF runtime and reuse in-flight loads when startup keep-alive is enabled
+- `llama.cpp` chat streams use phased timeout handling with visible timeout and token-limit notes, plus Thinking toggle support for compatible reasoning templates
 - Document attachments work with `llama.cpp` even when image attachments are unavailable
 - Model switcher, model management, and dashboard views with live availability checking plus separate local, cloud, and `llama.cpp` sections
 - Dot-safe model history storage with legacy migration so dashboard and usage stats stay accurate for future model names
